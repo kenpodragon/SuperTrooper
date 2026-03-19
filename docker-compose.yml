@@ -1,0 +1,57 @@
+name: supertroopers
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: supertroopers-db
+    restart: unless-stopped
+    ports:
+      - "5555:5432"
+    environment:
+      POSTGRES_DB: supertroopers
+      POSTGRES_USER: supertroopers
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env or environment}
+    volumes:
+      - ../local_code/db_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supertroopers -d supertroopers"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: supertroopers-app
+    restart: unless-stopped
+    ports:
+      - "8055:8055"   # Flask API
+      - "8056:8056"   # MCP SSE server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: supertroopers
+      DB_USER: supertroopers
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env or environment}
+      FLASK_PORT: 8055
+      FLASK_DEBUG: 0
+    command: ["python", "app.py", "--mcp-port", "8056"]
+    volumes:
+      - ./backend:/app
+
+  # frontend:
+  #   build: ./frontend
+  #   container_name: supertroopers-web
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5175:5173"
+  #   depends_on:
+  #     - backend
+
+# DB data bind-mounted to ../local_code/db_data/ (visible on local filesystem)
+# Persists across docker compose down/up. Only lost if you delete the local folder.
+# Flask API: http://localhost:8055
+# MCP SSE:   http://localhost:8056
