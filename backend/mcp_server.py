@@ -905,16 +905,214 @@ def get_resume_data(version: str = "v32", variant: str = "base", section: str = 
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def generate_resume(version: str = "v32", variant: str = "base", output_path: str = "") -> dict:
-    """Generate a .docx resume from the placeholder template + spec data.
-
-    Fills the template with content from DB (header, spec, education, certs,
-    career history). Returns the file path of the generated .docx.
+def list_recipes(template_id: int = 0, is_active: bool = True) -> dict:
+    """List available resume recipes.
 
     Args:
-        version: Resume version (default v32).
-        variant: Resume variant (default base).
+        template_id: Filter by template ID (0 = all templates).
+        is_active: Filter by active status (default True).
+    """
+    sql = "SELECT id, name, description, headline, template_id, application_id, is_active, created_at FROM resume_recipes WHERE 1=1"
+    params = []
+    if template_id > 0:
+        sql += " AND template_id = %s"
+        params.append(template_id)
+    if is_active:
+        sql += " AND is_active = TRUE"
+    sql += " ORDER BY id"
+    rows = db.query(sql, params)
+    return {"recipes": rows, "count": len(rows)}
+
+
+@mcp.tool()
+def get_recipe(recipe_id: int = 0) -> dict:
+    """Get a single resume recipe with full JSON.
+
+    Args:
+        recipe_id: Recipe ID to fetch.
+    """
+    if recipe_id <= 0:
+        return {"error": "recipe_id is required"}
+    row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not row:
+        return {"error": f"Recipe id={recipe_id} not found"}
+    return row
+
+
+@mcp.tool()
+def create_recipe(name: str = "", headline: str = "", template_id: int = 0,
+                  recipe_json: str = "", description: str = "", application_id: int = 0) -> dict:
+    """Create a new resume recipe.
+
+    Args:
+        name: Recipe name (e.g. "V32 AI Architect - Optum").
+        headline: Resume headline text.
+        template_id: ID of the template to use.
+        recipe_json: JSON string of slot-to-source mappings.
+        description: Optional description.
+        application_id: Optional linked application ID (0 = none).
+    """
+    if not name or not template_id or not recipe_json:
+        return {"error": "name, template_id, and recipe_json are required"}
+    import json as _json
+    try:
+        recipe = _json.loads(recipe_json) if isinstance(recipe_json, str) else recipe_json
+    except _json.JSONDecodeError as e:
+        return {"error": f"Invalid recipe JSON: {e}"}
+
+    app_id = application_id if application_id > 0 else None
+    row = db.execute_returning(
+        """INSERT INTO resume_recipes (name, description, headline, template_id, recipe, application_id)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+        (name, description or None, headline or None, template_id, _json.dumps(recipe), app_id),
+    )
+    return row or {"error": "Failed to create recipe"}
+
+
+@mcp.tool()
+def update_recipe(recipe_id: int = 0, name: str = "", headline: str = "",
+                  recipe_json: str = "", description: str = "", is_active: bool = True) -> dict:
+    """Update an existing resume recipe.
+
+    Args:
+        recipe_id: Recipe ID to update.
+        name: New name (empty = keep current).
+        headline: New headline (empty = keep current).
+        recipe_json: New recipe JSON (empty = keep current).
+        description: New description (empty = keep current).
+        is_active: Active status.
+    """
+    if recipe_id <= 0:
+        return {"error": "recipe_id is required"}
+    existing = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not existing:
+        return {"error": f"Recipe id={recipe_id} not found"}
+
+    import json as _json
+    updates = {}
+    if name:
+        updates["name"] = name
+    if headline:
+        updates["headline"] = headline
+    if description:
+        updates["description"] = description
+    if recipe_json:
+        try:
+            updates["recipe"] = _json.dumps(
+                _json.loads(recipe_json) if isinstance(recipe_json, str) else recipe_json
+            )
+        except _json.JSONDecodeError as e:
+            return {"error": f"Invalid recipe JSON: {e}"}
+    updates["is_active"] = is_active
+
+    if not updates:
+        return existing
+
+    set_clauses = ", ".join(f"{k} = %s" for k in updates)
+    set_clauses += ", updated_at = NOW()"
+    values = list(updates.values()) + [recipe_id]
+    row = db.execute_returning(
+        f"UPDATE resume_recipes SET {set_clauses} WHERE id = %s RETURNING *",
+        values,
+    )
+    return row or {"error": "Failed to update recipe"}
+
+
+def _resolve_recipe_db(recipe_json: dict) -> dict:
+    """Resolve a recipe JSON into a content_map using db module.
+
+    Shared helper for MCP tool and Flask route.
+    """
+    ALLOWED = {"bullets", "career_history", "skills", "summary_variants",
+               "education", "certifications", "resume_header"}
+    content = {}
+    for slot_name, ref in recipe_json.items():
+        if "literal" in ref:
+            content[slot_name] = ref["literal"]
+        elif "ids" in ref:
+            table = ref["table"]
+            if table not in ALLOWED:
+                continue
+            ids = ref["ids"]
+            column = ref.get("column", "name")
+            rows = db.query(
+                f"SELECT id, {column} FROM {table} WHERE id = ANY(%s)",
+                (ids,),
+            )
+            by_id = {r["id"]: r[column] for r in rows}
+            values = [by_id.get(i, "") for i in ids]
+            content[slot_name] = " | ".join(v for v in values if v)
+        elif "table" in ref:
+            table = ref["table"]
+            if table not in ALLOWED:
+                continue
+            row_id = ref.get("id", 1)
+            column = ref.get("column") or ref.get("slot")
+
+            if table == "resume_header":
+                h = db.query_one("SELECT * FROM resume_header WHERE id = %s", (row_id,))
+                if not h:
+                    content[slot_name] = ""
+                    continue
+                if column in ("name",) or slot_name == "HEADER_NAME":
+                    content[slot_name] = f"{h['full_name']}, {h['credentials']}"
+                elif column in ("contact",) or slot_name == "HEADER_CONTACT":
+                    parts = [h["location"]]
+                    if h.get("location_note"):
+                        parts[0] += f" ({h['location_note']})"
+                    parts.append(h["email"])
+                    parts.append(h["phone"])
+                    if h.get("linkedin_url"):
+                        parts.append(h["linkedin_url"])
+                    content[slot_name] = " \u2022 ".join(parts)
+                else:
+                    row = db.query_one(f"SELECT {column} FROM {table} WHERE id = %s", (row_id,))
+                    content[slot_name] = row[column] if row else ""
+            elif column is None or column == "":
+                if table == "career_history":
+                    r = db.query_one("SELECT employer, location, industry FROM career_history WHERE id = %s", (row_id,))
+                    if r:
+                        parts = [r["employer"]]
+                        if r.get("location"):
+                            parts.append(f", {r['location']}")
+                        if r.get("industry"):
+                            parts.append(f" {{{r['industry']}}}")
+                        content[slot_name] = "".join(parts)
+                elif table == "education":
+                    r = db.query_one("SELECT degree, field, institution, location FROM education WHERE id = %s", (row_id,))
+                    if r:
+                        parts = [p for p in [r.get("degree"), r.get("field")] if p]
+                        result = ", ".join(parts)
+                        if r.get("institution"):
+                            result += f" | {r['institution']}"
+                        if r.get("location"):
+                            result += f" \u2014 {r['location']}"
+                        content[slot_name] = result
+                elif table == "certifications":
+                    r = db.query_one("SELECT name, issuer FROM certifications WHERE id = %s", (row_id,))
+                    if r:
+                        content[slot_name] = f"{r['name']} | {r['issuer']}" if r.get("issuer") else r["name"]
+                else:
+                    content[slot_name] = ""
+            else:
+                row = db.query_one(f"SELECT {column} FROM {table} WHERE id = %s", (row_id,))
+                content[slot_name] = row[column] if row and row.get(column) else ""
+    return content
+
+
+@mcp.tool()
+def generate_resume(version: str = "v32", variant: str = "base", output_path: str = "",
+                    recipe_id: int = 0) -> dict:
+    """Generate a .docx resume from a recipe or legacy spec.
+
+    When recipe_id is provided, uses recipe-based generation (pointer references).
+    Otherwise falls back to legacy spec-based generation.
+
+    Args:
+        version: Resume version for legacy path (default v32).
+        variant: Resume variant for legacy path (default base).
         output_path: Where to save the .docx. Defaults to Output/resume_{version}_{variant}.docx.
+        recipe_id: Recipe ID from resume_recipes (0 = use legacy spec path).
     """
     import io as _io
     import json as _json
@@ -929,6 +1127,113 @@ def generate_resume(version: str = "v32", variant: str = "base", output_path: st
         "job_header": ", ",
     }
 
+    # === RECIPE PATH ===
+    if recipe_id > 0:
+        recipe_row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+        if not recipe_row:
+            return {"error": f"Recipe id={recipe_id} not found"}
+
+        # Load template from recipe's template_id
+        tmpl = db.query_one(
+            "SELECT name, template_blob, template_map FROM resume_templates WHERE id = %s AND is_active = TRUE",
+            (recipe_row["template_id"],),
+        )
+        if not tmpl:
+            return {"error": f"Template id={recipe_row['template_id']} not found"}
+
+        template_blob = bytes(tmpl["template_blob"])
+        template_map = tmpl["template_map"] or {}
+        recipe_json = recipe_row["recipe"]
+        if isinstance(recipe_json, str):
+            recipe_json = _json.loads(recipe_json)
+
+        content = _resolve_recipe_db(recipe_json)
+        if recipe_row.get("headline"):
+            content["HEADLINE"] = recipe_row["headline"]
+
+        # Build slot info and fill template (same as legacy path below)
+        slot_info = {}
+        for slot in template_map.get("slots", []):
+            if slot.get("placeholder"):
+                slot_info[slot["placeholder"]] = {
+                    "slot_type": slot.get("slot_type", ""),
+                    "formatting": slot.get("formatting", {}),
+                }
+
+        doc = Document(_io.BytesIO(template_blob))
+        filled = 0
+        for para in doc.paragraphs:
+            match = PLACEHOLDER_RE.search(para.text)
+            if not match:
+                continue
+            placeholder = match.group(1)
+            if placeholder not in content:
+                if para.runs:
+                    para.runs[0].text = ""
+                    for run in para.runs[1:]:
+                        run.text = ""
+                continue
+            text = content[placeholder]
+            info = slot_info.get(placeholder, {})
+            slot_type = info.get("slot_type", "")
+            formatting = info.get("formatting", {})
+            if formatting.get("bold_label") and slot_type in BOLD_SEPS:
+                sep = BOLD_SEPS[slot_type]
+                idx = text.find(sep)
+                if idx >= 0 and para.runs:
+                    para.runs[0].text = text[:idx]
+                    para.runs[0].bold = True
+                    if len(para.runs) > 1:
+                        para.runs[1].text = text[idx:]
+                        para.runs[1].bold = None
+                        for run in para.runs[2:]:
+                            run.text = ""
+                            run.bold = None
+                    else:
+                        para.runs[0].text = text
+                else:
+                    if para.runs:
+                        para.runs[0].text = text
+                        for run in para.runs[1:]:
+                            run.text = ""
+            else:
+                if para.runs:
+                    para.runs[0].text = text
+                    for run in para.runs[1:]:
+                        run.text = ""
+                else:
+                    para.text = text
+            filled += 1
+
+        if not output_path:
+            # Organize output by company/role/date when application_id linked
+            if recipe_row.get("application_id"):
+                app = db.query_one("SELECT company_name, role, date_applied FROM applications WHERE id = %s",
+                                   (recipe_row["application_id"],))
+                if app:
+                    import datetime
+                    company = (app.get("company_name") or "Unknown").replace(" ", "_").replace("/", "_")
+                    role = (app.get("role") or "Role").replace(" ", "_").replace("/", "_")
+                    date = (app.get("date_applied") or datetime.date.today()).isoformat()
+                    output_path = f"Output/{company}_{role}_{date}/resume.docx"
+                else:
+                    output_path = f"Output/resume_recipe_{recipe_id}.docx"
+            else:
+                output_path = f"Output/resume_recipe_{recipe_id}.docx"
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(out))
+
+        return {
+            "status": "generated",
+            "output_path": str(out),
+            "recipe_id": recipe_id,
+            "recipe_name": recipe_row["name"],
+            "slots_filled": filled,
+            "total_content": len(content),
+        }
+
+    # === LEGACY SPEC PATH ===
     # Load template
     tmpl = db.query_one(
         "SELECT template_blob, template_map FROM resume_templates "

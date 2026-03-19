@@ -1,4 +1,4 @@
-"""Routes for resume generation, templates, header, education, certifications."""
+"""Routes for resume generation, recipes, templates, header, education, certifications."""
 
 from flask import Blueprint, request, jsonify, send_file
 import io
@@ -8,6 +8,269 @@ import db
 from docx import Document
 
 bp = Blueprint("resume", __name__)
+
+
+# ---------------------------------------------------------------------------
+# Resume Recipes
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/resume/recipes", methods=["GET"])
+def list_recipes():
+    """List resume recipes. Query params: template_id, is_active."""
+    template_id = request.args.get("template_id", type=int)
+    is_active = request.args.get("is_active", "true").lower() != "false"
+
+    sql = "SELECT id, name, description, headline, template_id, application_id, is_active, created_at, updated_at FROM resume_recipes WHERE 1=1"
+    params = []
+    if template_id:
+        sql += " AND template_id = %s"
+        params.append(template_id)
+    if is_active:
+        sql += " AND is_active = TRUE"
+    sql += " ORDER BY id"
+    rows = db.query(sql, params)
+    return jsonify({"recipes": rows, "count": len(rows)})
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>", methods=["GET"])
+def get_recipe(recipe_id):
+    """Get a single recipe with full JSON. Query params: resolve=true for text preview."""
+    row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not row:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    if request.args.get("resolve", "").lower() == "true":
+        from mcp_server import _resolve_recipe_db
+        recipe_json = row["recipe"]
+        if isinstance(recipe_json, str):
+            recipe_json = json.loads(recipe_json)
+        resolved = _resolve_recipe_db(recipe_json)
+        if row.get("headline"):
+            resolved["HEADLINE"] = row["headline"]
+        row["resolved_preview"] = resolved
+
+    return jsonify(row)
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/validate", methods=["GET"])
+def validate_recipe(recipe_id):
+    """Validate a recipe's references. Returns which IDs exist and which are missing."""
+    row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not row:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    ALLOWED = {"bullets", "career_history", "skills", "summary_variants",
+               "education", "certifications", "resume_header"}
+    recipe_json = row["recipe"]
+    if isinstance(recipe_json, str):
+        recipe_json = json.loads(recipe_json)
+
+    errors = []
+    db_refs = 0
+    literals = 0
+    valid_refs = 0
+
+    for slot_name, ref in recipe_json.items():
+        if "literal" in ref:
+            literals += 1
+            continue
+        if "ids" in ref:
+            table = ref["table"]
+            if table not in ALLOWED:
+                errors.append({"slot": slot_name, "error": f"Table '{table}' not allowed"})
+                continue
+            ids = ref["ids"]
+            db_refs += len(ids)
+            found = db.query(f"SELECT id FROM {table} WHERE id = ANY(%s)", (ids,))
+            found_ids = {r["id"] for r in found}
+            missing = [i for i in ids if i not in found_ids]
+            if missing:
+                errors.append({"slot": slot_name, "table": table, "missing_ids": missing})
+            else:
+                valid_refs += len(ids)
+        elif "table" in ref:
+            table = ref["table"]
+            if table not in ALLOWED:
+                errors.append({"slot": slot_name, "error": f"Table '{table}' not allowed"})
+                continue
+            row_id = ref.get("id", 1)
+            db_refs += 1
+            found = db.query_one(f"SELECT id FROM {table} WHERE id = %s", (row_id,))
+            if found:
+                valid_refs += 1
+            else:
+                errors.append({"slot": slot_name, "table": table, "id": row_id, "error": "Not found"})
+
+    return jsonify({
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "stats": {
+            "total_slots": len(recipe_json),
+            "db_refs": db_refs,
+            "literals": literals,
+            "valid_refs": valid_refs,
+            "missing_refs": len(errors),
+        },
+    })
+
+
+@bp.route("/api/resume/recipes", methods=["POST"])
+def create_recipe():
+    """Create a new recipe. Body: {name, headline, template_id, recipe, description?, application_id?}."""
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    template_id = data.get("template_id")
+    recipe = data.get("recipe")
+    if not name or not template_id or not recipe:
+        return jsonify({"error": "name, template_id, and recipe are required"}), 400
+
+    row = db.execute_returning(
+        """INSERT INTO resume_recipes (name, description, headline, template_id, recipe, application_id)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+        (name, data.get("description"), data.get("headline"),
+         template_id, json.dumps(recipe), data.get("application_id")),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>", methods=["PUT"])
+def update_recipe(recipe_id):
+    """Update a recipe. Body: partial fields to update."""
+    existing = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not existing:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    fields = []
+    values = []
+    for col in ["name", "description", "headline", "is_active"]:
+        if col in data:
+            fields.append(f"{col} = %s")
+            values.append(data[col])
+    if "recipe" in data:
+        fields.append("recipe = %s")
+        values.append(json.dumps(data["recipe"]))
+    if "application_id" in data:
+        fields.append("application_id = %s")
+        values.append(data["application_id"])
+
+    if not fields:
+        return jsonify(existing)
+
+    fields.append("updated_at = NOW()")
+    values.append(recipe_id)
+    row = db.execute_returning(
+        f"UPDATE resume_recipes SET {', '.join(fields)} WHERE id = %s RETURNING *",
+        values,
+    )
+    return jsonify(row)
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>", methods=["DELETE"])
+def delete_recipe(recipe_id):
+    """Soft-delete a recipe (set is_active=false)."""
+    existing = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not existing:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+    db.execute(
+        "UPDATE resume_recipes SET is_active = FALSE, updated_at = NOW() WHERE id = %s",
+        (recipe_id,),
+    )
+    return jsonify({"status": "deleted", "id": recipe_id})
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/clone", methods=["POST"])
+def clone_recipe(recipe_id):
+    """Clone a recipe as a new entry for tailoring."""
+    existing = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not existing:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    new_name = data.get("name", f"{existing['name']} (copy)")
+
+    row = db.execute_returning(
+        """INSERT INTO resume_recipes (name, description, headline, template_id, recipe, application_id)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+        (new_name, existing["description"], existing["headline"],
+         existing["template_id"], json.dumps(existing["recipe"]),
+         data.get("application_id")),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/generate", methods=["POST"])
+def generate_from_recipe(recipe_id):
+    """Generate a .docx resume from a recipe. Returns file download."""
+    from mcp_server import _resolve_recipe_db
+
+    recipe_row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not recipe_row:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    tmpl = db.query_one(
+        "SELECT template_blob, template_map FROM resume_templates WHERE id = %s AND is_active = TRUE",
+        (recipe_row["template_id"],),
+    )
+    if not tmpl:
+        return jsonify({"error": f"Template id={recipe_row['template_id']} not found"}), 404
+
+    template_blob = bytes(tmpl["template_blob"])
+    template_map = tmpl["template_map"] or {}
+    recipe_json = recipe_row["recipe"]
+    if isinstance(recipe_json, str):
+        recipe_json = json.loads(recipe_json)
+
+    content = _resolve_recipe_db(recipe_json)
+    if recipe_row.get("headline"):
+        content["HEADLINE"] = recipe_row["headline"]
+
+    # Build slot info
+    slot_info = {}
+    for slot in template_map.get("slots", []):
+        if slot.get("placeholder"):
+            slot_info[slot["placeholder"]] = {
+                "slot_type": slot.get("slot_type", ""),
+                "formatting": slot.get("formatting", {}),
+            }
+
+    # Fill template
+    PLACEHOLDER_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
+    BOLD_SEPS = {
+        "highlight": ": ", "job_bullet": ": ", "education": " | ",
+        "certification": " | ", "additional_exp": " | ", "ref_link": " | ",
+        "job_header": ", ",
+    }
+
+    doc = Document(io.BytesIO(template_blob))
+    for para in doc.paragraphs:
+        match = PLACEHOLDER_RE.search(para.text)
+        if not match:
+            continue
+        placeholder = match.group(1)
+        if placeholder not in content:
+            _fill_simple(para, "")
+            continue
+        text = content[placeholder]
+        info = slot_info.get(placeholder, {})
+        slot_type = info.get("slot_type", "")
+        formatting = info.get("formatting", {})
+        if formatting.get("bold_label") and slot_type in BOLD_SEPS:
+            _fill_bold_label(para, text, BOLD_SEPS[slot_type])
+        else:
+            _fill_simple(para, text)
+
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+
+    filename = f"resume_recipe_{recipe_id}.docx"
+    return send_file(
+        output,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 # ---------------------------------------------------------------------------

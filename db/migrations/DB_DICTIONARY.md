@@ -1,6 +1,6 @@
 # Database Dictionary — SuperTroopers
 
-**Last updated:** 2026-03-19 (Session 4)
+**Last updated:** 2026-03-19 (Session 6)
 **Database:** PostgreSQL 17 + pgvector 0.8.2
 **Connection:** localhost:5555, db=supertroopers, user=supertroopers
 
@@ -27,11 +27,12 @@
 | voice_rules | 173 | 003 | Voice guide rules for content generation validation |
 | salary_benchmarks | 12 | 003 | Role-by-role salary ranges with COLA mapping |
 | cola_markets | 7 | 003 | Cost of living reference data by market |
-| resume_templates | 1 | 004 | .docx template blob storage |
+| resume_templates | 4 | 004+005 | .docx template blob + template_map JSONB |
 | resume_header | 1 | 004 | Candidate contact info for resume headers |
 | education | 4 | 004 | Degree and certificate entries |
 | certifications | 8 | 004 | Professional certifications |
-| schema_migrations | 4 | 001 | Migration version tracking |
+| resume_recipes | 5 | 006 | Recipe-based resume assembly (slot -> {table,id,column}) |
+| schema_migrations | 6 | 001 | Migration version tracking |
 
 ## Views
 
