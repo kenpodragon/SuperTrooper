@@ -41,15 +41,16 @@ services:
     command: ["python", "app.py", "--mcp-port", "8056"]
     volumes:
       - ./backend:/app
+      - ./utils:/app/utils
 
-  # frontend:
-  #   build: ./frontend
-  #   container_name: supertroopers-web
-  #   restart: unless-stopped
-  #   ports:
-  #     - "5175:5173"
-  #   depends_on:
-  #     - backend
+  frontend:
+    build: ./frontend
+    container_name: supertroopers-web
+    restart: unless-stopped
+    ports:
+      - "5175:5173"
+    depends_on:
+      - backend
 
 # DB data bind-mounted to ../local_code/db_data/ (visible on local filesystem)
 # Persists across docker compose down/up. Only lost if you delete the local folder.

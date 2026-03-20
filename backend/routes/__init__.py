@@ -13,6 +13,7 @@ from routes.gap_analysis import bp as gap_analysis_bp
 from routes.interview_extras import bp as interview_extras_bp
 from routes.activity import bp as activity_bp
 from routes.settings import bp as settings_bp
+from routes.onboard import bp as onboard_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -28,4 +29,5 @@ ALL_BLUEPRINTS = [
     interview_extras_bp,
     activity_bp,
     settings_bp,
+    onboard_bp,
 ]
