@@ -1,5 +1,6 @@
-"""Routes for applications, interviews, companies."""
+"""Routes for applications, interviews, companies, status history, materials, follow-ups."""
 
+import json
 from flask import Blueprint, request, jsonify
 import db
 
@@ -242,12 +243,21 @@ def create_application():
 
 @bp.route("/api/applications/<int:app_id>", methods=["PATCH"])
 def update_application(app_id):
-    """Update application status, notes, etc."""
+    """Update application status, notes, etc. Auto-logs status changes."""
     data = request.get_json(force=True)
     allowed = [
         "status", "notes", "resume_version", "cover_letter_path",
         "jd_text", "jd_url", "contact_name", "contact_email", "source",
+        "saved_job_id", "gap_analysis_id",
     ]
+
+    # Capture old status before update for history logging
+    old_status = None
+    if "status" in data:
+        old_row = db.query_one("SELECT status FROM applications WHERE id = %s", (app_id,))
+        if old_row:
+            old_status = old_row["status"]
+
     sets, params = [], []
     for key in allowed:
         if key in data:
@@ -265,6 +275,17 @@ def update_application(app_id):
     )
     if not row:
         return jsonify({"error": "Not found"}), 404
+
+    # Auto-log status change
+    if "status" in data and old_status != data["status"]:
+        db.execute(
+            """
+            INSERT INTO application_status_history (application_id, old_status, new_status, notes)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (app_id, old_status, data["status"], data.get("status_notes")),
+        )
+
     return jsonify(row), 200
 
 
@@ -349,3 +370,155 @@ def update_interview(interview_id):
     if not row:
         return jsonify({"error": "Not found"}), 404
     return jsonify(row), 200
+
+
+# ---------------------------------------------------------------------------
+# Application Status History
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/applications/<int:app_id>/status-history", methods=["GET"])
+def get_status_history(app_id):
+    """Get status change history for an application."""
+    rows = db.query(
+        "SELECT * FROM application_status_history WHERE application_id = %s ORDER BY changed_at DESC",
+        (app_id,),
+    )
+    return jsonify(rows), 200
+
+
+# ---------------------------------------------------------------------------
+# Generated Materials
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/applications/<int:app_id>/materials", methods=["GET"])
+def list_materials(app_id):
+    """List generated materials for an application."""
+    rows = db.query(
+        """
+        SELECT gm.*, rr.name AS recipe_name
+        FROM generated_materials gm
+        LEFT JOIN resume_recipes rr ON rr.id = gm.recipe_id
+        WHERE gm.application_id = %s
+        ORDER BY gm.generated_at DESC
+        """,
+        (app_id,),
+    )
+    return jsonify(rows), 200
+
+
+@bp.route("/api/materials", methods=["POST"])
+def create_material():
+    """Log a generated material."""
+    data = request.get_json(force=True)
+    if not data.get("type"):
+        return jsonify({"error": "type is required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO generated_materials (application_id, type, recipe_id,
+            file_path, version_label, notes)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            data.get("application_id"), data["type"], data.get("recipe_id"),
+            data.get("file_path"), data.get("version_label"), data.get("notes"),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/materials/<int:mat_id>", methods=["DELETE"])
+def delete_material(mat_id):
+    """Delete a generated material record."""
+    count = db.execute("DELETE FROM generated_materials WHERE id = %s", (mat_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": mat_id}), 200
+
+
+# ---------------------------------------------------------------------------
+# Follow-ups
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/applications/<int:app_id>/follow-ups", methods=["GET"])
+def list_follow_ups(app_id):
+    """List follow-ups for an application."""
+    rows = db.query(
+        "SELECT * FROM follow_ups WHERE application_id = %s ORDER BY attempt_number",
+        (app_id,),
+    )
+    return jsonify(rows), 200
+
+
+@bp.route("/api/follow-ups", methods=["POST"])
+def create_follow_up():
+    """Log a follow-up attempt."""
+    data = request.get_json(force=True)
+    if not data.get("application_id"):
+        return jsonify({"error": "application_id is required"}), 400
+
+    # Auto-increment attempt number
+    last = db.query_one(
+        "SELECT MAX(attempt_number) AS max_num FROM follow_ups WHERE application_id = %s",
+        (data["application_id"],),
+    )
+    next_num = (last["max_num"] or 0) + 1 if last else 1
+
+    row = db.execute_returning(
+        """
+        INSERT INTO follow_ups (application_id, attempt_number, date_sent,
+            method, response_received, notes)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            data["application_id"], data.get("attempt_number", next_num),
+            data.get("date_sent"), data.get("method"),
+            data.get("response_received", False), data.get("notes"),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/follow-ups/<int:fu_id>", methods=["PATCH"])
+def update_follow_up(fu_id):
+    """Update a follow-up (e.g., mark response received)."""
+    data = request.get_json(force=True)
+    allowed = ["date_sent", "method", "response_received", "notes"]
+    sets, params = [], []
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(fu_id)
+    row = db.execute_returning(
+        f"UPDATE follow_ups SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/applications/stale", methods=["GET"])
+def stale_applications():
+    """Find applications with no activity for N days."""
+    days = int(request.args.get("days", 14))
+    rows = db.query(
+        """
+        SELECT a.id, a.company_name, a.role, a.status, a.last_status_change,
+               a.date_applied,
+               EXTRACT(DAY FROM NOW() - COALESCE(a.last_status_change, a.date_applied::timestamp)) AS days_stale,
+               (SELECT COUNT(*) FROM follow_ups f WHERE f.application_id = a.id) AS follow_up_count
+        FROM applications a
+        WHERE a.status NOT IN ('Rejected', 'Ghosted', 'Withdrawn', 'Accepted', 'Rescinded')
+          AND COALESCE(a.last_status_change, a.date_applied::timestamp) < NOW() - INTERVAL '%s days'
+        ORDER BY days_stale DESC
+        """,
+        (days,),
+    )
+    return jsonify(rows), 200

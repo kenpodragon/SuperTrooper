@@ -1,5 +1,6 @@
 """Routes for career_history, bullets, skills, summary_variants."""
 
+import json
 from flask import Blueprint, request, jsonify
 import db
 
@@ -64,6 +65,73 @@ def get_career_history(career_id):
     )
     career["bullets"] = bullets
     return jsonify(career), 200
+
+
+@bp.route("/api/career-history", methods=["POST"])
+def create_career_history():
+    """Add a new career history entry."""
+    data = request.get_json(force=True)
+    if not data.get("employer") or not data.get("title"):
+        return jsonify({"error": "employer and title are required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO career_history (employer, title, start_date, end_date, location,
+            industry, team_size, budget_usd, revenue_impact, is_current,
+            linkedin_dates, intro_text, career_links, notes)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            data["employer"], data["title"], data.get("start_date"),
+            data.get("end_date"), data.get("location"), data.get("industry"),
+            data.get("team_size"), data.get("budget_usd"), data.get("revenue_impact"),
+            data.get("is_current", False), data.get("linkedin_dates"),
+            data.get("intro_text"),
+            json.dumps(data["career_links"]) if data.get("career_links") else None,
+            data.get("notes"),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/career-history/<int:career_id>", methods=["PATCH"])
+def update_career_history(career_id):
+    """Update career history fields."""
+    data = request.get_json(force=True)
+    allowed = [
+        "employer", "title", "start_date", "end_date", "location", "industry",
+        "team_size", "budget_usd", "revenue_impact", "is_current",
+        "linkedin_dates", "intro_text", "career_links", "notes",
+    ]
+    sets, params = [], []
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            if key == "career_links":
+                params.append(json.dumps(data[key]) if data[key] else None)
+            else:
+                params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(career_id)
+    row = db.execute_returning(
+        f"UPDATE career_history SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/career-history/<int:career_id>", methods=["DELETE"])
+def delete_career_history(career_id):
+    """Delete a career history entry. Cascades to bullets."""
+    count = db.execute("DELETE FROM career_history WHERE id = %s", (career_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": career_id}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +202,73 @@ def get_bullet(bullet_id):
     return jsonify(row), 200
 
 
+@bp.route("/api/bullets", methods=["POST"])
+def create_bullet():
+    """Add a new bullet."""
+    data = request.get_json(force=True)
+    if not data.get("text"):
+        return jsonify({"error": "text is required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO bullets (career_history_id, text, type, star_situation, star_task,
+            star_action, star_result, metrics_json, tags, role_suitability,
+            industry_suitability, detail_recall, source_file)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            data.get("career_history_id"), data["text"], data.get("type", "core"),
+            data.get("star_situation"), data.get("star_task"),
+            data.get("star_action"), data.get("star_result"),
+            json.dumps(data["metrics_json"]) if data.get("metrics_json") else None,
+            data.get("tags"), data.get("role_suitability"),
+            data.get("industry_suitability"), data.get("detail_recall", "high"),
+            data.get("source_file"),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/bullets/<int:bullet_id>", methods=["PATCH"])
+def update_bullet(bullet_id):
+    """Update bullet fields."""
+    data = request.get_json(force=True)
+    allowed = [
+        "career_history_id", "text", "type", "star_situation", "star_task",
+        "star_action", "star_result", "metrics_json", "tags",
+        "role_suitability", "industry_suitability", "detail_recall", "source_file",
+    ]
+    sets, params = [], []
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            if key == "metrics_json":
+                params.append(json.dumps(data[key]) if data[key] else None)
+            else:
+                params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(bullet_id)
+    row = db.execute_returning(
+        f"UPDATE bullets SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/bullets/<int:bullet_id>", methods=["DELETE"])
+def delete_bullet(bullet_id):
+    """Delete a bullet."""
+    count = db.execute("DELETE FROM bullets WHERE id = %s", (bullet_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": bullet_id}), 200
+
+
 # ---------------------------------------------------------------------------
 # Summary Variants
 # ---------------------------------------------------------------------------
@@ -157,6 +292,51 @@ def get_summary_variant(role_type):
     if not row:
         return jsonify({"error": "Not found"}), 404
     return jsonify(row), 200
+
+
+@bp.route("/api/summary-variants", methods=["POST"])
+def create_summary_variant():
+    """Add a new summary variant."""
+    data = request.get_json(force=True)
+    if not data.get("role_type") or not data.get("text"):
+        return jsonify({"error": "role_type and text are required"}), 400
+
+    row = db.execute_returning(
+        "INSERT INTO summary_variants (role_type, text) VALUES (%s, %s) RETURNING *",
+        (data["role_type"], data["text"]),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/summary-variants/<int:variant_id>", methods=["PATCH"])
+def update_summary_variant(variant_id):
+    """Update a summary variant."""
+    data = request.get_json(force=True)
+    sets, params = [], []
+    for key in ("role_type", "text"):
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(variant_id)
+    row = db.execute_returning(
+        f"UPDATE summary_variants SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/summary-variants/<int:variant_id>", methods=["DELETE"])
+def delete_summary_variant(variant_id):
+    """Delete a summary variant."""
+    count = db.execute("DELETE FROM summary_variants WHERE id = %s", (variant_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": variant_id}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -191,3 +371,98 @@ def list_skills():
         params + [limit, offset],
     )
     return jsonify(rows), 200
+
+
+@bp.route("/api/skills", methods=["POST"])
+def create_skill():
+    """Add a new skill."""
+    data = request.get_json(force=True)
+    if not data.get("name"):
+        return jsonify({"error": "name is required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO skills (name, category, proficiency, last_used_year, career_history_ids)
+        VALUES (%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            data["name"], data.get("category"), data.get("proficiency"),
+            data.get("last_used_year"), data.get("career_history_ids"),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/skills/<int:skill_id>", methods=["PATCH"])
+def update_skill(skill_id):
+    """Update a skill."""
+    data = request.get_json(force=True)
+    allowed = ["name", "category", "proficiency", "last_used_year", "career_history_ids"]
+    sets, params = [], []
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(skill_id)
+    row = db.execute_returning(
+        f"UPDATE skills SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/skills/<int:skill_id>", methods=["DELETE"])
+def delete_skill(skill_id):
+    """Delete a skill."""
+    count = db.execute("DELETE FROM skills WHERE id = %s", (skill_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": skill_id}), 200
+
+
+# ---------------------------------------------------------------------------
+# KB Export
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/kb/export", methods=["GET"])
+def export_kb():
+    """Export all knowledge base data as JSON."""
+    career = db.query("SELECT * FROM career_history ORDER BY start_date DESC NULLS LAST")
+    bullets = db.query(
+        """
+        SELECT b.*, ch.employer FROM bullets b
+        LEFT JOIN career_history ch ON ch.id = b.career_history_id
+        ORDER BY b.career_history_id, b.id
+        """
+    )
+    skills = db.query("SELECT * FROM skills ORDER BY category, name")
+    summaries = db.query("SELECT * FROM summary_variants ORDER BY role_type")
+    header = db.query_one("SELECT * FROM resume_header LIMIT 1")
+    education = db.query("SELECT * FROM education ORDER BY sort_order")
+    certifications = db.query(
+        "SELECT * FROM certifications WHERE is_active = TRUE ORDER BY sort_order"
+    )
+
+    return jsonify({
+        "career_history": career,
+        "bullets": bullets,
+        "skills": skills,
+        "summary_variants": summaries,
+        "resume_header": header,
+        "education": education,
+        "certifications": certifications,
+        "counts": {
+            "career_history": len(career),
+            "bullets": len(bullets),
+            "skills": len(skills),
+            "summary_variants": len(summaries),
+            "education": len(education),
+            "certifications": len(certifications),
+        },
+    }), 200

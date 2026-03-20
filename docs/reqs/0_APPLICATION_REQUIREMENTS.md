@@ -9,14 +9,14 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 ---
 
 ## 1. Infrastructure & Database
-**Schema:** [1_DB_SCHEMA.md](1_DB_SCHEMA.md)
+**Schema:** Migration files in `code/db/migrations/` | Live reference: `code/db/migrations/DB_DICTIONARY.md`
 
 ### 1.1 PostgreSQL + pgvector
 - [x] PostgreSQL 17 + pgvector 0.8.2 in Docker (port 5555, bind mount for persistence)
-- [x] 6 SQL migrations (001_initial through 006_resume_recipes) — 20 tables
+- [x] 7 SQL migrations (001_initial through 007_platform_tables) — 31 tables
 - [x] 3 analytics views (application_funnel, source_effectiveness, monthly_activity)
 - [x] DB dump/restore utility with timestamped backups
-- [ ] Activity log / audit trail table (track who changed what, when)
+- [x] Activity log / audit trail table — Migration 007 (auto-population TBD)
 - [ ] Settings / preferences table (per-user: default templates, search prefs, notification settings)
 
 ### 1.2 ETL Framework
@@ -32,20 +32,20 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [x] docker-compose: 2 containers (postgres + backend), health checks, depends_on
 - [x] Volume mounts for DB persistence
 - [x] Environment variables via .env file
-- [ ] React frontend container
+- [x] React frontend container — Docker, port 5175, `serve` static
 - [ ] Document storage volume mounts
 
 ### 1.4 Code Structure
 - [x] db/migrations/, backend/routes/, backend/app.py + mcp_server.py
 - [x] Shared db_config.py for connection settings
-- [ ] Migrate generic utilities from local_code/ to code/utils/:
-  - [ ] read_docx.py — .docx text extraction, search, sections (used by 13.2 resume parsing)
-  - [ ] edit_docx.py — find/replace preserving formatting (used by template customization)
-  - [ ] read_pdf.py — PDF text extraction, page ranges, search (used by 5.1 JD parsing)
-  - [ ] compare_docs.py — paragraph-level document diff (used by 3.6 version control)
-  - [ ] docx_to_pdf.py — .docx to .pdf conversion via MS Word COM (used by 3.5, Windows-only)
-  - [ ] templatize_resume.py — convert full .docx to placeholder template (used by 13.5 template setup)
-  - [ ] generate_resume.py — recipe-based resume generation engine (core of 3.2/3.3)
+- [x] Migrate generic utilities from local_code/ to code/utils/:
+  - [x] read_docx.py — .docx text extraction, search, sections (used by 13.2 resume parsing)
+  - [x] edit_docx.py — find/replace preserving formatting (used by template customization)
+  - [x] read_pdf.py — PDF text extraction, page ranges, search (used by 5.1 JD parsing)
+  - [x] compare_docs.py — paragraph-level document diff (used by 3.6 version control)
+  - [x] docx_to_pdf.py — .docx to .pdf conversion via MS Word COM (used by 3.5, Windows-only)
+  - [x] templatize_resume.py — convert full .docx to placeholder template (used by 13.5 template setup)
+  - [x] generate_resume.py — recipe-based resume generation engine (core of 3.2/3.3)
 - [x] Remove superseded scripts from local_code/:
   - [x] create_resume.py (replaced by generate_resume.py recipe system)
   - [x] tracker.py (replaced by DB applications table + CRUD API)
@@ -64,16 +64,16 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [x] Resume generation: POST /api/resume/generate (legacy spec-based)
 - [x] Recipe CRUD: GET/POST/PUT/DELETE /api/resume/recipes + clone + validate
 - [x] Recipe generation + resolved preview
-- [ ] Saved jobs CRUD endpoints (see 4.1)
-- [ ] Gap analysis results CRUD (see 5.2)
-- [ ] Application status history endpoint (see 6.1)
-- [ ] Generated materials tracking endpoints (see 6.1)
-- [ ] Follow-up tracking endpoints (see 6.3)
-- [ ] Outreach / message tracking endpoints (see 9.1)
+- [x] Saved jobs CRUD endpoints (see 4.1) — routes/saved_jobs.py
+- [x] Gap analysis results CRUD (see 5.2) — routes/gap_analysis.py
+- [x] Application status history endpoint (see 6.1) — auto-logged in pipeline.py
+- [x] Generated materials tracking endpoints (see 6.1) — pipeline.py
+- [x] Follow-up tracking endpoints (see 6.3) — pipeline.py + stale detection
+- [x] Outreach / message tracking endpoints (see 9.1) — contacts.py
 - [ ] Cron job management endpoints (see 2.4)
 - [ ] Bulk content import endpoints (KB decomposition, see 3.7)
 
-### 2.2 MCP Server (SSE, port 8056) — 24 tools
+### 2.2 MCP Server (SSE, port 8056) — 35 tools
 - [x] Career & KB (4): search_bullets, get_career_history, get_summary_variant, get_skills
 - [x] Content & Voice (5): get_candidate_profile, get_voice_rules, check_voice, get_salary_data, get_rejection_analysis
 - [x] Pipeline (4): match_jd, search_applications, add_application, update_application
@@ -81,10 +81,12 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [x] Email & Analytics (2): search_emails, get_analytics
 - [x] Resume (2): generate_resume (spec + recipe paths), get_resume_data
 - [x] Recipes (4): list_recipes, get_recipe, create_recipe, update_recipe
-- [ ] Profile management: update resume_header, education, certifications via MCP
+- [x] Profile management: update_header via MCP
 - [ ] Template management: list/upload templates via MCP
-- [ ] Saved jobs: save_job, list_saved_jobs via MCP
-- [ ] Gap results: save_gap_analysis, get_gap_analysis via MCP
+- [x] Saved jobs: save_job, list_saved_jobs, update_saved_job via MCP
+- [x] Gap results: save_gap_analysis, get_gap_analysis via MCP
+- [x] Follow-ups: log_follow_up, get_stale_applications via MCP
+- [x] Interview: save_interview_prep, save_interview_debrief via MCP
 
 ### 2.3 Auth & Config
 - [x] Local-only, no auth (single user)
@@ -158,24 +160,24 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [ ] Changelog per tailored resume (what slots changed from base recipe and why)
 
 ### 3.7 Resume Data Management (Backend)
-- [ ] Full CRUD for bullets (add/edit/delete with validation)
-- [ ] Full CRUD for skills, summary_variants
-- [ ] Full CRUD for career_history (employer, title, dates, intro_text, career_links)
-- [ ] Full CRUD for education, certifications, resume_header
+- [x] Full CRUD for bullets (add/edit/delete with validation) — career.py
+- [x] Full CRUD for skills, summary_variants — career.py
+- [x] Full CRUD for career_history (employer, title, dates, intro_text, career_links) — career.py
+- [x] Full CRUD for education, certifications, resume_header — resume.py
 - [ ] Resume upload + parse endpoint: POST .docx/.pdf -> auto-extract career_history + bullets (see 13.2)
 - [ ] Bulk text import: POST raw text -> parse into structured bullets
 - [ ] Content audit: orphaned bullets not in any recipe, broken recipe references
-- [ ] KB export: GET /api/kb/export (JSON/CSV of all bullets + career_history)
+- [x] KB export: GET /api/kb/export (JSON of all bullets + career_history + skills + summaries)
 
 ---
 
 ## 4. Job Search & Discovery
 
 ### 4.1 Saved Jobs / Evaluation Queue
-- [ ] `saved_jobs` table (url, title, company, source, jd_text, jd_url, fit_score, status: saved/evaluating/applying/passed, notes)
-- [ ] CRUD API + MCP tools for saved jobs
+- [x] `saved_jobs` table (url, title, company, source, jd_text, jd_url, fit_score, status: saved/evaluating/applying/passed, notes) — Migration 007
+- [x] CRUD API + MCP tools for saved jobs — routes/saved_jobs.py + 3 MCP tools
 - [ ] Browser plugin integration: save job from any job board page (see 14)
-- [ ] Transition from saved_job to application when user decides to apply
+- [x] Transition from saved_job to application: POST /api/saved-jobs/<id>/apply
 
 ### 4.2 Multi-Platform Search
 - [ ] Indeed search via MCP (already available, needs workflow wrapping)
@@ -208,8 +210,8 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 
 ### 5.2 Gap Analysis Output & Storage
 - [x] match_jd MCP tool (keyword ILIKE matching)
-- [ ] `gap_analyses` table (application_id/saved_job_id, jd_parsed, strong_matches, partial_matches, gaps, bonus_value, fit_scores, recommendation, created_at)
-- [ ] Persist gap analysis results linked to application or saved job
+- [x] `gap_analyses` table (application_id/saved_job_id, jd_parsed, strong_matches, partial_matches, gaps, bonus_value, fit_scores, recommendation, created_at) — Migration 007
+- [x] Persist gap analysis results linked to application or saved job — routes/gap_analysis.py + 2 MCP tools
 - [ ] Strong Matches with specific evidence and metrics
 - [ ] Partial Matches with bridge/reframe strategy
 - [ ] Gaps with mitigation plan
@@ -230,10 +232,10 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 ### 6.1 Application Management
 - [x] applications table with full lifecycle columns
 - [x] CRUD API + MCP tools
-- [ ] `application_status_history` table (application_id, old_status, new_status, changed_at, notes) — auto-logged on status change
-- [ ] `generated_materials` table (application_id, type: resume/cover_letter/outreach, recipe_id, file_path, generated_at) — track which materials were sent where
-- [ ] Link applications to saved_jobs (came from evaluation queue)
-- [ ] Link applications to gap_analyses
+- [x] `application_status_history` table (application_id, old_status, new_status, changed_at, notes) — Migration 007 (auto-logging TBD)
+- [x] `generated_materials` table (application_id, type: resume/cover_letter/outreach, recipe_id, file_path, generated_at) — Migration 007 (CRUD TBD)
+- [x] Link applications to saved_jobs (came from evaluation queue) — applications.saved_job_id FK
+- [x] Link applications to gap_analyses — applications.gap_analysis_id FK
 
 ### 6.2 Email-Based Status Tracking
 - [ ] Gmail scan for confirmations, responses, rejections, offers
@@ -241,8 +243,8 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [ ] Flag new/unprocessed emails
 
 ### 6.3 Follow-Up Management
-- [ ] `follow_ups` table (application_id, attempt_number, date_sent, method: email/linkedin/phone, response_received, notes)
-- [ ] Flag stale applications (7/14/21 days with no response)
+- [x] `follow_ups` table (application_id, attempt_number, date_sent, method: email/linkedin/phone, response_received, notes) — Migration 007
+- [x] Flag stale applications — GET /api/applications/stale + get_stale_applications MCP
 - [ ] Generate follow-up email drafts (AI-driven via MCP)
 - [ ] Auto-mark as ghosted after 3 attempts with no response
 
@@ -291,7 +293,7 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [ ] Query interface: "give me stories about leadership" -> matching bullets with STAR data
 
 ### 8.2 Company-Specific Prep
-- [ ] `interview_prep` table (interview_id, company_dossier, prepared_questions, talking_points, star_stories_selected, notes)
+- [x] `interview_prep` table (interview_id, company_dossier, prepared_questions, talking_points, star_stories_selected, notes) — Migration 007
 - [ ] Company dossier generation (get_company_dossier MCP tool already exists)
 - [ ] Likely questions based on JD + culture
 - [ ] 3-5 prepared questions for candidate to ask
@@ -299,7 +301,7 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [ ] Interviewer research when names available
 
 ### 8.3 Interview Debrief
-- [ ] `interview_debriefs` table (interview_id, went_well, went_poorly, questions_asked, answers_given, next_steps, overall_feeling, lessons_learned)
+- [x] `interview_debriefs` table (interview_id, went_well, went_poorly, questions_asked, answers_given, next_steps, overall_feeling, lessons_learned) — Migration 007
 - [ ] Structured capture after each interview
 - [ ] Pattern analysis across debriefs (what topics keep coming up, what answers work)
 
@@ -314,9 +316,9 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 
 ### 9.1 Contact Management
 - [x] contacts table + API + MCP tools
-- [ ] contacts.company_id FK to companies table (currently VARCHAR, not linked)
-- [ ] `outreach_messages` table (contact_id, application_id, channel: email/linkedin/phone, direction: sent/received, subject, body, sent_at, response_received, notes)
-- [ ] `referrals` table (contact_id, application_id, referral_date, status, notes) — track "contact A referred me to job B"
+- [x] contacts.company_id FK to companies table — Migration 007
+- [x] `outreach_messages` table (contact_id, application_id, channel: email/linkedin/phone, direction: sent/received, subject, body, sent_at, response_received, notes) — Migration 007
+- [x] `referrals` table (contact_id, application_id, referral_date, status, notes) — Migration 007
 - [ ] Follow-up reminders (last_contact + days since)
 - [ ] Gmail + LinkedIn correspondence integration
 - [ ] Network lookup: "do I know anyone at this company?" (network_check MCP tool exists, needs proper FK)

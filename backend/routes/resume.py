@@ -284,6 +284,47 @@ def get_resume_header():
     return jsonify(row or {"error": "No header data found"})
 
 
+@bp.route("/api/resume/header", methods=["PATCH"])
+def update_resume_header():
+    """Update resume header fields (upsert — creates if not exists)."""
+    data = request.get_json(force=True)
+    allowed = [
+        "full_name", "credentials", "location", "location_note",
+        "email", "phone", "linkedin_url", "website_url", "calendly_url",
+    ]
+    existing = db.query_one("SELECT id FROM resume_header LIMIT 1")
+    if existing:
+        sets, params = [], []
+        for key in allowed:
+            if key in data:
+                sets.append(f"{key} = %s")
+                params.append(data[key])
+        if not sets:
+            return jsonify({"error": "No valid fields to update"}), 400
+        params.append(existing["id"])
+        row = db.execute_returning(
+            f"UPDATE resume_header SET {', '.join(sets)} WHERE id = %s RETURNING *",
+            params,
+        )
+    else:
+        row = db.execute_returning(
+            """
+            INSERT INTO resume_header (full_name, credentials, location, location_note,
+                email, phone, linkedin_url, website_url, calendly_url)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING *
+            """,
+            (
+                data.get("full_name", ""), data.get("credentials"),
+                data.get("location"), data.get("location_note"),
+                data.get("email"), data.get("phone"),
+                data.get("linkedin_url"), data.get("website_url"),
+                data.get("calendly_url"),
+            ),
+        )
+    return jsonify(row), 200
+
+
 # ---------------------------------------------------------------------------
 # Education
 # ---------------------------------------------------------------------------
@@ -295,6 +336,60 @@ def get_education():
     return jsonify({"education": rows, "count": len(rows)})
 
 
+@bp.route("/api/education", methods=["POST"])
+def create_education():
+    """Add a new education entry."""
+    data = request.get_json(force=True)
+    if not data.get("degree") or not data.get("institution"):
+        return jsonify({"error": "degree and institution are required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO education (degree, field, institution, location, type, sort_order)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            data["degree"], data.get("field"), data["institution"],
+            data.get("location"), data.get("type", "degree"),
+            data.get("sort_order", 0),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/education/<int:edu_id>", methods=["PATCH"])
+def update_education(edu_id):
+    """Update an education entry."""
+    data = request.get_json(force=True)
+    allowed = ["degree", "field", "institution", "location", "type", "sort_order"]
+    sets, params = [], []
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(edu_id)
+    row = db.execute_returning(
+        f"UPDATE education SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/education/<int:edu_id>", methods=["DELETE"])
+def delete_education(edu_id):
+    """Delete an education entry."""
+    count = db.execute("DELETE FROM education WHERE id = %s", (edu_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": edu_id}), 200
+
+
 # ---------------------------------------------------------------------------
 # Certifications
 # ---------------------------------------------------------------------------
@@ -304,6 +399,56 @@ def get_certifications():
     """Get certification entries."""
     rows = db.query("SELECT * FROM certifications WHERE is_active = TRUE ORDER BY sort_order")
     return jsonify({"certifications": rows, "count": len(rows)})
+
+
+@bp.route("/api/certifications", methods=["POST"])
+def create_certification():
+    """Add a new certification."""
+    data = request.get_json(force=True)
+    if not data.get("name"):
+        return jsonify({"error": "name is required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO certifications (name, issuer, is_active, sort_order)
+        VALUES (%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (data["name"], data.get("issuer"), data.get("is_active", True), data.get("sort_order", 0)),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/certifications/<int:cert_id>", methods=["PATCH"])
+def update_certification(cert_id):
+    """Update a certification."""
+    data = request.get_json(force=True)
+    allowed = ["name", "issuer", "is_active", "sort_order"]
+    sets, params = [], []
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(cert_id)
+    row = db.execute_returning(
+        f"UPDATE certifications SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/certifications/<int:cert_id>", methods=["DELETE"])
+def delete_certification(cert_id):
+    """Delete a certification."""
+    count = db.execute("DELETE FROM certifications WHERE id = %s", (cert_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": cert_id}), 200
 
 
 # ---------------------------------------------------------------------------
