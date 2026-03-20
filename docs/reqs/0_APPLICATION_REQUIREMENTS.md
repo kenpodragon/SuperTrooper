@@ -164,7 +164,7 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [x] Full CRUD for skills, summary_variants — career.py
 - [x] Full CRUD for career_history (employer, title, dates, intro_text, career_links) — career.py
 - [x] Full CRUD for education, certifications, resume_header — resume.py
-- [ ] Resume upload + parse endpoint: POST .docx/.pdf -> auto-extract career_history + bullets (see 13.2)
+- [x] Resume upload + parse endpoint: POST /api/onboard/upload .docx/.pdf -> auto-extract career_history + bullets (see 13.2)
 - [ ] Bulk text import: POST raw text -> parse into structured bullets
 - [ ] Content audit: orphaned bullets not in any recipe, broken recipe references
 - [x] KB export: GET /api/kb/export (JSON of all bullets + career_history + skills + summaries)
@@ -448,20 +448,20 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 
 ### 13.1 User Setup & Candidate Profile
 - [ ] User / candidate table (multi-user, not hardcoded to one person)
-- [ ] Settings / preferences per user (default templates, search prefs, notification settings)
+- [x] Settings / preferences per user (settings table, CRUD routes, frontend settings page)
 - [ ] Candidate profile wizard (frontend): name, credentials, location, contact info, elevator pitch
 - [ ] Resume header auto-populated from profile
 - [ ] Target role preferences (titles, industries, locations, salary range, remote/hybrid/onsite)
 - [ ] Deal-breakers and non-negotiables capture
 
 ### 13.2 Knowledge Base Population
-- [ ] Resume upload + parse: .docx/.pdf -> extract career_history + bullets (auto-detect employers, dates, bullet points)
+- [x] Resume upload + parse: .docx/.pdf -> extract career_history + bullets (auto-detect employers, dates, bullet points)
 - [ ] LinkedIn profile import: parse exported CSV -> career_history (titles, dates, companies), connections -> contacts
 - [ ] Manual entry UI: add/edit career_history, bullets, skills, summary_variants directly
 - [ ] Bulk import from text: paste a resume or work history -> parse into structured data
-- [ ] Skills auto-extraction from bullets (detect technologies, frameworks, methodologies mentioned)
-- [ ] Deduplication: detect duplicate bullets or career entries during import
-- [ ] Existing ETL scripts available as reference implementation (load_knowledge_base.py, etc.)
+- [x] Skills auto-extraction from bullets (rule-based parser extracts skills)
+- [x] Deduplication: detect duplicate bullets or career entries during import (SequenceMatcher, configurable threshold)
+- [x] Existing ETL scripts available as reference implementation (load_knowledge_base.py, etc.)
 
 ### 13.3 External Integrations Setup
 - [ ] Gmail MCP setup guide: OAuth credentials, scope configuration, Claude Code .mcp.json config
@@ -478,7 +478,7 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [ ] Industry-specific voice presets (tech, finance, healthcare, etc.)
 
 ### 13.5 Template Setup
-- [ ] Upload your own .docx resume as a template (templatize_resume.py workflow)
+- [x] Upload your own .docx resume as a template (onboard endpoint: upload -> templatize -> recipe -> verify)
 - [ ] Template wizard (frontend): upload .docx -> auto-detect sections -> name slots -> save
 - [ ] Starter templates provided (generic formats for different role levels)
 - [ ] Template marketplace / sharing (future)
@@ -498,17 +498,17 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 ```
 
 ### 13.7 Documentation
-- [ ] Docker one-command setup (`docker compose up`)
-- [ ] README with architecture overview, setup instructions, quickstart
-- [ ] API reference (all endpoints with request/response examples)
-- [ ] MCP tool reference (all tools with parameters and examples)
+- [x] Docker one-command setup (`docker compose up`) — in SETUP.md
+- [x] README with architecture overview, setup instructions, quickstart — code/README.md
+- [x] API reference (all endpoints with request/response examples) — code/docs/API_REFERENCE.md (105 endpoints)
+- [x] MCP tool reference (all tools with parameters and examples) — code/docs/MCP_REFERENCE.md (42 tools)
 - [ ] Schema migration guide (how to add tables, run migrations)
 - [ ] Contributing guide
-- [ ] Troubleshooting guide (common issues: Docker, MCP connection, OAuth)
+- [x] Troubleshooting guide (common issues: Docker, MCP connection, OAuth) — code/docs/TROUBLESHOOTING.md
 
 ### 13.8 Claude Code Integration
-- [ ] CLAUDE.md template + SKILLS/ for other users
-- [ ] Installation guide for Claude Code + MCP setup
+- [x] CLAUDE.md template for other users — code/CLAUDE.md (operational agent instructions)
+- [x] Installation guide for Claude Code + MCP setup — in SETUP.md steps 3+5
 - [ ] Example SKILLS files (job-hunter workflow, resume tailoring workflow)
 - [ ] Guide: "How to customize CLAUDE.md for your job search"
 

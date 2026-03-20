@@ -66,3 +66,37 @@ def update_settings():
     if not row:
         return jsonify({"error": "Settings row not found after update"}), 500
     return jsonify(_serialize_row(row))
+
+
+@bp.route("/api/settings/test-ai", methods=["POST"])
+def test_ai_connection():
+    """Test the configured AI provider connection."""
+    from ai_providers import get_provider, list_providers
+
+    data = request.get_json() or {}
+    provider_name = data.get("provider")
+
+    if provider_name:
+        # Test specific provider
+        from ai_providers import PROVIDERS
+        if provider_name not in PROVIDERS:
+            return jsonify({"error": f"Unknown provider: {provider_name}"}), 400
+        provider = PROVIDERS[provider_name]()
+    else:
+        # Test configured provider
+        provider = get_provider()
+
+    if not provider:
+        return jsonify({
+            "status": "disabled",
+            "message": "AI is disabled or no provider configured.",
+            "providers": list_providers(),
+        })
+
+    health = provider.health_check()
+    return jsonify({
+        "status": "ok" if health.get("available") else "error",
+        "provider": provider.name,
+        "health": health,
+        "providers": list_providers(),
+    })

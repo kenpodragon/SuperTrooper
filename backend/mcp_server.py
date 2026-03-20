@@ -7,6 +7,7 @@ import sys
 import os
 import re
 from collections import Counter
+from pathlib import Path
 
 # Ensure the backend directory is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1733,6 +1734,157 @@ def update_header(full_name: str = "", credentials: str = "", email: str = "",
             params,
         )
     return row
+
+
+# ---------------------------------------------------------------------------
+# Document tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def mcp_read_docx(file_path: str) -> dict:
+    """Extract text from a .docx file.
+
+    Args:
+        file_path: Path to the .docx file.
+
+    Returns:
+        {"text": str, "paragraphs": int}
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+    from read_docx import read_full_text
+    text = read_full_text(file_path)
+    return {"text": text, "paragraphs": len([p for p in text.split("\n") if p.strip()])}
+
+
+@mcp.tool()
+def mcp_read_pdf(file_path: str, pages: str | None = None) -> dict:
+    """Extract text from a .pdf file.
+
+    Args:
+        file_path: Path to the .pdf file.
+        pages: Optional page range (e.g., "1-5"). Default reads all.
+
+    Returns:
+        {"text": str}
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+    from read_pdf import read_pdf_text
+    text = read_pdf_text(file_path, pages=pages)
+    return {"text": text}
+
+
+@mcp.tool()
+def mcp_templatize_resume(file_path: str, output_dir: str = "/tmp", layout: str = "auto") -> dict:
+    """Convert a .docx resume into a placeholder template.
+
+    Args:
+        file_path: Path to the .docx resume.
+        output_dir: Directory for output files. Defaults to /tmp.
+        layout: Template layout name. Default 'auto'.
+
+    Returns:
+        {"template_path": str, "map_path": str, "slots": int}
+    """
+    import json
+    sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+    from templatize_resume import templatize
+
+    stem = Path(file_path).stem
+    out_docx = os.path.join(output_dir, f"{stem}_placeholder.docx")
+    out_map = os.path.join(output_dir, f"{stem}_map.json")
+    templatize(file_path, out_docx, out_map, layout_name=layout)
+
+    with open(out_map) as f:
+        tmap = json.load(f)
+    return {"template_path": out_docx, "map_path": out_map, "slots": len(tmap)}
+
+
+@mcp.tool()
+def mcp_compare_docs(file_a: str, file_b: str) -> dict:
+    """Compare two .docx documents and return a match score + diff.
+
+    Args:
+        file_a: Path to first .docx document.
+        file_b: Path to second .docx document.
+
+    Returns:
+        {"match_percentage": float, "diff_count": int, "diff_text": str}
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+    from compare_docs import extract_paragraphs, compare_text
+
+    paras_a = extract_paragraphs(file_a)
+    paras_b = extract_paragraphs(file_b)
+    diff = compare_text(paras_a, paras_b)
+    total = max(len(paras_a), len(paras_b), 1)
+    matching = sum(1 for a, b in zip(paras_a, paras_b) if a.strip() == b.strip())
+    return {
+        "match_percentage": round((matching / total) * 100, 1),
+        "diff_count": len([l for l in diff.split("\n") if l.startswith("+") or l.startswith("-")]),
+        "diff_text": diff,
+    }
+
+
+@mcp.tool()
+def mcp_docx_to_pdf(file_path: str, output_path: str | None = None) -> dict:
+    """Convert a .docx file to .pdf.
+
+    Args:
+        file_path: Path to the .docx file.
+        output_path: Optional output path. Defaults to same name with .pdf extension.
+
+    Returns:
+        {"pdf_path": str}
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+    from docx_to_pdf import docx_to_pdf as _docx_to_pdf
+    pdf_path = _docx_to_pdf(file_path, output_path=output_path)
+    return {"pdf_path": pdf_path}
+
+
+@mcp.tool()
+def mcp_edit_docx(file_path: str, find_text: str, replace_text: str, output_path: str | None = None, replace_all: bool = False) -> dict:
+    """Find and replace text in a .docx file.
+
+    Args:
+        file_path: Path to the .docx file.
+        find_text: Text to find.
+        replace_text: Replacement text.
+        output_path: Optional output path. Defaults to overwriting original.
+        replace_all: Replace all occurrences. Default False.
+
+    Returns:
+        {"replacements": int}
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+    from edit_docx import find_replace
+    count = find_replace(file_path, find_text, replace_text, output_path=output_path, replace_all=replace_all)
+    return {"replacements": count}
+
+
+@mcp.tool()
+def onboard_resume(file_path: str) -> dict:
+    """Run the full onboarding pipeline on a resume file.
+
+    Parses resume into career data, creates template + recipe, verifies reconstruction.
+
+    Args:
+        file_path: Path to .docx or .pdf resume file.
+
+    Returns:
+        Full pipeline report with inserted row counts, template/recipe IDs, match score.
+    """
+    from pathlib import PurePath
+
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+
+    filename = PurePath(file_path).name
+    file_ext = PurePath(file_path).suffix.lower()
+
+    from routes.onboard import _process_file
+    return _process_file(filename, file_bytes, file_ext)
 
 
 # ---------------------------------------------------------------------------

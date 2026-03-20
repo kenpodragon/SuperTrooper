@@ -38,10 +38,14 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env or environment}
       FLASK_PORT: 8055
       FLASK_DEBUG: 0
+      AI_PROVIDER: ${AI_PROVIDER:-none}
     command: ["python", "app.py", "--mcp-port", "8056"]
     volumes:
       - ./backend:/app
       - ./utils:/app/utils
+      # AI CLI credentials (mount host config into container)
+      # Claude: uncomment if using Claude CLI
+      # - ${USERPROFILE:-.}/.claude:/root/.claude
 
   frontend:
     build: ./frontend
