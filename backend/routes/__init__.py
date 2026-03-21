@@ -14,6 +14,7 @@ from routes.interview_extras import bp as interview_extras_bp
 from routes.activity import bp as activity_bp
 from routes.settings import bp as settings_bp
 from routes.onboard import bp as onboard_bp
+from routes.notifications import bp as notifications_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -30,4 +31,5 @@ ALL_BLUEPRINTS = [
     activity_bp,
     settings_bp,
     onboard_bp,
+    notifications_bp,
 ]
