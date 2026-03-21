@@ -18,6 +18,7 @@ from routes.notifications import bp as notifications_bp
 from routes.fresh_jobs import bp as fresh_jobs_bp
 from routes.aging import bp as aging_bp
 from routes.crm import bp as crm_bp
+from routes.workflows import bp as workflows_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -38,4 +39,5 @@ ALL_BLUEPRINTS = [
     fresh_jobs_bp,
     aging_bp,
     crm_bp,
+    workflows_bp,
 ]
