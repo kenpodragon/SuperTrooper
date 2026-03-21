@@ -14,6 +14,7 @@ const nav = [
   { to: '/mock-interviews', label: 'Mock Interviews', icon: '🎤' },
   { to: '/networking', label: 'Networking', icon: '🤝' },
   { to: '/market', label: 'Market Intel', icon: '🌐' },
+  { to: '/linkedin', label: 'LinkedIn Hub', icon: '💼' },
   { to: '/settings', label: 'Settings', icon: '⚙️' },
 ];
 
