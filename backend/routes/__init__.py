@@ -20,6 +20,7 @@ from routes.aging import bp as aging_bp
 from routes.crm import bp as crm_bp
 from routes.workflows import bp as workflows_bp
 from routes.market_intelligence import bp as market_intelligence_bp
+from routes.batch import bp as batch_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -42,4 +43,5 @@ ALL_BLUEPRINTS = [
     crm_bp,
     workflows_bp,
     market_intelligence_bp,
+    batch_bp,
 ]
