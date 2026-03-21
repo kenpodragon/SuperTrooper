@@ -595,7 +595,7 @@ def create_voice_rule():
     return jsonify(row), 201
 
 
-@bp.route("/api/linkedin/voice-rules/<int:rule_id>", methods=["PUT"])
+@bp.route("/api/linkedin/voice-rules/<int:rule_id>", methods=["PUT", "PATCH"])
 def update_voice_rule(rule_id):
     """Update a voice rule."""
     data = request.get_json(force=True)
