@@ -211,3 +211,37 @@ export const gapAnalyses = {
 export const staleApps = {
   list: (days = 14) => api.get<Application[]>(`/applications/stale?days=${days}`),
 };
+
+export const freshJobs = {
+  list: (params = '') => api.get<any[]>(`/fresh-jobs${params}`),
+  triage: (id: number, action: string) => api.post<any>(`/fresh-jobs/${id}/triage`, { action }),
+  batchTriage: (ids: number[], action: string) => api.post<any>('/fresh-jobs/batch-triage', { job_ids: ids, action }),
+};
+
+export const notifications = {
+  list: (params = '') => api.get<any[]>(`/notifications${params}`),
+  markRead: (id: number) => api.patch<any>(`/notifications/${id}/read`, {}),
+  dismiss: (id: number) => api.del(`/notifications/${id}`),
+  markAllRead: () => api.patch<any>('/notifications/read-all', {}),
+};
+
+export const mockInterviews = {
+  list: (params = '') => api.get<any[]>(`/mock-interviews${params}`),
+  get: (id: number) => api.get<any>(`/mock-interviews/${id}`),
+  create: (data: any) => api.post<any>('/mock-interviews', data),
+  answer: (id: number, questionId: number, answer: string) =>
+    api.patch<any>(`/mock-interviews/${id}/answer`, { question_id: questionId, user_answer: answer }),
+  evaluate: (id: number) => api.patch<any>(`/mock-interviews/${id}/evaluate`, {}),
+};
+
+export const crm = {
+  relationships: (params = '') => api.get<any>(`/crm/relationships${params}`),
+  health: (params = '') => api.get<any>(`/crm/health${params}`),
+  tasks: (params = '') => api.get<any[]>(`/crm/networking-tasks${params}`),
+  logTouchpoint: (data: any) => api.post<any>('/crm/touchpoints', data),
+};
+
+export const marketIntel = {
+  list: (params = '') => api.get<any[]>(`/market-intelligence${params}`),
+  summary: () => api.get<any>('/market-intelligence/summary'),
+};

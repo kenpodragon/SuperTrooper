@@ -9,6 +9,12 @@ import Contacts from './pages/contacts/Contacts';
 import Interviews from './pages/interviews/Interviews';
 import Companies from './pages/settings/Companies';
 import Settings from './pages/settings/Settings';
+import FreshJobs from './pages/fresh-jobs/FreshJobs';
+import Notifications from './pages/notifications/Notifications';
+import Analytics from './pages/analytics/Analytics';
+import MockInterviews from './pages/mock-interviews/MockInterviews';
+import Networking from './pages/networking/Networking';
+import MarketIntel from './pages/market/MarketIntel';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -28,6 +34,12 @@ export default function App() {
             <Route path="interviews" element={<Interviews />} />
             <Route path="companies" element={<Companies />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="fresh-jobs" element={<FreshJobs />} />
+            <Route path="notifications" element={<Notifications />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="mock-interviews" element={<MockInterviews />} />
+            <Route path="networking" element={<Networking />} />
+            <Route path="market" element={<MarketIntel />} />
           </Route>
         </Routes>
       </BrowserRouter>

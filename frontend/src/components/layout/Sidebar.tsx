@@ -8,6 +8,12 @@ const nav = [
   { to: '/contacts', label: 'Contacts', icon: '👥' },
   { to: '/interviews', label: 'Interviews', icon: '🎯' },
   { to: '/companies', label: 'Companies', icon: '🏢' },
+  { to: '/fresh-jobs', label: 'Fresh Jobs', icon: '📥' },
+  { to: '/notifications', label: 'Notifications', icon: '🔔' },
+  { to: '/analytics', label: 'Analytics', icon: '📈' },
+  { to: '/mock-interviews', label: 'Mock Interviews', icon: '🎤' },
+  { to: '/networking', label: 'Networking', icon: '🤝' },
+  { to: '/market', label: 'Market Intel', icon: '🌐' },
   { to: '/settings', label: 'Settings', icon: '⚙️' },
 ];
 
