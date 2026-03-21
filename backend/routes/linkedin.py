@@ -179,7 +179,7 @@ def create_post():
     return jsonify(row), 201
 
 
-@bp.route("/api/linkedin/posts/<int:post_id>", methods=["PUT"])
+@bp.route("/api/linkedin/posts/<int:post_id>", methods=["PUT", "PATCH"])
 def update_post(post_id):
     """Update an existing post.
 
@@ -493,7 +493,7 @@ def create_theme_pillar():
     return jsonify(row), 201
 
 
-@bp.route("/api/linkedin/theme-pillars/<int:pillar_id>", methods=["PUT"])
+@bp.route("/api/linkedin/theme-pillars/<int:pillar_id>", methods=["PUT", "PATCH"])
 def update_theme_pillar(pillar_id):
     """Update a theme pillar."""
     data = request.get_json(force=True)
