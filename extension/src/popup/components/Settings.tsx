@@ -7,15 +7,23 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    sendToBackground(MSG.GET_SETTINGS).then((settings: any) => {
-      if (settings?.apiUrl) setApiUrl(settings.apiUrl);
-    });
+    sendToBackground(MSG.GET_SETTINGS)
+      .then((settings: any) => {
+        if (settings?.apiUrl) setApiUrl(settings.apiUrl);
+      })
+      .catch((err) => {
+        console.warn("[SuperTroopers] Failed to load settings:", err);
+      });
   }, []);
 
   const save = async () => {
-    await sendToBackground(MSG.SAVE_SETTINGS, { apiUrl });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    try {
+      await sendToBackground(MSG.SAVE_SETTINGS, { apiUrl });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      console.warn("[SuperTroopers] Failed to save settings:", err);
+    }
   };
 
   const features = [

@@ -82,13 +82,19 @@ export default function Networking() {
           <h2 className="text-base font-semibold text-gray-900 mb-3">Log a Touchpoint</h2>
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Contact ID</label>
-              <input
-                type="number"
+              <label className="block text-xs text-gray-500 mb-1">Contact</label>
+              <select
                 className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
                 value={touchpointForm.contact_id ?? ''}
                 onChange={e => setTouchpointForm(p => ({ ...p, contact_id: Number(e.target.value) || null }))}
-              />
+              >
+                <option value="">Select a contact...</option>
+                {relData.map((r: any) => (
+                  <option key={r.contact_id ?? r.id} value={r.contact_id ?? r.id}>
+                    {r.name}{r.company ? ` — ${r.company}` : ''}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Type</label>

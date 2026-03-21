@@ -45,7 +45,7 @@ export default function MockInterviews() {
 
   const submitAnswer = useMutation({
     mutationFn: ({ id, questionId, answer }: { id: number; questionId: number; answer: string }) =>
-      api.patch<any>(`/mock-interviews/${id}/answer`, { question_id: questionId, answer }),
+      api.patch<any>(`/mock-interviews/${id}/answer`, { question_id: questionId, user_answer: answer }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['mock-interview', selectedId] }),
   });
 

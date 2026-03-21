@@ -29,6 +29,8 @@ export async function runHealthCheck() {
   chrome.action.setBadgeBackgroundColor({ color });
   if (!health.connected) {
     chrome.action.setBadgeText({ text: "!" });
+  } else {
+    chrome.action.setBadgeText({ text: "" });
   }
 }
 

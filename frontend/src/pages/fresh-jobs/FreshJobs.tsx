@@ -44,7 +44,7 @@ export default function FreshJobs() {
 
   const batchTriage = useMutation({
     mutationFn: ({ ids, action }: { ids: number[]; action: string }) =>
-      api.post<any>('/fresh-jobs/batch-triage', { ids, action }),
+      api.post<any>('/fresh-jobs/batch-triage', { job_ids: ids, action }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['fresh-jobs'] });
       qc.invalidateQueries({ queryKey: ['fresh-jobs-stats'] });

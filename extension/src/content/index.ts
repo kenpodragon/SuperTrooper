@@ -45,11 +45,4 @@ const observer = new MutationObserver(() => {
 });
 observer.observe(document.body, { childList: true, subtree: true });
 
-// URL polling fallback for history.replaceState (checks every 1s)
-setInterval(() => {
-  if (window.location.href !== lastUrl) {
-    onUrlChange();
-  }
-}, 1000);
-
 init();

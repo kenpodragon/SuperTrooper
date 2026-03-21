@@ -8,9 +8,15 @@ export function useHealth() {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const result = await sendToBackground<HealthStatus>(MSG.HEALTH_CHECK);
-    setHealth(result);
-    setLoading(false);
+    try {
+      const result = await sendToBackground<HealthStatus>(MSG.HEALTH_CHECK);
+      setHealth(result);
+    } catch (err) {
+      console.warn("[SuperTroopers] Health check failed:", err);
+      setHealth({ connected: false, version: "", services: {} } as HealthStatus);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -23,10 +29,17 @@ export function usePipeline() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    sendToBackground<Record<string, number>>(MSG.GET_PIPELINE).then((data) => {
-      setPipeline(data);
-      setLoading(false);
-    });
+    sendToBackground<Record<string, number>>(MSG.GET_PIPELINE)
+      .then((data) => {
+        setPipeline(data);
+      })
+      .catch((err) => {
+        console.warn("[SuperTroopers] Pipeline fetch failed:", err);
+        setPipeline({});
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }, []);
 
   return { pipeline, loading };
