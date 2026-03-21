@@ -2914,6 +2914,88 @@ def evaluate_mock_interview(interview_id: int, answers: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# LinkedIn Profile & Brand (S11)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def run_profile_audit(audit_type: str = "full", target_jd_ids: list | None = None) -> dict:
+    """Create a LinkedIn profile audit record with section scores and recommendations.
+
+    Args:
+        audit_type: full, headline, about, experience, skills, featured
+        target_jd_ids: optional list of saved_job IDs for match scoring
+    """
+    from mcp_tools_linkedin import run_profile_audit as _impl
+    return _impl(audit_type, target_jd_ids)
+
+
+@mcp.tool()
+def generate_headline_variants(target_role: str | None = None, count: int = 3) -> dict:
+    """Generate LinkedIn headline variant suggestions using candidate profile data.
+
+    Args:
+        target_role: optional target role to optimize headlines for
+        count: number of variants to generate (default 3)
+    """
+    from mcp_tools_linkedin import generate_headline_variants as _impl
+    return _impl(target_role, count)
+
+
+@mcp.tool()
+def generate_linkedin_post(topic: str, theme_pillar_id: int | None = None, style: str = "text") -> dict:
+    """Create a draft LinkedIn post record.
+
+    Args:
+        topic: the topic or idea for the post
+        theme_pillar_id: optional theme pillar ID to associate with
+        style: post type — text, article, poll, carousel, video, document
+    """
+    from mcp_tools_linkedin import generate_linkedin_post as _impl
+    return _impl(topic, theme_pillar_id, style)
+
+
+@mcp.tool()
+def check_linkedin_voice(text: str) -> dict:
+    """Validate text against LinkedIn voice rules. Returns violations and suggestions.
+
+    Args:
+        text: the text to check against active LinkedIn voice rules
+    """
+    from mcp_tools_linkedin import check_linkedin_voice as _impl
+    return _impl(text)
+
+
+@mcp.tool()
+def run_skills_audit(target_jd_ids: list | None = None) -> dict:
+    """Create a LinkedIn skills audit comparing DB skills to target JDs.
+
+    Args:
+        target_jd_ids: optional list of saved_job IDs to compare against
+    """
+    from mcp_tools_linkedin import run_skills_audit as _impl
+    return _impl(target_jd_ids)
+
+
+@mcp.tool()
+def get_linkedin_analytics(days: int = 30) -> dict:
+    """Return LinkedIn content performance analytics over specified period.
+
+    Args:
+        days: lookback window in days (default 30)
+    """
+    from mcp_tools_linkedin import get_linkedin_analytics as _impl
+    return _impl(days)
+
+
+@mcp.tool()
+def get_linkedin_profile_scorecard() -> dict:
+    """Return the latest profile audit as a scorecard summary with section grades and top recommendations."""
+    from mcp_tools_linkedin import get_linkedin_profile_scorecard as _impl
+    return _impl()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
