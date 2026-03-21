@@ -16,6 +16,7 @@ export const MSG = {
   SAVE_SETTINGS: "SAVE_SETTINGS",
   SETTINGS_DATA: "SETTINGS_DATA",
   GET_SAVED_JOBS: "GET_SAVED_JOBS",
+  GET_MCP_STATUS: "GET_MCP_STATUS",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -63,6 +64,11 @@ export interface GapAnalysisPayload {
   job_url: string;
   force_refresh?: boolean;
   saved_job_id?: number;
+  mode?: "python" | "ai" | "auto";
+}
+
+export interface McpStatusResponse {
+  available: boolean;
 }
 
 export interface GapAnalysisResponse {

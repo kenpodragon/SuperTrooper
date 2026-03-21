@@ -1,12 +1,11 @@
 import { detectPage, extractJobData } from "./detector";
 import { injectSaveButton } from "./saveButton";
-import { injectScoreOverlay, type ScoreOverlayHandle } from "./scoreOverlay";
+import { injectScoreBadge } from "./scoreBadge";
 import { MSG, sendToBackground } from "@shared/messages";
 import type { JobExtraction, GapAnalysisResult } from "@shared/types";
-import type { GapAnalysisResponse } from "@shared/messages";
+import type { GapAnalysisResponse, McpStatusResponse } from "@shared/messages";
 import siteConfig from "@config/siteConfig.json";
 
-let currentOverlay: ScoreOverlayHandle | null = null;
 let lastProcessedUrl: string | null = null;
 
 export async function processJobPage(): Promise<void> {
@@ -18,12 +17,9 @@ export async function processJobPage(): Promise<void> {
   if (lastProcessedUrl === window.location.href) return;
   lastProcessedUrl = window.location.href;
 
-  // Clean up previous overlay
-  currentOverlay?.remove();
-  currentOverlay = null;
-
-  // Also remove any old save button
+  // Clean up previous injections
   document.getElementById("st-save-btn")?.remove();
+  document.getElementById("st-score-badge")?.remove();
 
   // Extract job data from DOM — retry with delay for SPA content loading
   const rawData = await waitForJobData(context.board);
@@ -51,33 +47,59 @@ export async function processJobPage(): Promise<void> {
     injectSaveButton(anchor, job);
   }
 
-  // Run gap analysis if we have a description
+  // Wait for description to load (may arrive after title on SPA pages)
+  if (!job.description || job.description.length <= 50) {
+    const desc = await waitForDescription(context.board, 10, 600);
+    if (desc) {
+      job.description = desc;
+    }
+  }
+
+  // Run Python keyword match (free/fast) if we have a description
   if (job.description && job.description.length > 50) {
     try {
-      const resp = await sendToBackground<GapAnalysisResponse>(MSG.RUN_GAP_ANALYSIS, {
+      // Check cache first (might have an AI result from previous deep analysis)
+      const cacheResp = await sendToBackground<GapAnalysisResponse & { error?: string }>(MSG.RUN_GAP_ANALYSIS, {
         jd_text: job.description,
         job_url: job.url,
+        mode: "python",
       });
-      if (resp?.result) {
-        currentOverlay = injectScoreOverlay(resp.result);
-        // Wire refresh handler
-        currentOverlay.onRefresh(async () => {
-          try {
-            const refreshResp = await sendToBackground<GapAnalysisResponse>(MSG.RUN_GAP_ANALYSIS, {
-              jd_text: job.description,
-              job_url: job.url,
-              force_refresh: true,
-            });
-            if (refreshResp?.result && currentOverlay) {
-              currentOverlay.update(refreshResp.result);
+
+      if ((cacheResp as { error?: string })?.error) {
+        console.warn("[SuperTroopers] Gap analysis error:", (cacheResp as { error: string }).error);
+      }
+
+      if (cacheResp?.result) {
+        // Check if MCP is available for deep analysis button
+        let mcpAvailable = false;
+        try {
+          const mcpResp = await sendToBackground<McpStatusResponse>(MSG.GET_MCP_STATUS);
+          mcpAvailable = !!mcpResp?.available;
+        } catch { /* default false */ }
+
+        const scoreAnchor = document.getElementById("st-save-btn");
+        if (scoreAnchor) {
+          injectScoreBadge(scoreAnchor, cacheResp.result, mcpAvailable, async () => {
+            // Deep analysis callback
+            try {
+              const aiResp = await sendToBackground<GapAnalysisResponse & { mcp_failed?: boolean }>(
+                MSG.RUN_GAP_ANALYSIS,
+                {
+                  jd_text: job.description,
+                  job_url: job.url,
+                  mode: "ai",
+                  force_refresh: true,
+                }
+              );
+              return aiResp?.result || null;
+            } catch {
+              return null;
             }
-          } catch (e) {
-            console.warn("[SuperTroopers] Refresh failed:", e);
-          }
-        });
+          });
+        }
       }
     } catch (e) {
-      // Backend offline — no score overlay, button still works when online
+      // Backend offline — no score, button still works when online
       console.warn("[SuperTroopers] Gap analysis failed:", e);
     }
   }
@@ -93,6 +115,24 @@ async function waitForJobData(board: string, maxRetries = 8, delayMs = 500): Pro
     console.log(`[SuperTroopers] Waiting for DOM... attempt ${i + 1}/${maxRetries}`);
     await new Promise((r) => setTimeout(r, delayMs));
   }
+  return null;
+}
+
+async function waitForDescription(board: string, maxRetries = 10, delayMs = 600): Promise<string | null> {
+  const config = (siteConfig.boards as Record<string, { extractors: Record<string, { selector: string }> }>)[board];
+  const descSelector = config?.extractors?.description?.selector;
+  if (!descSelector) return null;
+
+  for (let i = 0; i < maxRetries; i++) {
+    const el = document.querySelector(descSelector);
+    const text = el?.textContent?.trim() || "";
+    if (text.length > 50) {
+      console.log(`[SuperTroopers] Description found on attempt ${i + 1} (${text.length} chars)`);
+      return text;
+    }
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  console.log("[SuperTroopers] Description not found after retries");
   return null;
 }
 

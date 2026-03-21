@@ -142,17 +142,31 @@ def gap_analysis():
     """Accept JD text, analyze fit using AI (if available) or rule-based fallback."""
     data = request.get_json(force=True)
     jd_text = data.get("jd_text", "")
+    mode = data.get("mode", "auto")  # "python", "ai", or "auto"
     if not jd_text:
         return jsonify({"error": "jd_text is required"}), 400
 
-    from ai_providers.router import route_inference
+    context = {"jd_text": jd_text}
 
-    result = route_inference(
-        task="gap_analysis",
-        context={"jd_text": jd_text},
-        python_fallback=_python_gap_analysis,
-        ai_handler=_ai_gap_analysis,
-    )
+    if mode == "python":
+        result = _python_gap_analysis(context)
+        result["analysis_mode"] = "rule_based"
+    elif mode == "ai":
+        from ai_providers.router import route_inference
+        result = route_inference(
+            task="gap_analysis",
+            context=context,
+            python_fallback=_python_gap_analysis,
+            ai_handler=_ai_gap_analysis,
+        )
+    else:  # auto — existing behavior
+        from ai_providers.router import route_inference
+        result = route_inference(
+            task="gap_analysis",
+            context=context,
+            python_fallback=_python_gap_analysis,
+            ai_handler=_ai_gap_analysis,
+        )
     return jsonify(result), 200
 
 

@@ -90,8 +90,8 @@ export async function getSavedJobs(): Promise<SavedJob[]> {
 
 // --- Gap Analysis ---
 
-export async function runGapAnalysis(jdText: string): Promise<GapAnalysisResult> {
-  const response = await apiPost<Record<string, unknown>>('/api/gap-analysis', { jd_text: jdText });
+export async function runGapAnalysis(jdText: string, mode: "python" | "ai" | "auto" = "auto"): Promise<GapAnalysisResult> {
+  const response = await apiPost<Record<string, unknown>>('/api/gap-analysis', { jd_text: jdText, mode });
   // Normalize the backend response to our GapAnalysisResult shape
   return {
     fit_score: (response.fit_score ?? response.coverage_pct ?? 0) as number,

@@ -3,6 +3,7 @@ import type { SaveJobPayload, GapAnalysisPayload, CheckJobUrlPayload } from "@sh
 import { checkHealth, getPipelineSummary, saveJob, checkJobUrl, getSavedJobs, runGapAnalysis, persistGapAnalysis } from "./api";
 import { cacheGet } from "./cache";
 import { getCachedGap, setCachedGap } from "./gapCache";
+import { isMcpAvailable, disableMcp } from "./mcpState";
 
 const KNOWN_TYPES = new Set(Object.values(MSG));
 
@@ -13,7 +14,12 @@ export function handleMessage(
 ): boolean {
   // Ignore messages from other extensions or unknown sources
   if (!message?.type || !KNOWN_TYPES.has(message.type)) return false;
-  handleAsync(message).then(sendResponse);
+  handleAsync(message)
+    .then(sendResponse)
+    .catch((e) => {
+      console.error(`[SuperTroopers] Handler error for ${message.type}:`, e);
+      sendResponse({ error: (e as Error).message || "Unknown error" });
+    });
   return true;
 }
 
@@ -64,24 +70,48 @@ async function handleAsync(message: Message): Promise<unknown> {
     }
 
     case MSG.RUN_GAP_ANALYSIS: {
-      const { jd_text, job_url, force_refresh, saved_job_id } = message.data as GapAnalysisPayload;
+      const { jd_text, job_url, force_refresh, saved_job_id, mode } = message.data as GapAnalysisPayload;
+      const requestedMode = mode || "python";
       // Check cache unless force refresh
       if (!force_refresh) {
         const cached = await getCachedGap(job_url);
         if (cached) {
-          return { result: cached, from_cache: true };
+          // If requesting AI but cache is rule_based, skip cache
+          if (requestedMode === "ai" && cached.analysis_mode === "rule_based") {
+            // fall through to run AI
+          } else {
+            return { result: cached, from_cache: true };
+          }
         }
       }
       // Run analysis via backend
-      const result = await runGapAnalysis(jd_text);
-      result.job_url = job_url;
-      // Cache it
-      await setCachedGap(job_url, result);
-      // If linked to a saved job, persist to backend
-      if (saved_job_id) {
-        try { await persistGapAnalysis(saved_job_id, result); } catch { /* non-critical */ }
+      try {
+        const result = await runGapAnalysis(jd_text, requestedMode);
+        result.job_url = job_url;
+        // Cache it
+        await setCachedGap(job_url, result);
+        // If linked to a saved job, persist to backend
+        if (saved_job_id) {
+          try { await persistGapAnalysis(saved_job_id, result); } catch { /* non-critical */ }
+        }
+        return { result, from_cache: false };
+      } catch (e) {
+        // If AI mode failed, disable MCP for session and fall back to Python
+        if (requestedMode === "ai") {
+          disableMcp();
+          try {
+            const fallback = await runGapAnalysis(jd_text, "python");
+            fallback.job_url = job_url;
+            await setCachedGap(job_url, fallback);
+            return { result: fallback, from_cache: false, mcp_failed: true };
+          } catch { /* both failed */ }
+        }
+        throw e;
       }
-      return { result, from_cache: false };
+    }
+
+    case MSG.GET_MCP_STATUS: {
+      return { available: isMcpAvailable() };
     }
 
     case MSG.CHECK_JOB_URL: {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import StatusBar from "./components/StatusBar";
 import Dashboard from "./components/Dashboard";
 import Settings from "./components/Settings";
@@ -8,6 +8,13 @@ type Tab = "dashboard" | "saved" | "network" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
+  const [mcpAvailable, setMcpAvailable] = useState(false);
+
+  useEffect(() => {
+    chrome.runtime.sendMessage({ type: "GET_MCP_STATUS" }).then((resp) => {
+      if (resp?.available) setMcpAvailable(true);
+    }).catch(() => {});
+  }, []);
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "dashboard", label: "Dashboard" },
@@ -18,10 +25,16 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-full bg-st-bg">
-      <div className="px-3 py-2 bg-st-surface border-b border-st-border">
+      <div className="px-3 py-2 bg-st-surface border-b border-st-border flex items-center justify-between">
         <h1 className="text-sm font-bold text-st-green tracking-widest font-mono">
           SUPERTROOPERS
         </h1>
+        <span
+          title={mcpAvailable ? "AI analysis available" : "AI analysis unavailable"}
+          className={`text-xs font-mono ${mcpAvailable ? "text-st-green" : "text-st-muted opacity-40"}`}
+        >
+          &#x2317;
+        </span>
       </div>
 
       <StatusBar />

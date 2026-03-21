@@ -61,6 +61,7 @@ export default defineConfig(({ mode }) => {
 
   // Default: popup SPA + static assets
   return {
+    base: "./",
     plugins: [
       react(),
       viteStaticCopy({

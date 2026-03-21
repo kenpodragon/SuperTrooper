@@ -41,6 +41,24 @@ export function extractJobData(board: string): Record<string, string> | null {
 
   const data: Record<string, string> = {};
   for (const [field, ext] of Object.entries(config.extractors)) {
+    // LinkedIn location: find the first tvm__text span with actual location text (not "·" separators)
+    if (board === "linkedin" && field === "location") {
+      const spans = (scopeRoot as Element).querySelectorAll?.("span.tvm__text.tvm__text--low-emphasis") ||
+                    document.querySelectorAll("span.tvm__text.tvm__text--low-emphasis");
+      for (const span of Array.from(spans)) {
+        const txt = (span as HTMLElement).textContent?.trim() || "";
+        if (txt && txt !== "·" && txt.length > 1) {
+          data[field] = txt;
+          console.log(`[SuperTroopers] Extracted ${field}: ${txt.substring(0, 60)}`);
+          break;
+        }
+      }
+      if (!data[field]) {
+        console.log(`[SuperTroopers] Missing ${field}: no tvm__text span with location text`);
+      }
+      continue;
+    }
+
     const el = (scopeRoot as Element).querySelector?.(ext.selector) || document.querySelector(ext.selector);
     if (el) {
       const value = (el as HTMLElement).textContent?.trim() || "";
@@ -53,7 +71,20 @@ export function extractJobData(board: string): Record<string, string> | null {
     }
   }
 
-  data.url = window.location.href;
+  // For LinkedIn, use canonical job URL instead of session-specific collections URL
+  if (board === "linkedin") {
+    const params = new URLSearchParams(window.location.search);
+    const jobId = params.get("currentJobId");
+    if (jobId) {
+      data.url = `https://www.linkedin.com/jobs/view/${jobId}/`;
+    } else {
+      // Already on /jobs/view/ path — use current URL stripped of tracking params
+      const match = window.location.pathname.match(/\/jobs\/view\/(\d+)/);
+      data.url = match ? `https://www.linkedin.com/jobs/view/${match[1]}/` : window.location.href;
+    }
+  } else {
+    data.url = window.location.href;
+  }
   data.source = board;
 
   console.log(`[SuperTroopers] Extraction result: ${Object.keys(data).length} fields (need >2)`);

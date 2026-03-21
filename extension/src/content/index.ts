@@ -14,7 +14,7 @@ function init() {
 
   sendToBackground(MSG.PAGE_CONTEXT, currentContext);
 
-  // Process job page (inject save button + gap analysis overlay)
+  // Process job page (inject save button + inline score badge)
   if (currentContext.type === "job_listing") {
     processJobPage();
   }
@@ -26,15 +26,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+// Detect SPA navigation via MutationObserver + URL polling fallback
+// LinkedIn uses history.replaceState which doesn't always trigger DOM mutations
 let lastUrl = window.location.href;
+
+function onUrlChange() {
+  lastUrl = window.location.href;
+  console.log(`[SuperTroopers] SPA navigation detected: ${lastUrl}`);
+  resetProcessedUrl();
+  init();
+}
+
+// MutationObserver catches most SPA navigations
 const observer = new MutationObserver(() => {
   if (window.location.href !== lastUrl) {
-    lastUrl = window.location.href;
-    console.log(`[SuperTroopers] SPA navigation detected: ${lastUrl}`);
-    resetProcessedUrl();
-    init();
+    onUrlChange();
   }
 });
 observer.observe(document.body, { childList: true, subtree: true });
+
+// URL polling fallback for history.replaceState (checks every 1s)
+setInterval(() => {
+  if (window.location.href !== lastUrl) {
+    onUrlChange();
+  }
+}, 1000);
 
 init();
