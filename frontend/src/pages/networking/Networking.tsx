@@ -1,0 +1,181 @@
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { api } from '../../api/client';
+
+const STAGES = ['cold', 'warm', 'hot', 'champion', 'dormant'];
+
+const STAGE_COLORS: Record<string, string> = {
+  cold: 'bg-gray-100',
+  warm: 'bg-yellow-50',
+  hot: 'bg-orange-50',
+  champion: 'bg-green-50',
+  dormant: 'bg-gray-50',
+};
+
+function HealthDot({ score }: { score?: number }) {
+  if (score == null) return null;
+  const color = score >= 70 ? 'bg-green-500' : score >= 40 ? 'bg-yellow-500' : 'bg-red-400';
+  return (
+    <span title={`Health: ${score}`} className={`inline-block w-2.5 h-2.5 rounded-full ${color}`} />
+  );
+}
+
+export default function Networking() {
+  const qc = useQueryClient();
+  const [touchpointForm, setTouchpointForm] = useState<{
+    contact_id: number | null; note: string; type: string;
+  }>({ contact_id: null, note: '', type: 'email' });
+  const [showTouchpoint, setShowTouchpoint] = useState(false);
+
+  const relationships = useQuery({
+    queryKey: ['crm-relationships'],
+    queryFn: () => api.get<any[]>('/crm/relationships'),
+  });
+
+  const health = useQuery({
+    queryKey: ['crm-health'],
+    queryFn: () => api.get<any[]>('/crm/health'),
+  });
+
+  const tasks = useQuery({
+    queryKey: ['networking-tasks'],
+    queryFn: () => api.get<any[]>('/crm/networking-tasks'),
+  });
+
+  const logTouchpoint = useMutation({
+    mutationFn: (data: typeof touchpointForm) => api.post<any>('/crm/touchpoints', data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-relationships'] });
+      qc.invalidateQueries({ queryKey: ['crm-health'] });
+      qc.invalidateQueries({ queryKey: ['networking-tasks'] });
+      setShowTouchpoint(false);
+      setTouchpointForm({ contact_id: null, note: '', type: 'email' });
+    },
+  });
+
+  const relData = relationships.data ?? [];
+  const healthMap: Record<number, number> = {};
+  (health.data ?? []).forEach((h: any) => { healthMap[h.contact_id] = h.health_score; });
+
+  const byStage: Record<string, any[]> = {};
+  STAGES.forEach(s => { byStage[s] = []; });
+  relData.forEach((r: any) => {
+    const stage = r.stage ?? 'cold';
+    if (byStage[stage]) byStage[stage].push(r);
+    else byStage['cold'].push(r);
+  });
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Networking Hub</h1>
+        <button
+          onClick={() => setShowTouchpoint(true)}
+          className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700"
+        >
+          + Log Touchpoint
+        </button>
+      </div>
+
+      {showTouchpoint && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+          <h2 className="text-base font-semibold text-gray-900 mb-3">Log a Touchpoint</h2>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Contact ID</label>
+              <input
+                type="number"
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={touchpointForm.contact_id ?? ''}
+                onChange={e => setTouchpointForm(p => ({ ...p, contact_id: Number(e.target.value) || null }))}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Type</label>
+              <select
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none"
+                value={touchpointForm.type}
+                onChange={e => setTouchpointForm(p => ({ ...p, type: e.target.value }))}
+              >
+                {['email', 'linkedin', 'call', 'meeting', 'coffee', 'referral'].map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Note</label>
+              <input
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={touchpointForm.note}
+                onChange={e => setTouchpointForm(p => ({ ...p, note: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button
+              onClick={() => logTouchpoint.mutate(touchpointForm)}
+              disabled={logTouchpoint.isPending || !touchpointForm.contact_id}
+              className="px-3 py-1.5 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+            >
+              {logTouchpoint.isPending ? 'Saving...' : 'Save'}
+            </button>
+            <button onClick={() => setShowTouchpoint(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Stage columns */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+        {STAGES.map(stage => (
+          <div key={stage} className={`rounded-lg border border-gray-200 p-3 ${STAGE_COLORS[stage]}`}>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide capitalize">{stage}</h3>
+              <span className="text-xs text-gray-500">{byStage[stage].length}</span>
+            </div>
+            {relationships.isLoading && <p className="text-xs text-gray-400">Loading...</p>}
+            {byStage[stage].map((r: any) => (
+              <div key={r.id} className="bg-white rounded border border-gray-100 p-2 mb-2 last:mb-0">
+                <div className="flex items-center gap-1.5">
+                  <HealthDot score={healthMap[r.contact_id ?? r.id]} />
+                  <p className="text-xs font-medium text-gray-800 truncate">{r.name}</p>
+                </div>
+                <p className="text-xs text-gray-500 truncate">{r.company}</p>
+                {r.last_touchpoint && (
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {new Date(r.last_touchpoint).toLocaleDateString()}
+                  </p>
+                )}
+              </div>
+            ))}
+            {!relationships.isLoading && byStage[stage].length === 0 && (
+              <p className="text-xs text-gray-400 italic">None</p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Networking Tasks */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <h2 className="text-lg font-semibold text-gray-900 mb-3">Upcoming Networking Tasks</h2>
+        {tasks.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+        {!tasks.isLoading && (tasks.data ?? []).length === 0 && (
+          <p className="text-sm text-gray-400">No networking tasks due.</p>
+        )}
+        {(tasks.data ?? []).map((t: any) => (
+          <div key={t.id} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
+            <div>
+              <p className="text-sm font-medium text-gray-800">{t.name}</p>
+              <p className="text-xs text-gray-500">{t.company} &mdash; {t.task_type}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-gray-500">{t.due_date ? new Date(t.due_date).toLocaleDateString() : 'No date'}</p>
+              <p className="text-xs text-gray-400 capitalize">{t.priority}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
