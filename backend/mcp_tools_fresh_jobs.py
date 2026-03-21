@@ -72,10 +72,12 @@ def triage_job(job_id: int, action: str, notes: str | None = None) -> dict:
         return {"error": f"Fresh job {job_id} not found"}
 
     if action == "save":
+        if job.get("saved_job_id"):
+            return {"error": "Already saved", "saved_job_id": job["saved_job_id"]}
         saved = db.execute_returning(
             """
-            INSERT INTO saved_jobs (title, company, url, location, salary_range, jd_text, notes, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'saved')
+            INSERT INTO saved_jobs (title, company, url, location, salary_range, jd_text, notes, source, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'saved')
             RETURNING id, title, company
             """,
             (
@@ -86,6 +88,7 @@ def triage_job(job_id: int, action: str, notes: str | None = None) -> dict:
                 job.get("salary_range"),
                 job.get("jd_full") or job.get("jd_snippet"),
                 notes,
+                job.get("source_type"),
             ),
         )
         saved_job_id = saved["id"]
@@ -145,10 +148,13 @@ def batch_triage(actions: str) -> dict:
             continue
 
         if action == "save":
+            if job.get("saved_job_id"):
+                results.append({"id": job_id, "error": "already saved", "saved_job_id": job["saved_job_id"]})
+                continue
             saved = db.execute_returning(
                 """
-                INSERT INTO saved_jobs (title, company, url, location, salary_range, jd_text, status)
-                VALUES (%s, %s, %s, %s, %s, %s, 'saved')
+                INSERT INTO saved_jobs (title, company, url, location, salary_range, jd_text, source, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'saved')
                 RETURNING id
                 """,
                 (
@@ -158,6 +164,7 @@ def batch_triage(actions: str) -> dict:
                     job.get("location"),
                     job.get("salary_range"),
                     job.get("jd_full") or job.get("jd_snippet"),
+                    job.get("source_type"),
                 ),
             )
             saved_job_id = saved["id"]
