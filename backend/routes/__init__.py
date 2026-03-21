@@ -21,6 +21,7 @@ from routes.crm import bp as crm_bp
 from routes.workflows import bp as workflows_bp
 from routes.market_intelligence import bp as market_intelligence_bp
 from routes.batch import bp as batch_bp
+from routes.mock_interviews import bp as mock_interviews_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -44,4 +45,5 @@ ALL_BLUEPRINTS = [
     workflows_bp,
     market_intelligence_bp,
     batch_bp,
+    mock_interviews_bp,
 ]

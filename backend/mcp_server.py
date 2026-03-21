@@ -2866,6 +2866,54 @@ def get_market_summary() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Mock Interviews (0_APP 8.5)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def create_mock_interview(
+    job_title: str,
+    company: str,
+    interview_type: str = "behavioral",
+    difficulty: str = "medium",
+    application_id: int | None = None,
+) -> dict:
+    """Create a mock interview session with generated questions.
+
+    Args:
+        job_title: Job title to tailor questions for
+        company: Target company name
+        interview_type: behavioral, technical, situational, case, or mixed
+        difficulty: easy, medium, or hard
+        application_id: Optional linked application ID
+    """
+    from mcp_tools_mock_interviews import create_mock_interview as _impl
+    return _impl(job_title, company, interview_type, difficulty, application_id)
+
+
+@mcp.tool()
+def get_mock_interview(interview_id: int) -> dict:
+    """Get a mock interview session with all questions and scores.
+
+    Args:
+        interview_id: ID of the mock interview to retrieve
+    """
+    from mcp_tools_mock_interviews import get_mock_interview as _impl
+    return _impl(interview_id)
+
+
+@mcp.tool()
+def evaluate_mock_interview(interview_id: int, answers: dict) -> dict:
+    """Evaluate answers for a mock interview and generate scores/feedback.
+
+    Args:
+        interview_id: ID of the mock interview
+        answers: Dict mapping question_id to answer text, e.g. {"1": "My answer..."}
+    """
+    from mcp_tools_mock_interviews import evaluate_mock_interview as _impl
+    return _impl(interview_id, answers)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
