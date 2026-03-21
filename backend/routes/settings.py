@@ -100,3 +100,24 @@ def test_ai_connection():
         "health": health,
         "providers": list_providers(),
     })
+
+
+@bp.route("/api/plugin/health", methods=["GET"])
+def plugin_health():
+    """Plugin-specific health check with version and feature info."""
+    rows = db.query(
+        "SELECT count(*) AS cnt FROM applications WHERE status NOT IN ('Rejected', 'Ghosted', 'Withdrawn')",
+        (),
+    )
+    active = rows[0]["cnt"] if rows else 0
+    return jsonify({
+        "status": "healthy",
+        "version": "0.1.0",
+        "active_applications": active,
+        "features": {
+            "job_capture": True,
+            "gap_analysis": True,
+            "auto_apply": False,
+            "networking": False,
+        },
+    })

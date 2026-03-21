@@ -13,6 +13,7 @@ def list_saved_jobs():
     source = request.args.get("source")
     company = request.args.get("company")
     min_fit = request.args.get("min_fit_score")
+    url_filter = request.args.get("url")
     limit = int(request.args.get("limit", 50))
     offset = int(request.args.get("offset", 0))
 
@@ -29,6 +30,9 @@ def list_saved_jobs():
     if min_fit:
         clauses.append("sj.fit_score >= %s")
         params.append(float(min_fit))
+    if url_filter:
+        clauses.append("sj.url = %s")
+        params.append(url_filter)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = db.query(

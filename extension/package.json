@@ -1,0 +1,30 @@
+{
+  "name": "supertroopers-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "vite build && vite build --mode content && vite build --mode background",
+    "build:popup": "vite build",
+    "build:content": "vite build --mode content",
+    "build:background": "vite build --mode background",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vite-plugin-static-copy": "^2.2.0"
+  }
+}

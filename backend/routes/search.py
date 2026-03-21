@@ -1,5 +1,8 @@
 """Routes for search endpoints and gap analysis."""
 
+import re
+from collections import Counter
+
 from flask import Blueprint, request, jsonify
 import db
 
@@ -136,16 +139,26 @@ def search_contacts():
 
 @bp.route("/api/gap-analysis", methods=["POST"])
 def gap_analysis():
-    """Accept JD text, extract keywords, match against bullets."""
+    """Accept JD text, analyze fit using AI (if available) or rule-based fallback."""
     data = request.get_json(force=True)
     jd_text = data.get("jd_text", "")
     if not jd_text:
         return jsonify({"error": "jd_text is required"}), 400
 
-    # Extract keywords from JD (simple word-frequency approach)
-    # Strip common words and find meaningful terms
-    import re
-    from collections import Counter
+    from ai_providers.router import route_inference
+
+    result = route_inference(
+        task="gap_analysis",
+        context={"jd_text": jd_text},
+        python_fallback=_python_gap_analysis,
+        ai_handler=_ai_gap_analysis,
+    )
+    return jsonify(result), 200
+
+
+def _python_gap_analysis(context: dict) -> dict:
+    """Rule-based gap analysis using keyword matching against bullets and skills."""
+    jd_text = context["jd_text"]
 
     stop_words = {
         "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -212,12 +225,35 @@ def gap_analysis():
         covered_keywords.add(s["matched_keyword"])
     gaps = [kw for kw in top_keywords if kw not in covered_keywords]
 
-    return jsonify({
-        "jd_keywords": top_keywords,
-        "matched_bullets": matched_bullets[:30],
-        "matched_skills": matched_skills,
+    # Map to normalized response shape
+    strong = []
+    seen_strong = set()
+    for b in matched_bullets[:20]:
+        label = f"{b['matched_keyword']}: {b.get('employer', 'N/A')} - {b.get('title', 'N/A')}"
+        if label not in seen_strong:
+            seen_strong.add(label)
+            strong.append(label)
+
+    partial = []
+    seen_partial = set()
+    for s in matched_skills:
+        label = f"{s['name']} ({s.get('category', 'general')})"
+        if label not in seen_partial:
+            seen_partial.add(label)
+            partial.append(label)
+
+    recommendations = [f"Consider highlighting experience with {g}" for g in gaps[:5]]
+
+    return {
+        "fit_score": round(len(covered_keywords) / max(len(top_keywords), 1) * 100, 1),
+        "strong_matches": strong,
+        "partial_matches": partial,
         "gaps": gaps,
-        "coverage_pct": round(
-            len(covered_keywords) / max(len(top_keywords), 1) * 100, 1
-        ),
-    }), 200
+        "recommendations": recommendations,
+        "jd_keywords": top_keywords,
+    }
+
+
+def _ai_gap_analysis(context: dict) -> dict:
+    """AI-enhanced gap analysis -- stub for future implementation."""
+    raise NotImplementedError("AI gap analysis not yet implemented")

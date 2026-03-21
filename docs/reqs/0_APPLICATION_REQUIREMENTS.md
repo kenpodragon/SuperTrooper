@@ -95,6 +95,19 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 - [ ] User / candidate table (multi-user support)
 - [ ] API key or session-based auth (for open source / multi-user)
 
+### 2.5 AI Routing Pattern
+All REST API endpoints that involve inference/analysis MUST follow the AI routing pattern:
+1. Endpoint checks if AI provider is available (via Phase D settings + AI provider framework)
+2. If AI available → route inference pieces through AI (semantic matching, scoring, analysis)
+3. If AI unavailable → fall back to Python rule-based processing
+4. Only inference/reasoning uses AI — CRUD, extraction, and deterministic ops stay Python-only
+
+- [ ] Build reusable AI routing utility (`code/backend/ai_providers/router.py`) — check availability, route inference, fallback
+- [ ] Retrofit `POST /api/gap-analysis` (search.py) — first implementation of the pattern
+- [ ] Retrofit `match_jd` MCP tool — use AI router instead of hardcoded keyword matching
+- [ ] Audit + retrofit all existing inference endpoints to follow this pattern
+- [ ] Document the pattern in API_REFERENCE.md
+
 ### 2.4 Cron Jobs
 - [ ] scan_gmail — periodic Gmail scan, auto-categorize, update tracker
 - [ ] scan_indeed — run saved searches, auto-score fit
@@ -516,28 +529,55 @@ Component docs in this folder break out detailed requirements as needed: `{secti
 
 ## 14. Browser Plugin
 
-Chrome/Firefox extension that bridges the platform with job boards, LinkedIn, and application forms.
+> Full requirements: [14_BROWSER_PLUGIN.md](14_BROWSER_PLUGIN.md) (91 requirements, 13 sections)
 
-### 14.1 Job Capture
-- [ ] "Save Job" button on any job board page (Indeed, LinkedIn, Dice, etc.)
-- [ ] Auto-extract: title, company, location, salary, JD text, URL
-- [ ] Save to saved_jobs table via API
-- [ ] Quick fit score overlay (call gap analysis API)
+Chrome extension (Manifest V3) that connects to the local SuperTroopers backend (localhost:8055) to augment job browsing with career intelligence. Dark theme with terminal green (#00FF41) aesthetic. All data stays local.
 
-### 14.2 Networking Overlay
-- [ ] On LinkedIn profile pages: show if contact exists in DB, relationship strength, last contact
-- [ ] On company pages: show how many contacts you have there, application history
-- [ ] "Add to contacts" quick-save from LinkedIn profiles
-- [ ] Referral suggestion: "Do you have connections who could refer you?"
+### Phase 0: Foundation (14.0) ✅
+- [x] 14.0.1 Chrome extension scaffold (Manifest V3, TypeScript, Vite, React popup)
+- [x] 14.0.2 Background service worker with localhost API connection
+- [x] 14.0.3 Popup UI — connection status, pipeline summary, dark/green theme
+- [x] 14.0.4 Extension icon with badge (application count)
+- [x] 14.0.5 Content script framework with site-specific config system
 
-### 14.3 Auto-Apply
-- [ ] On application forms: auto-fill from candidate profile (name, email, phone, LinkedIn, education, work history)
-- [ ] Generate tailored resume for this specific JD (call recipe clone + generate)
-- [ ] Generate cover letter (AI-driven via MCP)
-- [ ] Fill custom questions from KB/STAR stories
-- [ ] One-click application submission tracking (log to applications table)
+### Phase 1: Job Capture + Match (14.1-14.2)
+- [ ] 14.1 Job detection on major boards (Indeed, LinkedIn, Glassdoor) + 46 ATS platforms
+- [ ] 14.1.1 "Save to SuperTroopers" button injection on job listings
+- [ ] 14.1.2 Auto-extract: title, company, location, salary, JD text, URL
+- [ ] 14.1.3 Duplicate detection (don't save same job twice)
+- [ ] 14.2 Match score overlay — run gap analysis, show fit % inline on job pages
+- [ ] 14.2.1 Strong matches, partial matches, gaps breakdown
+- [ ] 14.2.2 Keyword highlighting in JD text
 
-### 14.4 Context Panel
-- [ ] Side panel showing: saved job status, gap analysis summary, generated materials, related contacts
-- [ ] Quick actions: run gap analysis, generate resume, draft outreach message
-- [ ] Notification badges: stale follow-ups, new email responses, upcoming interviews
+### Phase 2: AI Materials + Auto-Apply (14.3-14.4)
+- [ ] 14.3 One-click tailored resume generation from any job listing page
+- [ ] 14.3.1 Cover letter generation with voice rules enforcement
+- [ ] 14.3.2 Generation progress indicator, download when complete
+- [ ] 14.4 ATS auto-fill — detect form fields, populate from backend profile data
+- [ ] 14.4.1 Top ATS platforms: Workday, Greenhouse, Lever, iCIMS, Taleo
+- [ ] 14.4.2 Resume file attachment handling
+- [ ] 14.4.3 User review + confirm before submission (never auto-submit)
+- [ ] 14.4.4 Open-ended question answering from career data + STAR stories
+
+### Phase 3: Application Tracking (14.5)
+- [ ] 14.5 Auto-create application record after applying
+- [ ] 14.5.1 Status change tracking from within the browser
+- [ ] 14.5.2 Popup application list with filters
+- [ ] 14.5.3 Badge counts (saved, applied, interviewing)
+- [ ] 14.5.4 Stale application alerts
+
+### Phase 4: Networking + Outreach (14.6-14.8)
+- [ ] 14.6 Contact overlay — show existing contacts at company on job/company pages
+- [ ] 14.6.1 Contact cards with relationship strength, last interaction
+- [ ] 14.6.2 LinkedIn connection search for warm intros
+- [ ] 14.7 Outreach automation — craft LinkedIn messages, emails with voice rules
+- [ ] 14.7.1 Schedule sends and track touchpoints
+- [ ] 14.7.2 Outreach templates by relationship type
+- [ ] 14.8 Response tracking — unified view of email + messaging responses per contact
+- [ ] 14.8.1 Auto-update contact records with latest interaction
+
+### Technical (14.9-14.12)
+- [ ] 14.9 ATS site config system (47 platforms, tiered priority)
+- [ ] 14.10 Minimal permissions (activeTab, storage, tabs — no cookies, no webRequest)
+- [ ] 14.11 Shadow DOM isolation for injected UI elements
+- [ ] 14.12 5 new backend endpoints (plugin health, profile bundle, materials orchestrator, ATS config, URL dedup)

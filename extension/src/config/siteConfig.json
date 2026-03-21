@@ -1,0 +1,89 @@
+{
+  "version": "0.2.0",
+  "boards": {
+    "indeed": {
+      "hostPattern": "indeed.com",
+      "jobListingPaths": ["/viewjob", "/m/basecamp/viewjob"],
+      "saveButtonAnchor": "h1.jobsearch-JobInfoHeader-title, h2.jobTitle, .jobsearch-JobInfoHeader-title-container",
+      "extractors": {
+        "title": { "selector": "h1.jobsearch-JobInfoHeader-title, h2.jobTitle", "attribute": "textContent" },
+        "company": { "selector": "[data-company-name], .css-1h7lukg", "attribute": "textContent" },
+        "location": { "selector": "[data-testid='job-location'], .css-6z8o9s", "attribute": "textContent" },
+        "salary": { "selector": "#salaryInfoAndJobType, .css-18z4q2i", "attribute": "textContent" },
+        "description": { "selector": "#jobDescriptionText, .jobsearch-jobDescriptionText", "attribute": "textContent" }
+      }
+    },
+    "linkedin": {
+      "hostPattern": "linkedin.com",
+      "jobListingPaths": ["/jobs/view/", "/jobs/collections/", "/jobs/search/"],
+      "saveButtonAnchor": ".job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, .topcard__title, h1[class*='title'], h1",
+      "extractors": {
+        "title": { "selector": ".job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, .topcard__title, h1[class*='title'], .t-24.t-bold, h1", "attribute": "textContent" },
+        "company": { "selector": ".job-details-jobs-unified-top-card__company-name a, .jobs-unified-top-card__company-name a, .topcard__org-name-link, a[class*='company-name'], .job-details-jobs-unified-top-card__primary-description-container a", "attribute": "textContent" },
+        "location": { "selector": ".job-details-jobs-unified-top-card__bullet, .jobs-unified-top-card__bullet, .topcard__flavor--bullet, span[class*='bullet'], .job-details-jobs-unified-top-card__primary-description-container span", "attribute": "textContent" },
+        "salary": { "selector": ".salary-main-rail__current-range, [class*='salary'], .compensation__salary", "attribute": "textContent" },
+        "description": { "selector": ".jobs-description__content, .jobs-description-content__text, .show-more-less-html__markup, .jobs-box__html-content, #job-details, article[class*='description']", "attribute": "textContent" }
+      }
+    },
+    "glassdoor": {
+      "hostPattern": "glassdoor.com",
+      "jobListingPaths": ["/job-listing/", "/Job/"],
+      "saveButtonAnchor": "[data-test='job-title'], .css-w04er8",
+      "extractors": {
+        "title": { "selector": "[data-test='job-title'], .css-w04er8", "attribute": "textContent" },
+        "company": { "selector": "[data-test='employer-name'], .css-16nw49e", "attribute": "textContent" },
+        "location": { "selector": "[data-test='location'], .css-56kyx5", "attribute": "textContent" },
+        "salary": { "selector": "[data-test='detailSalary']", "attribute": "textContent" },
+        "description": { "selector": ".jobDescriptionContent, .desc", "attribute": "textContent" }
+      }
+    },
+    "ziprecruiter": {
+      "hostPattern": "ziprecruiter.com",
+      "jobListingPaths": ["/jobs/"],
+      "saveButtonAnchor": ".job_title, h1.title",
+      "extractors": {
+        "title": { "selector": ".job_title, h1.title", "attribute": "textContent" },
+        "company": { "selector": ".hiring_company_text, .company_name", "attribute": "textContent" },
+        "location": { "selector": ".job_location, .location", "attribute": "textContent" },
+        "salary": { "selector": ".salary_range", "attribute": "textContent" },
+        "description": { "selector": ".jobDescriptionSection, .job_description", "attribute": "textContent" }
+      }
+    },
+    "dice": {
+      "hostPattern": "dice.com",
+      "jobListingPaths": ["/job-detail/"],
+      "saveButtonAnchor": "h1[data-cy='jobTitle'], .jobTitle",
+      "extractors": {
+        "title": { "selector": "h1[data-cy='jobTitle'], .jobTitle", "attribute": "textContent" },
+        "company": { "selector": "[data-cy='companyNameLink'], .companyName", "attribute": "textContent" },
+        "location": { "selector": "[data-cy='location'], .location", "attribute": "textContent" },
+        "salary": { "selector": "[data-cy='compensationText']", "attribute": "textContent" },
+        "description": { "selector": "[data-cy='jobDescription'], .job-description", "attribute": "textContent" }
+      }
+    },
+    "builtin": {
+      "hostPattern": "builtin.com",
+      "jobListingPaths": ["/job/", "/jobs/"],
+      "saveButtonAnchor": "h1",
+      "extractors": {
+        "title": { "selector": "h1", "attribute": "textContent" },
+        "company": { "selector": "[class*='company-name'], .company-info a", "attribute": "textContent" },
+        "location": { "selector": "[class*='job-location']", "attribute": "textContent" },
+        "salary": { "selector": "[class*='salary']", "attribute": "textContent" },
+        "description": { "selector": "[class*='job-description'], .job-description", "attribute": "textContent" }
+      }
+    },
+    "handshake": {
+      "hostPattern": "joinhandshake.com",
+      "jobListingPaths": ["/stu/jobs/", "/emp/jobs/", "/postings/"],
+      "saveButtonAnchor": "h1",
+      "extractors": {
+        "title": { "selector": "h1", "attribute": "textContent" },
+        "company": { "selector": "[class*='employer-name'], a[href*='employers']", "attribute": "textContent" },
+        "location": { "selector": "[class*='location']", "attribute": "textContent" },
+        "salary": { "selector": "[class*='salary']", "attribute": "textContent" },
+        "description": { "selector": "[class*='description'], .job-description", "attribute": "textContent" }
+      }
+    }
+  }
+}

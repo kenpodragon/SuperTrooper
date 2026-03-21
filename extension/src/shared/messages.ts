@@ -1,0 +1,75 @@
+import type { SavedJob, GapAnalysisResult, JobExtraction } from "./types";
+
+export const MSG = {
+  HEALTH_CHECK: "HEALTH_CHECK",
+  HEALTH_STATUS: "HEALTH_STATUS",
+  GET_PIPELINE: "GET_PIPELINE",
+  PIPELINE_DATA: "PIPELINE_DATA",
+  SAVE_JOB: "SAVE_JOB",
+  JOB_SAVED: "JOB_SAVED",
+  CHECK_JOB_URL: "CHECK_JOB_URL",
+  JOB_URL_STATUS: "JOB_URL_STATUS",
+  RUN_GAP_ANALYSIS: "RUN_GAP_ANALYSIS",
+  GAP_RESULT: "GAP_RESULT",
+  PAGE_CONTEXT: "PAGE_CONTEXT",
+  GET_SETTINGS: "GET_SETTINGS",
+  SAVE_SETTINGS: "SAVE_SETTINGS",
+  SETTINGS_DATA: "SETTINGS_DATA",
+  GET_SAVED_JOBS: "GET_SAVED_JOBS",
+} as const;
+
+export type MessageType = (typeof MSG)[keyof typeof MSG];
+
+export interface Message<T = unknown> {
+  type: MessageType;
+  data?: T;
+}
+
+export function sendToBackground<T = unknown>(
+  type: MessageType,
+  data?: unknown
+): Promise<T> {
+  return chrome.runtime.sendMessage({ type, data });
+}
+
+export function sendToTab<T = unknown>(
+  tabId: number,
+  type: MessageType,
+  data?: unknown
+): Promise<T> {
+  return chrome.tabs.sendMessage(tabId, { type, data });
+}
+
+export interface SaveJobPayload {
+  job: JobExtraction;
+}
+
+export interface SaveJobResponse {
+  saved_job: SavedJob;
+  already_existed: boolean;
+}
+
+export interface CheckJobUrlPayload {
+  url: string;
+}
+
+export interface CheckJobUrlResponse {
+  exists: boolean;
+  saved_job?: SavedJob;
+}
+
+export interface GapAnalysisPayload {
+  jd_text: string;
+  job_url: string;
+  force_refresh?: boolean;
+  saved_job_id?: number;
+}
+
+export interface GapAnalysisResponse {
+  result: GapAnalysisResult;
+  from_cache: boolean;
+}
+
+export interface GetSavedJobsResponse {
+  jobs: SavedJob[];
+}

@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "SuperTroopers",
+  "version": "0.1.0",
+  "description": "AI-powered reverse recruiting command center",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "alarms",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "http://localhost:8055/*",
+    "http://localhost:8056/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.indeed.com/*",
+        "*://*.linkedin.com/jobs/*",
+        "*://*.glassdoor.com/job-listing/*",
+        "*://*.glassdoor.com/Job/*",
+        "*://*.ziprecruiter.com/jobs/*",
+        "*://*.dice.com/job-detail/*",
+        "*://*.builtin.com/job/*",
+        "*://*.builtin.com/jobs/*",
+        "*://*.joinhandshake.com/stu/jobs/*",
+        "*://*.joinhandshake.com/emp/jobs/*",
+        "*://*.joinhandshake.com/postings/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  }
+}
