@@ -7,6 +7,7 @@ import sys
 import os
 import re
 from collections import Counter
+from datetime import date, timedelta
 from pathlib import Path
 
 # Ensure the backend directory is on sys.path
@@ -1885,6 +1886,1031 @@ def onboard_resume(file_path: str) -> dict:
 
     from routes.onboard import _process_file
     return _process_file(filename, file_bytes, file_ext)
+
+
+# ---------------------------------------------------------------------------
+# Notifications tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_notifications(
+    status: str | None = None,
+    type: str | None = None,
+    severity: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """Get notifications, optionally filtered.
+
+    Args:
+        status: Filter by status - 'unread', 'read', 'dismissed', or None for all
+        type: Filter by notification type (new_job, status_change, follow_up_due,
+              stale_warning, interview_reminder, contact_follow_up, digest_ready, email_matched)
+        severity: Filter by severity level (info, action_needed, urgent)
+        limit: Max results (default 20)
+
+    Returns:
+        dict with count and notifications list
+    """
+    clauses, params = [], []
+
+    if status == "unread":
+        clauses.append("read = FALSE")
+        clauses.append("dismissed = FALSE")
+    elif status == "read":
+        clauses.append("read = TRUE")
+    elif status == "dismissed":
+        clauses.append("dismissed = TRUE")
+    else:
+        # Default: hide dismissed
+        clauses.append("dismissed = FALSE")
+
+    if type:
+        clauses.append("type = %s")
+        params.append(type)
+
+    if severity:
+        clauses.append("severity = %s")
+        params.append(severity)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = db.query(
+        f"""
+        SELECT *
+        FROM notifications
+        {where}
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        params + [limit],
+    )
+    return {"count": len(rows), "notifications": rows}
+
+
+@mcp.tool()
+def dismiss_notification(notification_id: int) -> dict:
+    """Dismiss a notification by ID.
+
+    Args:
+        notification_id: The notification ID to dismiss
+
+    Returns:
+        dict with success status and notification ID
+    """
+    count = db.execute(
+        "UPDATE notifications SET dismissed = TRUE, read = TRUE WHERE id = %s",
+        (notification_id,),
+    )
+    if count == 0:
+        return {"success": False, "error": f"Notification {notification_id} not found"}
+    return {"success": True, "id": notification_id, "dismissed": True}
+
+
+@mcp.tool()
+def create_notification(
+    type: str,
+    title: str,
+    severity: str = "info",
+    body: str | None = None,
+    link: str | None = None,
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+) -> dict:
+    """Create a new notification.
+
+    Args:
+        type: Notification type (new_job, status_change, follow_up_due,
+              stale_warning, interview_reminder, contact_follow_up,
+              digest_ready, email_matched)
+        title: Notification title
+        severity: info, action_needed, or urgent (default: info)
+        body: Optional detailed body text
+        link: Optional frontend route path (e.g., /applications/42)
+        entity_type: Optional entity type (application, saved_job, contact, fresh_job)
+        entity_id: Optional entity ID
+
+    Returns:
+        dict with created notification record
+    """
+    row = db.execute_returning(
+        """
+        INSERT INTO notifications
+            (type, severity, title, body, link, entity_type, entity_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (type, severity, title, body, link, entity_type, entity_id),
+    )
+    return row or {"error": "Insert failed"}
+
+
+# ---------------------------------------------------------------------------
+# Fresh Jobs Inbox tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_fresh_jobs(status: str = "new", source_type: str | None = None, limit: int = 20) -> dict:
+    """Get fresh jobs from the inbox, optionally filtered.
+
+    Args:
+        status: Filter by status (new, reviewed, saved, passed, expired, snoozed). Default: new
+        source_type: Filter by source (api_search, plugin_capture, email_parsed, social_scan, rss_feed, manual)
+        limit: Max results (default 20)
+
+    Returns:
+        dict with count and fresh_jobs list
+    """
+    clauses, params = [], []
+
+    if status:
+        clauses.append("status = %s")
+        params.append(status)
+    if source_type:
+        clauses.append("source_type = %s")
+        params.append(source_type)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = db.query(
+        f"""
+        SELECT id, source_type, source_url, title, company, location,
+               salary_range, jd_snippet, auto_score, status, discovered_at, saved_job_id
+        FROM fresh_jobs
+        {where}
+        ORDER BY discovered_at DESC
+        LIMIT %s
+        """,
+        params + [limit],
+    )
+    return {"count": len(rows), "fresh_jobs": rows}
+
+
+@mcp.tool()
+def triage_job(job_id: int, action: str, notes: str | None = None) -> dict:
+    """Triage a fresh job: save to pipeline, pass, or snooze.
+
+    Args:
+        job_id: Fresh job ID
+        action: save, pass, snooze, or review
+        notes: Optional notes about the triage decision (stored if action=save)
+
+    Returns:
+        dict with result (if saved, includes saved_job_id)
+    """
+    valid_actions = {"save", "pass", "snooze", "review"}
+    if action not in valid_actions:
+        return {"error": f"action must be one of: {', '.join(sorted(valid_actions))}"}
+
+    job = db.query_one("SELECT * FROM fresh_jobs WHERE id = %s", (job_id,))
+    if not job:
+        return {"error": f"Fresh job {job_id} not found"}
+
+    if action == "save":
+        if job.get("saved_job_id"):
+            return {"error": "Already saved", "saved_job_id": job["saved_job_id"]}
+        saved = db.execute_returning(
+            """
+            INSERT INTO saved_jobs (title, company, url, location, salary_range, jd_text, notes, source, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'saved')
+            RETURNING id, title, company
+            """,
+            (
+                job.get("title"),
+                job.get("company"),
+                job.get("source_url"),
+                job.get("location"),
+                job.get("salary_range"),
+                job.get("jd_full") or job.get("jd_snippet"),
+                notes,
+                job.get("source_type"),
+            ),
+        )
+        saved_job_id = saved["id"]
+        db.execute(
+            "UPDATE fresh_jobs SET status = 'saved', saved_job_id = %s WHERE id = %s",
+            (saved_job_id, job_id),
+        )
+        return {
+            "result": "saved",
+            "fresh_job_id": job_id,
+            "saved_job_id": saved_job_id,
+            "title": saved.get("title"),
+            "company": saved.get("company"),
+        }
+
+    status_map = {"pass": "passed", "snooze": "snoozed", "review": "reviewed"}
+    new_status = status_map[action]
+    db.execute("UPDATE fresh_jobs SET status = %s WHERE id = %s", (new_status, job_id))
+    return {"result": action, "fresh_job_id": job_id, "status": new_status}
+
+
+@mcp.tool()
+def batch_triage(actions: str) -> dict:
+    """Batch triage multiple fresh jobs.
+
+    Pass actions as JSON string: [{"id": 1, "action": "save"}, {"id": 2, "action": "pass"}]
+
+    Args:
+        actions: JSON string of array with id and action pairs
+
+    Returns:
+        dict with results for each job
+    """
+    import json
+
+    try:
+        items = json.loads(actions)
+    except (json.JSONDecodeError, TypeError) as e:
+        return {"error": f"Invalid JSON: {e}"}
+
+    if not isinstance(items, list):
+        return {"error": "actions must be a JSON array"}
+
+    valid_actions = {"save", "pass", "snooze", "review"}
+    status_map = {"pass": "passed", "snooze": "snoozed", "review": "reviewed"}
+    results = []
+
+    for item in items:
+        job_id = item.get("id")
+        action = item.get("action")
+
+        if not job_id or action not in valid_actions:
+            results.append({"id": job_id, "error": f"invalid id or action '{action}'"})
+            continue
+
+        job = db.query_one("SELECT * FROM fresh_jobs WHERE id = %s", (job_id,))
+        if not job:
+            results.append({"id": job_id, "error": "not found"})
+            continue
+
+        if action == "save":
+            if job.get("saved_job_id"):
+                results.append({"id": job_id, "error": "already saved", "saved_job_id": job["saved_job_id"]})
+                continue
+            saved = db.execute_returning(
+                """
+                INSERT INTO saved_jobs (title, company, url, location, salary_range, jd_text, source, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'saved')
+                RETURNING id
+                """,
+                (
+                    job.get("title"),
+                    job.get("company"),
+                    job.get("source_url"),
+                    job.get("location"),
+                    job.get("salary_range"),
+                    job.get("jd_full") or job.get("jd_snippet"),
+                    job.get("source_type"),
+                ),
+            )
+            saved_job_id = saved["id"]
+            db.execute(
+                "UPDATE fresh_jobs SET status = 'saved', saved_job_id = %s WHERE id = %s",
+                (saved_job_id, job_id),
+            )
+            results.append({"id": job_id, "action": "save", "saved_job_id": saved_job_id, "status": "saved"})
+        else:
+            new_status = status_map[action]
+            db.execute("UPDATE fresh_jobs SET status = %s WHERE id = %s", (new_status, job_id))
+            results.append({"id": job_id, "action": action, "status": new_status})
+
+    saved_count = sum(1 for r in results if r.get("action") == "save")
+    passed_count = sum(1 for r in results if r.get("action") == "pass")
+    error_count = sum(1 for r in results if "error" in r)
+
+    return {
+        "total": len(items),
+        "saved": saved_count,
+        "passed": passed_count,
+        "errors": error_count,
+        "results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Application Aging & Link Monitoring tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_stale_applications(days: int = 14, status: str | None = None) -> dict:
+    """Get applications that haven't had a status change in X days.
+
+    Args:
+        days: Number of days without activity to be considered stale (default 14)
+        status: Optional status filter (e.g. 'Applied', 'Phone Screen')
+
+    Returns:
+        dict with count and stale applications list
+    """
+    clauses = ["a.last_status_change < NOW() - INTERVAL '%s days'"]
+    params: list = [days]
+
+    if status:
+        clauses.append("a.status = %s")
+        params.append(status)
+
+    where = "WHERE " + " AND ".join(clauses)
+
+    rows = db.query(
+        f"""
+        SELECT a.id, a.company_name, a.role, a.status, a.date_applied,
+               a.last_status_change, a.link_status, a.posting_closed,
+               a.jd_url,
+               EXTRACT(DAY FROM NOW() - a.last_status_change)::int AS days_stale
+        FROM applications a
+        {where}
+        ORDER BY a.last_status_change ASC
+        """,
+        params,
+    )
+    return {"count": len(rows), "applications": rows}
+
+
+@mcp.tool()
+def check_posting_status(entity_type: str, entity_id: int) -> dict:
+    """Check and update the posting/link status of a saved job or application.
+
+    Note: This marks the record with the current check timestamp. Actual HTTP
+    link checking is deferred to a cron job or manual trigger -- this tool
+    reads and returns the stored status, and stamps last_link_check_at = NOW().
+
+    Args:
+        entity_type: 'saved_job' or 'application'
+        entity_id: The record ID
+
+    Returns:
+        dict with current link status info
+    """
+    if entity_type == "saved_job":
+        row = db.execute_returning(
+            """
+            UPDATE saved_jobs
+            SET last_link_check_at = NOW()
+            WHERE id = %s
+            RETURNING id, title, company, url AS jd_url,
+                      link_status, posting_closed, posting_closed_at,
+                      last_link_check_at
+            """,
+            (entity_id,),
+        )
+    elif entity_type == "application":
+        row = db.execute_returning(
+            """
+            UPDATE applications
+            SET last_link_check_at = NOW()
+            WHERE id = %s
+            RETURNING id, role, company_name AS company, jd_url,
+                      link_status, posting_closed, posting_closed_at,
+                      last_link_check_at
+            """,
+            (entity_id,),
+        )
+    else:
+        return {"error": "entity_type must be 'saved_job' or 'application'"}
+
+    if not row:
+        return {"error": f"{entity_type} {entity_id} not found"}
+
+    return {"entity_type": entity_type, **row}
+
+
+@mcp.tool()
+def get_aging_summary() -> dict:
+    """Get a summary of application aging across the pipeline.
+
+    Returns:
+        dict with counts: stale_applications, stale_saved_jobs,
+        closed_postings, needs_link_check
+    """
+    stale_apps = db.query_one(
+        """
+        SELECT COUNT(*)::int AS count
+        FROM applications
+        WHERE last_status_change < NOW() - INTERVAL '14 days'
+        """
+    )
+    stale_jobs = db.query_one(
+        """
+        SELECT COUNT(*)::int AS count
+        FROM saved_jobs
+        WHERE updated_at < NOW() - INTERVAL '30 days'
+          AND status NOT IN ('applied', 'archived')
+        """
+    )
+    closed_apps = db.query_one(
+        "SELECT COUNT(*)::int AS count FROM applications WHERE posting_closed = TRUE"
+    )
+    closed_jobs = db.query_one(
+        "SELECT COUNT(*)::int AS count FROM saved_jobs WHERE posting_closed = TRUE"
+    )
+    unknown_apps = db.query_one(
+        "SELECT COUNT(*)::int AS count FROM applications WHERE link_status = 'unknown'"
+    )
+    unknown_jobs = db.query_one(
+        "SELECT COUNT(*)::int AS count FROM saved_jobs WHERE link_status = 'unknown'"
+    )
+
+    return {
+        "stale_applications": stale_apps["count"] if stale_apps else 0,
+        "stale_saved_jobs": stale_jobs["count"] if stale_jobs else 0,
+        "closed_postings": (
+            (closed_apps["count"] if closed_apps else 0)
+            + (closed_jobs["count"] if closed_jobs else 0)
+        ),
+        "needs_link_check": (
+            (unknown_apps["count"] if unknown_apps else 0)
+            + (unknown_jobs["count"] if unknown_jobs else 0)
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CRM tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def update_relationship_stage(contact_id: int, stage: str) -> dict:
+    """Update a contact's relationship stage.
+
+    Args:
+        contact_id: Contact ID
+        stage: cold, warm, active, close, or dormant
+
+    Returns:
+        dict with updated contact info
+    """
+    valid_stages = {"cold", "warm", "active", "close", "dormant"}
+    if stage not in valid_stages:
+        return {"error": f"stage must be one of: {', '.join(sorted(valid_stages))}"}
+
+    row = db.execute_returning(
+        """
+        UPDATE contacts
+        SET relationship_stage = %s, updated_at = NOW()
+        WHERE id = %s
+        RETURNING id, name, company, title, relationship_stage, health_score, updated_at
+        """,
+        (stage, contact_id),
+    )
+    if not row:
+        return {"error": f"Contact {contact_id} not found"}
+    return {"contact": row}
+
+
+@mcp.tool()
+def get_relationship_health(contact_id: int | None = None, limit: int = 20) -> dict:
+    """Get contacts ranked by relationship health score (lowest = needs attention).
+
+    Args:
+        contact_id: Optional specific contact ID. If None, returns lowest-health contacts.
+        limit: Max results (default 20)
+
+    Returns:
+        dict with contacts and their health scores
+    """
+    if contact_id is not None:
+        row = db.query_one(
+            """
+            SELECT id, name, company, title, relationship_stage, health_score,
+                   last_touchpoint_at, last_contact, tags
+            FROM contacts
+            WHERE id = %s
+            """,
+            (contact_id,),
+        )
+        if not row:
+            return {"error": f"Contact {contact_id} not found"}
+        return {"contact": row}
+
+    rows = db.query(
+        """
+        SELECT id, name, company, title, relationship_stage, health_score,
+               last_touchpoint_at, last_contact, tags
+        FROM contacts
+        ORDER BY health_score ASC NULLS FIRST
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    return {"contacts": rows, "count": len(rows)}
+
+
+@mcp.tool()
+def log_touchpoint(
+    contact_id: int,
+    type: str,
+    channel: str = "email",
+    direction: str = "outbound",
+    notes: str | None = None,
+) -> dict:
+    """Log a touchpoint (interaction) with a contact. Updates last_touchpoint_at automatically.
+
+    Args:
+        contact_id: Contact ID
+        type: email, linkedin_message, phone_call, coffee, meeting, event, referral
+        channel: linkedin, email, phone, in_person, slack, other
+        direction: inbound or outbound
+        notes: Optional notes about the interaction
+
+    Returns:
+        dict with created touchpoint
+    """
+    contact = db.query_one("SELECT id FROM contacts WHERE id = %s", (contact_id,))
+    if not contact:
+        return {"error": f"Contact {contact_id} not found"}
+
+    row = db.execute_returning(
+        """
+        INSERT INTO touchpoints (contact_id, type, channel, direction, notes)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (contact_id, type, channel, direction, notes),
+    )
+
+    db.execute(
+        """
+        UPDATE contacts
+        SET last_touchpoint_at = NOW(),
+            last_contact = CURRENT_DATE,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (contact_id,),
+    )
+
+    return {"touchpoint": row}
+
+
+@mcp.tool()
+def get_networking_tasks(status: str = "pending", days: int = 7) -> dict:
+    """Get upcoming networking tasks.
+
+    Args:
+        status: 'pending' (incomplete), 'completed', or 'overdue'
+        days: For pending, show tasks due within this many days (default 7)
+
+    Returns:
+        dict with tasks list
+    """
+    if status == "completed":
+        rows = db.query(
+            """
+            SELECT nt.id, nt.contact_id, nt.task_type, nt.title, nt.due_date,
+                   nt.completed_at, nt.notes, nt.created_at,
+                   c.name AS contact_name, c.company AS contact_company
+            FROM networking_tasks nt
+            JOIN contacts c ON c.id = nt.contact_id
+            WHERE nt.completed = TRUE
+            ORDER BY nt.completed_at DESC
+            LIMIT 50
+            """,
+        )
+    elif status == "overdue":
+        today = date.today()
+        rows = db.query(
+            """
+            SELECT nt.id, nt.contact_id, nt.task_type, nt.title, nt.due_date,
+                   nt.notes, nt.created_at,
+                   c.name AS contact_name, c.company AS contact_company
+            FROM networking_tasks nt
+            JOIN contacts c ON c.id = nt.contact_id
+            WHERE nt.completed = FALSE
+              AND nt.due_date < %s
+            ORDER BY nt.due_date ASC
+            """,
+            (today,),
+        )
+    else:
+        cutoff = date.today() + timedelta(days=days)
+        rows = db.query(
+            """
+            SELECT nt.id, nt.contact_id, nt.task_type, nt.title, nt.due_date,
+                   nt.notes, nt.created_at,
+                   c.name AS contact_name, c.company AS contact_company
+            FROM networking_tasks nt
+            JOIN contacts c ON c.id = nt.contact_id
+            WHERE nt.completed = FALSE
+              AND (nt.due_date IS NULL OR nt.due_date <= %s)
+            ORDER BY nt.due_date ASC NULLS LAST, nt.created_at ASC
+            """,
+            (cutoff,),
+        )
+
+    return {"tasks": rows, "count": len(rows), "status": status}
+
+
+# ---------------------------------------------------------------------------
+# Workflow Automation tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_workflows(enabled: bool | None = None, trigger_type: str | None = None) -> dict:
+    """List all workflows, optionally filtered.
+
+    Args:
+        enabled: Filter by enabled status
+        trigger_type: Filter by trigger type (schedule, event)
+
+    Returns:
+        dict with workflows list
+    """
+    clauses, params = [], []
+    if enabled is not None:
+        clauses.append("enabled = %s")
+        params.append(enabled)
+    if trigger_type:
+        clauses.append("trigger_type = %s")
+        params.append(trigger_type)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = db.query(
+        f"SELECT * FROM workflows {where} ORDER BY created_at DESC",
+        params or None,
+    )
+    return {"workflows": rows, "count": len(rows)}
+
+
+@mcp.tool()
+def trigger_workflow(workflow_id: int, trigger_data: str | None = None) -> dict:
+    """Manually trigger a workflow and execute its action.
+
+    Args:
+        workflow_id: Workflow ID to trigger
+        trigger_data: Optional JSON string with trigger context data
+
+    Returns:
+        dict with execution result
+    """
+    import json as _json
+
+    workflow = db.query_one("SELECT * FROM workflows WHERE id = %s", (workflow_id,))
+    if not workflow:
+        return {"error": f"Workflow {workflow_id} not found"}
+
+    parsed_trigger_data = None
+    if trigger_data:
+        try:
+            parsed_trigger_data = _json.loads(trigger_data)
+        except _json.JSONDecodeError:
+            return {"error": "trigger_data is not valid JSON"}
+
+    action_type = workflow["action_type"]
+    action_config = workflow["action_config"] or {}
+    action_result = {}
+    success = True
+    error_message = None
+
+    try:
+        if action_type == "create_notification":
+            notif = db.execute_returning(
+                """
+                INSERT INTO notifications (type, severity, title, body)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, type, severity, title, body, created_at
+                """,
+                (
+                    action_config.get("type", "workflow"),
+                    action_config.get("severity", "info"),
+                    action_config.get("title", f"Workflow: {workflow['name']}"),
+                    action_config.get("body", ""),
+                ),
+            )
+            action_result = {"action": "create_notification", "notification": notif}
+
+        elif action_type == "log_activity":
+            try:
+                db.execute(
+                    """
+                    INSERT INTO activity_log (entity_type, entity_id, action, details)
+                    VALUES (%s, %s, %s, %s::jsonb)
+                    """,
+                    (
+                        action_config.get("entity_type", "workflow"),
+                        action_config.get("entity_id"),
+                        action_config.get("action", workflow["name"]),
+                        _json.dumps(action_config.get("details", {})),
+                    ),
+                )
+                action_result = {"action": "log_activity", "logged": True}
+            except Exception as inner_err:
+                action_result = {
+                    "action": "log_activity",
+                    "logged": False,
+                    "note": "activity_log table unavailable; logged to workflow_log only",
+                    "detail": str(inner_err),
+                }
+
+        elif action_type == "update_field":
+            action_result = {
+                "action": "update_field",
+                "simulated": True,
+                "would_update": {
+                    "table": action_config.get("table"),
+                    "field": action_config.get("field"),
+                    "value": action_config.get("value"),
+                    "where": action_config.get("where"),
+                },
+                "note": "update_field is simulated in MVP — no DB write performed",
+            }
+
+        else:
+            action_result = {"action": action_type, "error": f"Unknown action_type: {action_type}"}
+            success = False
+            error_message = f"Unknown action_type: {action_type}"
+
+    except Exception as exc:
+        action_result = {"action": action_type, "error": str(exc)}
+        success = False
+        error_message = str(exc)
+
+    log_row = db.execute_returning(
+        """
+        INSERT INTO workflow_log (workflow_id, trigger_data, action_result, success, error_message)
+        VALUES (%s, %s::jsonb, %s::jsonb, %s, %s)
+        RETURNING *
+        """,
+        (
+            workflow_id,
+            _json.dumps(parsed_trigger_data) if parsed_trigger_data is not None else None,
+            _json.dumps(action_result),
+            success,
+            error_message,
+        ),
+    )
+
+    db.execute("UPDATE workflows SET last_run_at = NOW() WHERE id = %s", (workflow_id,))
+
+    return {
+        "workflow_id": workflow_id,
+        "workflow_name": workflow["name"],
+        "success": success,
+        "result": action_result,
+        "log_id": log_row["id"] if log_row else None,
+        "error": error_message,
+    }
+
+
+@mcp.tool()
+def create_workflow(
+    name: str,
+    trigger_type: str,
+    trigger_config: str,
+    action_type: str,
+    action_config: str,
+    conditions: str | None = None,
+) -> dict:
+    """Create a new workflow automation.
+
+    Args:
+        name: Workflow name
+        trigger_type: schedule or event
+        trigger_config: JSON string with trigger configuration
+        action_type: create_notification, update_field, or log_activity
+        action_config: JSON string with action configuration
+        conditions: Optional JSON string with conditions
+
+    Returns:
+        dict with created workflow
+    """
+    import json as _json
+
+    try:
+        parsed_trigger_config = _json.loads(trigger_config)
+    except _json.JSONDecodeError:
+        return {"error": "trigger_config is not valid JSON"}
+
+    try:
+        parsed_action_config = _json.loads(action_config)
+    except _json.JSONDecodeError:
+        return {"error": "action_config is not valid JSON"}
+
+    parsed_conditions = None
+    if conditions:
+        try:
+            parsed_conditions = _json.loads(conditions)
+        except _json.JSONDecodeError:
+            return {"error": "conditions is not valid JSON"}
+
+    valid_trigger_types = ("schedule", "event")
+    if trigger_type not in valid_trigger_types:
+        return {"error": f"trigger_type must be one of: {', '.join(valid_trigger_types)}"}
+
+    valid_action_types = ("create_notification", "update_field", "log_activity")
+    if action_type not in valid_action_types:
+        return {"error": f"action_type must be one of: {', '.join(valid_action_types)}"}
+
+    row = db.execute_returning(
+        """
+        INSERT INTO workflows (name, trigger_type, trigger_config, conditions, action_type, action_config, enabled)
+        VALUES (%s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, TRUE)
+        RETURNING *
+        """,
+        (
+            name,
+            trigger_type,
+            _json.dumps(parsed_trigger_config),
+            _json.dumps(parsed_conditions) if parsed_conditions is not None else None,
+            action_type,
+            _json.dumps(parsed_action_config),
+        ),
+    )
+    return {"workflow": row, "created": True}
+
+
+# ---------------------------------------------------------------------------
+# Market Intelligence tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_market_signals(
+    source: str | None = None,
+    signal_type: str | None = None,
+    severity: str | None = None,
+    industry: str | None = None,
+    region: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """Get market intelligence signals, optionally filtered.
+
+    Args:
+        source: Filter by source (bls_jolts, lisep_tru, warn_act, hn_hiring, news, manual)
+        signal_type: Filter by type (layoff, hiring_freeze, market_trend, job_openings,
+                     separation_rate, quit_rate, wage_data)
+        severity: Filter by severity (positive, neutral, negative, critical)
+        industry: Filter by industry sector
+        region: Filter by region
+        limit: Max results (default 20)
+
+    Returns:
+        dict with count and signals list
+    """
+    clauses, params = [], []
+    if source:
+        clauses.append("source = %s")
+        params.append(source)
+    if signal_type:
+        clauses.append("signal_type = %s")
+        params.append(signal_type)
+    if severity:
+        clauses.append("severity = %s")
+        params.append(severity)
+    if industry:
+        clauses.append("industry ILIKE %s")
+        params.append(f"%{industry}%")
+    if region:
+        clauses.append("region ILIKE %s")
+        params.append(f"%{region}%")
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = db.query(
+        f"""
+        SELECT *
+        FROM market_signals
+        {where}
+        ORDER BY captured_at DESC
+        LIMIT %s
+        """,
+        params + [limit],
+    )
+    return {"count": len(rows), "signals": rows}
+
+
+@mcp.tool()
+def add_market_signal(
+    source: str,
+    signal_type: str,
+    title: str,
+    severity: str = "neutral",
+    body: str | None = None,
+    data_json: str | None = None,
+    region: str | None = None,
+    industry: str | None = None,
+    source_url: str | None = None,
+) -> dict:
+    """Add a market intelligence signal.
+
+    Args:
+        source: Signal source (bls_jolts, lisep_tru, warn_act, hn_hiring, news, manual)
+        signal_type: Type of signal (layoff, hiring_freeze, market_trend, job_openings,
+                     separation_rate, quit_rate, wage_data)
+        title: Signal title/headline
+        severity: positive, neutral, negative, or critical (default: neutral)
+        body: Detailed description
+        data_json: Optional JSON string with structured data specific to the signal type
+        region: Geographic region
+        industry: Industry sector
+        source_url: URL to the original source
+
+    Returns:
+        dict with created signal
+    """
+    import json as _json
+    if data_json is not None:
+        try:
+            _json.loads(data_json)
+        except (_json.JSONDecodeError, TypeError):
+            return {"error": "data_json must be a valid JSON string"}
+
+    row = db.execute_returning(
+        """
+        INSERT INTO market_signals
+            (source, signal_type, title, body, data_json, region, industry,
+             severity, source_url)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (source, signal_type, title, body, data_json, region, industry, severity, source_url),
+    )
+    return row or {"error": "Insert failed"}
+
+
+@mcp.tool()
+def get_market_summary() -> dict:
+    """Get a summary of current market intelligence.
+
+    Returns:
+        dict with counts by source/type/severity, plus recent highlights (last 7 days)
+    """
+    by_source = db.query(
+        "SELECT source, COUNT(*) AS count FROM market_signals GROUP BY source ORDER BY count DESC"
+    )
+    by_type = db.query(
+        "SELECT signal_type, COUNT(*) AS count FROM market_signals GROUP BY signal_type ORDER BY count DESC"
+    )
+    by_severity = db.query(
+        "SELECT severity, COUNT(*) AS count FROM market_signals GROUP BY severity ORDER BY count DESC"
+    )
+    recent_highlights = db.query(
+        """
+        SELECT id, source, signal_type, title, severity, region, industry, captured_at
+        FROM market_signals
+        WHERE captured_at >= NOW() - INTERVAL '7 days'
+        ORDER BY captured_at DESC
+        LIMIT 20
+        """
+    )
+    total = db.query_one("SELECT COUNT(*) AS total FROM market_signals")
+
+    return {
+        "total": total["total"] if total else 0,
+        "by_source": by_source,
+        "by_signal_type": by_type,
+        "by_severity": by_severity,
+        "recent_highlights": recent_highlights,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Mock Interviews (0_APP 8.5)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def create_mock_interview(
+    job_title: str,
+    company: str,
+    interview_type: str = "behavioral",
+    difficulty: str = "medium",
+    application_id: int | None = None,
+) -> dict:
+    """Create a mock interview session with generated questions.
+
+    Args:
+        job_title: Job title to tailor questions for
+        company: Target company name
+        interview_type: behavioral, technical, situational, case, or mixed
+        difficulty: easy, medium, or hard
+        application_id: Optional linked application ID
+    """
+    from mcp_tools_mock_interviews import create_mock_interview as _impl
+    return _impl(job_title, company, interview_type, difficulty, application_id)
+
+
+@mcp.tool()
+def get_mock_interview(interview_id: int) -> dict:
+    """Get a mock interview session with all questions and scores.
+
+    Args:
+        interview_id: ID of the mock interview to retrieve
+    """
+    from mcp_tools_mock_interviews import get_mock_interview as _impl
+    return _impl(interview_id)
+
+
+@mcp.tool()
+def evaluate_mock_interview(interview_id: int, answers: dict) -> dict:
+    """Evaluate answers for a mock interview and generate scores/feedback.
+
+    Args:
+        interview_id: ID of the mock interview
+        answers: Dict mapping question_id to answer text, e.g. {"1": "My answer..."}
+    """
+    from mcp_tools_mock_interviews import evaluate_mock_interview as _impl
+    return _impl(interview_id, answers)
 
 
 # ---------------------------------------------------------------------------

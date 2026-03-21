@@ -61,3 +61,49 @@ export interface JobExtraction {
   url: string;
   source: string;
 }
+
+export interface AtsField {
+  type: "name" | "email" | "phone" | "resume" | "linkedin" | "cover_letter" | "custom";
+  element: string;
+  label: string;
+}
+
+export interface AtsDetection {
+  isAts: boolean;
+  platform: string;
+  fields: AtsField[];
+}
+
+export interface ApplicationRecord {
+  id: number;
+  company_name?: string;
+  role?: string;
+  status?: string;
+  date_applied?: string;
+  source?: string;
+  created_at?: string;
+}
+
+export interface NotificationItem {
+  id: number;
+  title: string;
+  message?: string;
+  type: string;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface BatchJob {
+  job_id: number;
+  title: string;
+  company: string;
+  url: string;
+  status: "pending" | "in_progress" | "completed" | "skipped" | "failed";
+}
+
+export interface BatchState {
+  active: boolean;
+  paused: boolean;
+  jobs: BatchJob[];
+  currentIndex: number;
+}

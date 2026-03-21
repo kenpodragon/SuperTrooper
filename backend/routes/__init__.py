@@ -14,6 +14,15 @@ from routes.interview_extras import bp as interview_extras_bp
 from routes.activity import bp as activity_bp
 from routes.settings import bp as settings_bp
 from routes.onboard import bp as onboard_bp
+from routes.notifications import bp as notifications_bp
+from routes.fresh_jobs import bp as fresh_jobs_bp
+from routes.aging import bp as aging_bp
+from routes.crm import bp as crm_bp
+from routes.workflows import bp as workflows_bp
+from routes.market_intelligence import bp as market_intelligence_bp
+from routes.batch import bp as batch_bp
+from routes.mock_interviews import bp as mock_interviews_bp
+from routes.integrations import bp as integrations_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -30,4 +39,13 @@ ALL_BLUEPRINTS = [
     activity_bp,
     settings_bp,
     onboard_bp,
+    notifications_bp,
+    fresh_jobs_bp,
+    aging_bp,
+    crm_bp,
+    workflows_bp,
+    market_intelligence_bp,
+    batch_bp,
+    mock_interviews_bp,
+    integrations_bp,
 ]
