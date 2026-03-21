@@ -98,7 +98,7 @@ def generate_cover_letter(
     row = db.execute_returning(
         """
         INSERT INTO generated_materials
-            (material_type, application_id, saved_job_id, company_name, role_title,
+            (type, application_id, saved_job_id, company_name, role_title,
              content, content_format, voice_check_passed, generation_context, status)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
@@ -185,7 +185,7 @@ def generate_thank_you(
     row = db.execute_returning(
         """
         INSERT INTO generated_materials
-            (material_type, application_id, company_name, role_title,
+            (type, application_id, company_name, role_title,
              content, content_format, voice_check_passed, generation_context, status)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *

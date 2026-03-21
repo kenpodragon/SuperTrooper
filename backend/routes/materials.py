@@ -31,7 +31,7 @@ def list_materials():
     clauses, params = [], []
 
     if material_type:
-        clauses.append("material_type = %s")
+        clauses.append("type = %s")
         params.append(material_type)
     if application_id:
         clauses.append("application_id = %s")
@@ -156,7 +156,7 @@ def generate_cover_letter():
     row = db.execute_returning(
         """
         INSERT INTO generated_materials
-            (material_type, application_id, saved_job_id, company_name, role_title,
+            (type, application_id, saved_job_id, company_name, role_title,
              content, content_format, voice_check_passed, generation_context, status)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
@@ -246,7 +246,7 @@ def generate_thank_you():
     row = db.execute_returning(
         """
         INSERT INTO generated_materials
-            (material_type, application_id, company_name, role_title,
+            (type, application_id, company_name, role_title,
              content, content_format, voice_check_passed, generation_context, status)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
