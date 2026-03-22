@@ -69,18 +69,16 @@ def generate_cover_letter(
         if dossier:
             generation_context["company_id"] = dossier["id"]
 
-    # Candidate profile
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
     generation_context["candidate_profile"] = True
 
     # Top career bullets
     bullets = db.query(
-        "SELECT content FROM bullets ORDER BY impact_score DESC NULLS LAST LIMIT 5"
+        "SELECT text FROM bullets ORDER BY id DESC LIMIT 5"
     )
-    top_bullets = [b["content"] for b in bullets] if bullets else []
+    top_bullets = [b["text"] for b in bullets] if bullets else []
     generation_context["bullet_count"] = len(top_bullets)
 
     # Build placeholder cover letter with real data
@@ -144,9 +142,12 @@ def generate_thank_you(
     company_name = app.get("company") if app else None
     role_title = app.get("role_title") or (app.get("title") if app else None)
 
-    # Pull debrief
+    # Pull debrief (join through interviews table)
     debrief = db.query_one(
-        "SELECT * FROM interview_debriefs WHERE application_id = %s ORDER BY created_at DESC LIMIT 1",
+        """SELECT d.* FROM interview_debriefs d
+           JOIN interviews i ON d.interview_id = i.id
+           WHERE i.application_id = %s
+           ORDER BY d.created_at DESC LIMIT 1""",
         (application_id,),
     )
     debrief_notes = None
@@ -159,11 +160,9 @@ def generate_thank_you(
     if debrief_notes:
         generation_context["debrief_notes_provided"] = True
 
-    # Candidate profile
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
 
     interviewer = interviewer_name or "the team"
     notes_ref = ""
@@ -250,11 +249,9 @@ def generate_outreach(
         if company_info:
             personalization_context["company_id"] = company_info["id"]
 
-    # Candidate profile
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
 
     # Application context
     role_context = ""
@@ -282,9 +279,9 @@ def generate_outreach(
     row = db.execute_returning(
         """
         INSERT INTO outreach_messages
-            (contact_id, application_id, message_type, channel, subject, body,
+            (contact_id, application_id, message_type, channel, direction, subject, body,
              personalization_context, voice_check_passed, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
         (
@@ -292,6 +289,7 @@ def generate_outreach(
             application_id,
             message_type,
             channel,
+            "sent",
             subject,
             body,
             json.dumps(personalization_context),

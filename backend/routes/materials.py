@@ -46,7 +46,7 @@ def list_materials():
         SELECT *
         FROM generated_materials
         {where}
-        ORDER BY created_at DESC
+        ORDER BY generated_at DESC
         LIMIT %s OFFSET %s
         """,
         params + [limit, offset],
@@ -127,18 +127,16 @@ def generate_cover_letter():
         if dossier:
             generation_context["company_id"] = dossier["id"]
 
-    # Pull candidate profile
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Pull candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
     generation_context["candidate_profile"] = True
 
     # Pull top career bullets
     bullets = db.query(
-        "SELECT content FROM bullets ORDER BY impact_score DESC NULLS LAST LIMIT 5"
+        "SELECT text FROM bullets ORDER BY id DESC LIMIT 5"
     )
-    top_bullets = [b["content"] for b in bullets] if bullets else []
+    top_bullets = [b["text"] for b in bullets] if bullets else []
     generation_context["bullet_count"] = len(top_bullets)
 
     # Generate placeholder cover letter with real data references
@@ -206,9 +204,12 @@ def generate_thank_you():
     company_name = app.get("company") if app else None
     role_title = app.get("role_title") or (app.get("title") if app else None)
 
-    # Pull debrief data if available
+    # Pull debrief data if available (join through interviews table)
     debrief = db.query_one(
-        "SELECT * FROM interview_debriefs WHERE application_id = %s ORDER BY created_at DESC LIMIT 1",
+        """SELECT d.* FROM interview_debriefs d
+           JOIN interviews i ON d.interview_id = i.id
+           WHERE i.application_id = %s
+           ORDER BY d.created_at DESC LIMIT 1""",
         (application_id,),
     )
     if debrief:
@@ -220,11 +221,9 @@ def generate_thank_you():
     if debrief_notes:
         generation_context["debrief_notes_provided"] = True
 
-    # Pull candidate profile
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Pull candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
 
     # Generate under-200-word thank-you
     notes_ref = ""
@@ -438,11 +437,9 @@ def generate_personalized_outreach():
         if company_info:
             personalization_context["company_id"] = company_info["id"]
 
-    # Pull candidate profile
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Pull candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
 
     # Application context
     role_context = ""
@@ -472,9 +469,9 @@ def generate_personalized_outreach():
     row = db.execute_returning(
         """
         INSERT INTO outreach_messages
-            (contact_id, application_id, message_type, channel, subject, body,
+            (contact_id, application_id, message_type, channel, direction, subject, body,
              personalization_context, voice_check_passed, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
         (
@@ -482,6 +479,7 @@ def generate_personalized_outreach():
             application_id,
             message_type,
             channel,
+            "sent",
             subject,
             body,
             json.dumps(personalization_context),
@@ -522,11 +520,9 @@ def generate_cold_outreach():
     if dossier:
         personalization_context["company_id"] = dossier["id"]
 
-    # Pull candidate profile
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Pull candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
 
     # Contact name if provided
     contact_name = "Hiring Manager"
@@ -552,15 +548,16 @@ def generate_cold_outreach():
     row = db.execute_returning(
         """
         INSERT INTO outreach_messages
-            (contact_id, message_type, channel, subject, body,
+            (contact_id, message_type, channel, direction, subject, body,
              personalization_context, voice_check_passed, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
         (
             contact_id,
             "cold_outreach",
             "email",
+            "sent",
             subject,
             body,
             json.dumps(personalization_context),
@@ -602,11 +599,9 @@ def generate_warm_intro():
     personalization_context["contact_name"] = contact_name
     personalization_context["contact_company"] = contact.get("company")
 
-    # Pull candidate profile
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Pull candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
 
     subject = f"Quick favor - intro to someone at {target_company}?"
     body = (
@@ -621,15 +616,16 @@ def generate_warm_intro():
     row = db.execute_returning(
         """
         INSERT INTO outreach_messages
-            (contact_id, message_type, channel, subject, body,
+            (contact_id, message_type, channel, direction, subject, body,
              personalization_context, voice_check_passed, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
         (
             contact_id,
             "warm_intro_request",
             "email",
+            "sent",
             subject,
             body,
             json.dumps(personalization_context),
@@ -657,11 +653,9 @@ def batch_outreach():
     message_type = data.get("message_type", "networking")
     application_id = data.get("application_id")
 
-    # Pull candidate profile once
-    profile = db.query_one(
-        "SELECT * FROM candidate_profile ORDER BY id LIMIT 1"
-    )
-    candidate_name = profile["full_name"] if profile else "Candidate"
+    # Pull candidate name from resume_header
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
 
     # Application context
     role_context = ""
@@ -707,9 +701,9 @@ def batch_outreach():
         row = db.execute_returning(
             """
             INSERT INTO outreach_messages
-                (contact_id, application_id, message_type, channel, subject, body,
+                (contact_id, application_id, message_type, channel, direction, subject, body,
                  personalization_context, voice_check_passed, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -717,6 +711,7 @@ def batch_outreach():
                 application_id,
                 message_type,
                 "email",
+                "sent",
                 subject,
                 body,
                 json.dumps(personalization_context),
