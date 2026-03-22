@@ -232,3 +232,271 @@ def register_skills_dev_tools(mcp):
         ]
 
         return {"differentiators": differentiators[:15], "gaps_to_unlock": gaps_to_unlock}
+
+    @mcp.tool()
+    def get_learning_path(top_n: int = 10) -> dict:
+        """Generate learning path recommendations based on skill gaps and certification ROI.
+
+        Combines gap analysis data with learning_plans and certifications to
+        produce a prioritized action plan: quick wins first, then investments.
+
+        Args:
+            top_n: Maximum number of gap skills to surface (default 10)
+
+        Returns:
+            dict with learning_path list and existing_plans list
+        """
+        # Collect gap skills from gap_analyses
+        gap_rows = db.query(
+            "SELECT id, gaps FROM gap_analyses WHERE gaps IS NOT NULL"
+        )
+        user_rows = db.query("SELECT LOWER(name) AS name, category, proficiency FROM skills")
+        user_skills = {r["name"] for r in user_rows}
+
+        gap_counter: Counter = Counter()
+        for row in gap_rows:
+            data = row["gaps"]
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if isinstance(data, list):
+                for item in data:
+                    name = item.get("skill") or item.get("name") or (item if isinstance(item, str) else "")
+                    if name and name.lower() not in user_skills:
+                        gap_counter[name.strip()] += 1
+            elif isinstance(data, dict):
+                for name in data.keys():
+                    if name.lower() not in user_skills:
+                        gap_counter[name.strip()] += 1
+
+        # Existing learning plans
+        plans = db.query(
+            "SELECT id, title, status, target_date, notes FROM learning_plans ORDER BY created_at DESC"
+        )
+        plan_titles_lower = {p["title"].lower() for p in plans}
+
+        # Build recommendations
+        resource_map = {
+            "aws": "AWS Skill Builder (free tier) + Udemy AWS SAA-C03",
+            "azure": "Microsoft Learn (free) + AZ-900 prep",
+            "gcp": "Google Cloud Skills Boost",
+            "kubernetes": "KodeKloud free tier + CKA exam prep",
+            "python": "Real Python, Python.org tutorials",
+            "terraform": "HashiCorp Learn (free)",
+            "docker": "Play With Docker + Docker Docs",
+            "sql": "Mode Analytics SQL Tutorial (free)",
+            "machine learning": "fast.ai (free) + Coursera ML Specialization",
+            "data analysis": "Kaggle Learn (free)",
+            "react": "react.dev official docs + Scrimba",
+            "typescript": "TypeScript Handbook (free)",
+            "scrum": "Scrum.org free learning path + PSM I",
+            "pmp": "PMI PMBOK + Andrew Ramdayal Udemy course",
+            "agile": "Atlassian Agile Coach (free)",
+        }
+
+        path = []
+        for skill, jd_count in gap_counter.most_common(top_n):
+            sl = skill.lower()
+            # Check adjacency
+            adjacent = []
+            for r in user_rows:
+                us = r["name"]
+                if len(us) > 3 and (us in sl or sl in us):
+                    adjacent.append(r["name"])
+
+            resource = None
+            for key, res in resource_map.items():
+                if key in sl:
+                    resource = res
+                    break
+
+            already_planned = sl in plan_titles_lower or any(sl in pt for pt in plan_titles_lower)
+
+            path.append({
+                "skill": skill,
+                "jd_demand": jd_count,
+                "difficulty": "quick_win" if adjacent else "investment",
+                "adjacent_skills_you_have": adjacent[:3],
+                "suggested_resources": resource or "Search Coursera, LinkedIn Learning, or official docs",
+                "already_planned": already_planned,
+                "action": "Add to learning plan" if not already_planned else "In progress",
+            })
+
+        return {
+            "learning_path": path,
+            "existing_plans": plans,
+            "total_gaps_found": len(gap_counter),
+        }
+
+    @mcp.tool()
+    def check_skill_trend_alerts() -> dict:
+        """Check for trending skills the user lacks and create notifications for new ones.
+
+        Compares market_signals skill mentions against user's skills table.
+        Creates a notification for each newly-trending skill not yet notified.
+
+        Returns:
+            dict with alerts_created count and alert list
+        """
+        user_rows = db.query("SELECT LOWER(name) AS name FROM skills")
+        user_skills = {r["name"] for r in user_rows}
+
+        # Pull recent market signals with skill references
+        signals = db.query(
+            """
+            SELECT id, skill, signal_type, source, created_at
+            FROM market_signals
+            WHERE skill IS NOT NULL
+              AND created_at >= NOW() - INTERVAL '30 days'
+            ORDER BY created_at DESC
+            """
+        )
+
+        if not signals:
+            return {"alerts_created": 0, "alerts": [], "message": "No recent market signals found"}
+
+        # Count skill demand from signals
+        skill_counter: Counter = Counter()
+        for sig in signals:
+            sk = sig.get("skill", "").strip().lower()
+            if sk:
+                skill_counter[sk] += 1
+
+        # Determine which trending skills the user lacks and hasn't been alerted about
+        existing_alert_types = db.query(
+            """
+            SELECT DISTINCT title FROM notifications
+            WHERE type = 'skill_trend'
+              AND created_at >= NOW() - INTERVAL '7 days'
+            """
+        )
+        recently_alerted = {r["title"].lower() for r in existing_alert_types}
+
+        alerts_created = []
+        for skill, freq in skill_counter.most_common(20):
+            if skill in user_skills:
+                continue  # User already has this skill
+            alert_title = f"Trending skill: {skill.title()}"
+            if alert_title.lower() in recently_alerted:
+                continue  # Already notified this week
+
+            db.execute(
+                """
+                INSERT INTO notifications (type, severity, title, body, entity_type)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    "skill_trend",
+                    "info",
+                    alert_title,
+                    f"'{skill.title()}' appears in {freq} recent market signal(s). Consider adding to your learning plan.",
+                    "skill",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO activity_log (action, entity_type, details)
+                VALUES (%s, %s, %s)
+                """,
+                (
+                    "skill_trend_alert_created",
+                    "skill",
+                    json.dumps({"skill": skill, "signal_count": freq}),
+                ),
+            )
+            alerts_created.append({"skill": skill, "signal_count": freq, "alert": alert_title})
+
+        return {
+            "alerts_created": len(alerts_created),
+            "alerts": alerts_created,
+            "skills_checked": len(skill_counter),
+        }
+
+    @mcp.tool()
+    def link_skill_evidence(skill_id: int, bullet_ids: list[int]) -> dict:
+        """Link bullets as evidence for a skill.
+
+        Updates skills.bullet_ids (array) to include the given bullet IDs,
+        deduplicating against any already linked.
+
+        Args:
+            skill_id: ID of the skill to update
+            bullet_ids: List of bullet IDs that demonstrate this skill
+
+        Returns:
+            dict with updated skill record
+        """
+        existing = db.query_one("SELECT id, name, bullet_ids FROM skills WHERE id = %s", (skill_id,))
+        if not existing:
+            return {"error": f"Skill {skill_id} not found"}
+
+        current_ids = existing.get("bullet_ids") or []
+        if isinstance(current_ids, str):
+            try:
+                current_ids = json.loads(current_ids)
+            except (json.JSONDecodeError, TypeError):
+                current_ids = []
+
+        merged = list({*current_ids, *bullet_ids})
+
+        updated = db.execute_returning(
+            "UPDATE skills SET bullet_ids = %s WHERE id = %s RETURNING *",
+            (merged, skill_id),
+        )
+
+        db.execute(
+            "INSERT INTO activity_log (action, entity_type, entity_id, details) VALUES (%s, %s, %s, %s)",
+            (
+                "skill_evidence_linked",
+                "skill",
+                skill_id,
+                json.dumps({"bullet_ids_added": bullet_ids, "total_linked": len(merged)}),
+            ),
+        )
+
+        return {"skill": updated, "bullet_ids_linked": merged, "count": len(merged)}
+
+    @mcp.tool()
+    def get_skill_evidence(skill_id: int) -> dict:
+        """Get bullets linked as evidence for a skill.
+
+        Args:
+            skill_id: ID of the skill
+
+        Returns:
+            dict with skill name and linked bullet texts
+        """
+        skill = db.query_one("SELECT id, name, category, proficiency, bullet_ids FROM skills WHERE id = %s", (skill_id,))
+        if not skill:
+            return {"error": f"Skill {skill_id} not found"}
+
+        bullet_ids = skill.get("bullet_ids") or []
+        if isinstance(bullet_ids, str):
+            try:
+                bullet_ids = json.loads(bullet_ids)
+            except (json.JSONDecodeError, TypeError):
+                bullet_ids = []
+
+        bullets = []
+        if bullet_ids:
+            bullets = db.query(
+                """
+                SELECT b.id, b.text, b.type, b.tags, ch.employer, ch.title AS role_title
+                FROM bullets b
+                LEFT JOIN career_history ch ON ch.id = b.career_history_id
+                WHERE b.id = ANY(%s)
+                ORDER BY b.id
+                """,
+                (bullet_ids,),
+            )
+
+        return {
+            "skill_id": skill_id,
+            "skill_name": skill["name"],
+            "category": skill.get("category"),
+            "proficiency": skill.get("proficiency"),
+            "evidence_count": len(bullets),
+            "bullets": bullets,
+        }

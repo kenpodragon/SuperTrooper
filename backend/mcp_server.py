@@ -66,6 +66,9 @@ register_search_intel_tools(mcp)
 from mcp_tools_skills_dev import register_skills_dev_tools
 register_skills_dev_tools(mcp)
 
+from mcp_tools_onboard import register_onboard_tools
+register_onboard_tools(mcp)
+
 
 # ---------------------------------------------------------------------------
 # Delegate stubs for satellites that expose raw functions (no register_ yet)

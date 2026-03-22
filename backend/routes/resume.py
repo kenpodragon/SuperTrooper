@@ -796,3 +796,235 @@ def generate_resume():
         as_attachment=True,
         download_name=filename,
     )
+
+
+# ---------------------------------------------------------------------------
+# S10: Resume content validation — checks bullet quality, placeholders, voice
+# ---------------------------------------------------------------------------
+
+# Patterns that flag a bullet as lacking a metric
+_METRIC_PATTERNS = re.compile(
+    r"\d+%|\$[\d,]+|[\d,]+\s*(users|customers|engineers|employees|teams?|"
+    r"services?|systems?|projects?|products?|repos?|pipelines?)|"
+    r"\d+x|reduced|increased|improved|saved|grew|cut|boosted|delivered|"
+    r"launched|scaled|migrated|built|led\s+\d",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_PATTERNS = re.compile(
+    r"\[.*?\]|\bTBD\b|\bXXX\b|\bPLACEHOLDER\b|\bINSERT\b|\bTODO\b",
+    re.IGNORECASE,
+)
+_REQUIRED_SECTIONS = {
+    "summary", "experience", "skills", "education",
+}
+_BANNED_PHRASES = [
+    "proven track record", "results-driven", "detail-oriented",
+    "team player", "go-to", "utilize", "leverage", "synergy",
+    "innovative", "dynamic", "passionate", "guru", "ninja", "rockstar",
+]
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/validate-content", methods=["GET"])
+def validate_recipe_content(recipe_id):
+    """Deep content validation of a recipe: bullet quality, placeholders, voice.
+
+    Checks:
+    - All required sections present (summary, experience, skills, education)
+    - No placeholder text ([...], TBD, XXX) in resolved bullet text
+    - Bullets have measurable metrics (numbers, %, $, outcome verbs)
+    - No banned voice patterns in bullet text
+
+    Returns:
+        {"valid": bool, "score": 0-100, "issues": [...], "stats": {...}}
+    """
+    row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not row:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    recipe_json = row.get("recipe") or {}
+    if isinstance(recipe_json, str):
+        recipe_json = json.loads(recipe_json)
+
+    issues = []
+    stats = {
+        "bullets_checked": 0,
+        "bullets_with_metrics": 0,
+        "bullets_missing_metrics": 0,
+        "placeholders_found": 0,
+        "voice_violations": 0,
+        "sections_present": [],
+        "sections_missing": [],
+    }
+
+    # 1. Check required sections
+    slot_keys_lower = {k.lower() for k in recipe_json.keys()}
+    for section in _REQUIRED_SECTIONS:
+        found = any(section in k for k in slot_keys_lower)
+        if found:
+            stats["sections_present"].append(section)
+        else:
+            stats["sections_missing"].append(section)
+            issues.append({
+                "type": "missing_section",
+                "severity": "error",
+                "message": f"Required section '{section}' not found in recipe slots",
+            })
+
+    # 2. Resolve bullet IDs and check content
+    for slot_name, ref in recipe_json.items():
+        if not isinstance(ref, dict):
+            continue
+        table = ref.get("table", "")
+        ids = ref.get("ids", [])
+        if table == "bullets" and ids:
+            bullets = db.query(
+                "SELECT id, text, metrics_json FROM bullets WHERE id = ANY(%s)",
+                (ids,),
+            )
+            for b in bullets:
+                text = b.get("text") or ""
+                stats["bullets_checked"] += 1
+
+                # Placeholder check
+                if _PLACEHOLDER_PATTERNS.search(text):
+                    stats["placeholders_found"] += 1
+                    issues.append({
+                        "type": "placeholder_text",
+                        "severity": "error",
+                        "bullet_id": b["id"],
+                        "slot": slot_name,
+                        "message": f"Bullet {b['id']} contains placeholder text",
+                        "text_preview": text[:80],
+                    })
+
+                # Metric check
+                has_metric = bool(_METRIC_PATTERNS.search(text)) or bool(b.get("metrics_json"))
+                if has_metric:
+                    stats["bullets_with_metrics"] += 1
+                else:
+                    stats["bullets_missing_metrics"] += 1
+                    issues.append({
+                        "type": "missing_metric",
+                        "severity": "warning",
+                        "bullet_id": b["id"],
+                        "slot": slot_name,
+                        "message": f"Bullet {b['id']} has no measurable metric or outcome",
+                        "text_preview": text[:80],
+                    })
+
+                # Voice check
+                text_lower = text.lower()
+                for phrase in _BANNED_PHRASES:
+                    if phrase in text_lower:
+                        stats["voice_violations"] += 1
+                        issues.append({
+                            "type": "voice_violation",
+                            "severity": "warning",
+                            "bullet_id": b["id"],
+                            "slot": slot_name,
+                            "message": f"Banned phrase '{phrase}' in bullet {b['id']}",
+                            "text_preview": text[:80],
+                        })
+                        break
+
+    # 3. Score: start at 100, deduct per issue type
+    errors = [i for i in issues if i["severity"] == "error"]
+    warnings = [i for i in issues if i["severity"] == "warning"]
+    score = max(0, 100 - (len(errors) * 15) - (len(warnings) * 5))
+
+    return jsonify({
+        "valid": len(errors) == 0,
+        "score": score,
+        "issue_count": {"errors": len(errors), "warnings": len(warnings)},
+        "issues": issues,
+        "stats": stats,
+    }), 200
+
+
+@bp.route("/api/resume/recipes/compare", methods=["POST"])
+def compare_recipes():
+    """Compare two recipes side-by-side: bullet diffs, skill changes, slot differences.
+
+    Body (JSON):
+        recipe_a_id (int): first recipe ID
+        recipe_b_id (int): second recipe ID
+
+    Returns:
+        {"added": [...], "removed": [...], "shared": [...], "skill_diff": {...}}
+    """
+    data = request.get_json(force=True)
+    id_a = data.get("recipe_a_id")
+    id_b = data.get("recipe_b_id")
+    if not id_a or not id_b:
+        return jsonify({"error": "recipe_a_id and recipe_b_id are required"}), 400
+
+    def _load_recipe(rid):
+        r = db.query_one("SELECT id, name, recipe FROM resume_recipes WHERE id = %s", (rid,))
+        if not r:
+            return None, None
+        rj = r["recipe"]
+        if isinstance(rj, str):
+            rj = json.loads(rj)
+        return r, rj
+
+    rec_a, json_a = _load_recipe(id_a)
+    rec_b, json_b = _load_recipe(id_b)
+    if not rec_a:
+        return jsonify({"error": f"Recipe {id_a} not found"}), 404
+    if not rec_b:
+        return jsonify({"error": f"Recipe {id_b} not found"}), 404
+
+    def _extract_ids(recipe_json, table_name):
+        ids = set()
+        for ref in recipe_json.values():
+            if isinstance(ref, dict) and ref.get("table") == table_name:
+                ids.update(ref.get("ids", []))
+        return ids
+
+    # Bullet diff
+    bullets_a = _extract_ids(json_a, "bullets")
+    bullets_b = _extract_ids(json_b, "bullets")
+    added_ids = bullets_b - bullets_a
+    removed_ids = bullets_a - bullets_b
+    shared_ids = bullets_a & bullets_b
+
+    def _fetch_bullets(ids):
+        if not ids:
+            return []
+        return db.query(
+            "SELECT b.id, b.text, b.tags, ch.employer FROM bullets b LEFT JOIN career_history ch ON ch.id = b.career_history_id WHERE b.id = ANY(%s)",
+            (list(ids),),
+        )
+
+    # Skill diff
+    skills_a = _extract_ids(json_a, "skills")
+    skills_b = _extract_ids(json_b, "skills")
+
+    def _fetch_skills(ids):
+        if not ids:
+            return []
+        return db.query("SELECT id, name, category FROM skills WHERE id = ANY(%s)", (list(ids),))
+
+    # Slot key diff
+    slots_a = set(json_a.keys())
+    slots_b = set(json_b.keys())
+
+    return jsonify({
+        "recipe_a": {"id": id_a, "name": rec_a["name"]},
+        "recipe_b": {"id": id_b, "name": rec_b["name"]},
+        "bullet_diff": {
+            "added_in_b": _fetch_bullets(added_ids),
+            "removed_in_b": _fetch_bullets(removed_ids),
+            "shared_count": len(shared_ids),
+        },
+        "skill_diff": {
+            "added_in_b": _fetch_skills(skills_b - skills_a),
+            "removed_in_b": _fetch_skills(skills_a - skills_b),
+            "shared_count": len(skills_a & skills_b),
+        },
+        "slot_diff": {
+            "only_in_a": sorted(slots_a - slots_b),
+            "only_in_b": sorted(slots_b - slots_a),
+            "shared": sorted(slots_a & slots_b),
+        },
+    }), 200

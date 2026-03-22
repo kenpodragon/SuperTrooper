@@ -355,3 +355,111 @@ def _python_gap_analysis(context: dict) -> dict:
 def _ai_gap_analysis(context: dict) -> dict:
     """AI-enhanced gap analysis -- stub for future implementation."""
     raise NotImplementedError("AI gap analysis not yet implemented")
+
+
+# ---------------------------------------------------------------------------
+# CC: Global search — searches applications, contacts, companies, emails
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/search/global", methods=["GET"])
+def global_search():
+    """Search across all major entities by keyword.
+
+    Query params:
+        q (required): keyword to search
+        entities: comma-separated subset to search (applications,contacts,companies,emails,bullets)
+                  default = all
+        limit: max results per entity type (default 10)
+
+    Returns:
+        {"query": q, "results": {"applications": [...], "contacts": [...], ...}}
+    """
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"error": "q (query) is required"}), 400
+
+    entity_filter = request.args.get("entities", "")
+    limit = int(request.args.get("limit", 10))
+
+    all_entities = {"applications", "contacts", "companies", "emails", "bullets"}
+    if entity_filter:
+        requested = {e.strip() for e in entity_filter.split(",")}
+        entities = all_entities & requested
+    else:
+        entities = all_entities
+
+    results = {}
+
+    if "applications" in entities:
+        rows = db.query(
+            """
+            SELECT id, company_name, role, status, date_applied, source
+            FROM applications
+            WHERE company_name ILIKE %s OR role ILIKE %s OR notes ILIKE %s
+            ORDER BY date_applied DESC NULLS LAST
+            LIMIT %s
+            """,
+            (f"%{q}%", f"%{q}%", f"%{q}%", limit),
+        )
+        results["applications"] = rows
+
+    if "contacts" in entities:
+        rows = db.query(
+            """
+            SELECT id, name, company, title, email, relationship, relationship_strength
+            FROM contacts
+            WHERE name ILIKE %s OR company ILIKE %s OR title ILIKE %s OR notes ILIKE %s
+            ORDER BY name
+            LIMIT %s
+            """,
+            (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit),
+        )
+        results["contacts"] = rows
+
+    if "companies" in entities:
+        rows = db.query(
+            """
+            SELECT id, name, sector, hq_location, priority, fit_score, target_role
+            FROM companies
+            WHERE name ILIKE %s OR sector ILIKE %s OR notes ILIKE %s OR target_role ILIKE %s
+            ORDER BY fit_score DESC NULLS LAST, name
+            LIMIT %s
+            """,
+            (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit),
+        )
+        results["companies"] = rows
+
+    if "emails" in entities:
+        rows = db.query(
+            """
+            SELECT id, date, from_name, subject, snippet, category, application_id
+            FROM emails
+            WHERE subject ILIKE %s OR snippet ILIKE %s OR body ILIKE %s OR from_name ILIKE %s
+            ORDER BY date DESC NULLS LAST
+            LIMIT %s
+            """,
+            (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit),
+        )
+        results["emails"] = rows
+
+    if "bullets" in entities:
+        rows = db.query(
+            """
+            SELECT b.id, b.text, b.type, b.tags, ch.employer, ch.title AS role_title
+            FROM bullets b
+            LEFT JOIN career_history ch ON ch.id = b.career_history_id
+            WHERE b.text ILIKE %s
+            ORDER BY b.id
+            LIMIT %s
+            """,
+            (f"%{q}%", limit),
+        )
+        results["bullets"] = rows
+
+    totals = {k: len(v) for k, v in results.items()}
+    return jsonify({
+        "query": q,
+        "total_hits": sum(totals.values()),
+        "counts": totals,
+        "results": results,
+    }), 200

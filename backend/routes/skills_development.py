@@ -477,3 +477,294 @@ def rerun_gaps():
             "improvement_pct": improvement,
         },
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# S16: Learning path recommendations — gaps + resources + plans
+# ---------------------------------------------------------------------------
+
+_RESOURCE_MAP = {
+    "aws": "AWS Skill Builder (free tier) + Udemy AWS SAA-C03",
+    "azure": "Microsoft Learn (free) + AZ-900 prep",
+    "gcp": "Google Cloud Skills Boost",
+    "kubernetes": "KodeKloud free tier + CKA exam prep",
+    "python": "Real Python, Python.org tutorials",
+    "terraform": "HashiCorp Learn (free)",
+    "docker": "Play With Docker + Docker Docs",
+    "sql": "Mode Analytics SQL Tutorial (free)",
+    "machine learning": "fast.ai (free) + Coursera ML Specialization",
+    "data analysis": "Kaggle Learn (free)",
+    "react": "react.dev official docs + Scrimba",
+    "typescript": "TypeScript Handbook (free)",
+    "scrum": "Scrum.org free learning path + PSM I",
+    "pmp": "PMI PMBOK + Andrew Ramdayal Udemy course",
+    "agile": "Atlassian Agile Coach (free)",
+    "leadership": "Harvard ManageMentor, Coursera Leadership Specialization",
+    "product management": "Reforge, Lenny's Newsletter, Pragmatic Institute",
+    "data": "Kaggle Learn, Mode Analytics SQL, dbt Learn",
+    "security": "TryHackMe, SANS free resources, Security+ prep",
+    "java": "Codecademy Java, Baeldung.com",
+    "go": "Tour of Go (official), Go by Example",
+    "rust": "The Rust Book (free, official)",
+}
+
+
+@bp.route("/api/skills/learning-path", methods=["GET"])
+def get_learning_path():
+    """Generate a prioritised learning path from skill gaps.
+
+    Query params:
+        top_n: max gap skills to surface (default 10)
+
+    Returns:
+        {"learning_path": [...], "existing_plans": [...], "total_gaps_found": int}
+    """
+    top_n = int(request.args.get("top_n", 10))
+
+    gap_rows = db.query("SELECT gaps FROM gap_analyses WHERE gaps IS NOT NULL")
+    user_rows = db.query("SELECT LOWER(name) AS name, category, proficiency FROM skills")
+    user_skills = {r["name"] for r in user_rows}
+
+    gap_counter: Counter = Counter()
+    for row in gap_rows:
+        data = row["gaps"]
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if isinstance(data, list):
+            for item in data:
+                name = item if isinstance(item, str) else (item.get("skill") or item.get("name") or "")
+                if name and name.lower() not in user_skills:
+                    gap_counter[name.strip()] += 1
+        elif isinstance(data, dict):
+            for name in data.keys():
+                if name.lower() not in user_skills:
+                    gap_counter[name.strip()] += 1
+
+    plans = db.query(
+        "SELECT id, skill_name, status, priority, estimated_hours FROM learning_plans ORDER BY priority ASC, created_at DESC"
+    )
+    plan_titles_lower = {p["skill_name"].lower() for p in plans}
+
+    path = []
+    for skill, jd_count in gap_counter.most_common(top_n):
+        sl = skill.lower()
+        adjacent = [r["name"] for r in user_rows if len(r["name"]) > 3 and (r["name"] in sl or sl in r["name"])]
+        resource = next((res for key, res in _RESOURCE_MAP.items() if key in sl), None)
+        already_planned = sl in plan_titles_lower or any(sl in pt for pt in plan_titles_lower)
+
+        path.append({
+            "skill": skill,
+            "jd_demand": jd_count,
+            "difficulty": "quick_win" if adjacent else "investment",
+            "adjacent_skills_you_have": adjacent[:3],
+            "suggested_resources": resource or "Search Coursera, LinkedIn Learning, or official docs",
+            "already_planned": already_planned,
+            "action": "In progress" if already_planned else "Add to learning plan",
+        })
+
+    return jsonify({
+        "learning_path": path,
+        "existing_plans": plans,
+        "total_gaps_found": len(gap_counter),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# S16: Skill trend alerts — trigger check, create notifications
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/skills/trend-alerts", methods=["POST"])
+def create_skill_trend_alerts():
+    """Check market_signals for trending skills the user lacks and create notifications.
+
+    Creates one notification per newly trending skill (deduped within 7 days).
+
+    Returns:
+        {"alerts_created": int, "alerts": [...], "skills_checked": int}
+    """
+    user_skills = _get_all_user_skills()
+
+    signals = db.query(
+        """
+        SELECT skill, signal_type, source
+        FROM market_signals
+        WHERE skill IS NOT NULL
+          AND created_at >= NOW() - INTERVAL '30 days'
+        """
+    )
+
+    if not signals:
+        return jsonify({"alerts_created": 0, "alerts": [], "message": "No recent market signals"}), 200
+
+    skill_counter: Counter = Counter()
+    for sig in signals:
+        sk = (sig.get("skill") or "").strip().lower()
+        if sk:
+            skill_counter[sk] += 1
+
+    existing_alerts = db.query(
+        """
+        SELECT DISTINCT LOWER(title) AS title FROM notifications
+        WHERE type = 'skill_trend'
+          AND created_at >= NOW() - INTERVAL '7 days'
+        """
+    )
+    recently_alerted = {r["title"] for r in existing_alerts}
+
+    alerts_created = []
+    for skill, freq in skill_counter.most_common(20):
+        if skill in user_skills:
+            continue
+        alert_title = f"Trending skill: {skill.title()}"
+        if alert_title.lower() in recently_alerted:
+            continue
+
+        db.execute(
+            """
+            INSERT INTO notifications (type, severity, title, body, entity_type)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                "skill_trend",
+                "info",
+                alert_title,
+                f"'{skill.title()}' appears in {freq} recent market signal(s). Consider adding to your learning plan.",
+                "skill",
+            ),
+        )
+        db.execute(
+            "INSERT INTO activity_log (action, entity_type, details) VALUES (%s, %s, %s)",
+            ("skill_trend_alert_created", "skill", json.dumps({"skill": skill, "signal_count": freq})),
+        )
+        alerts_created.append({"skill": skill, "signal_count": freq})
+
+    return jsonify({
+        "alerts_created": len(alerts_created),
+        "alerts": alerts_created,
+        "skills_checked": len(skill_counter),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# S16: Skill evidence — link bullets to skills
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/skills/<int:skill_id>/evidence", methods=["GET"])
+def get_skill_evidence(skill_id):
+    """Get bullets linked as evidence for a skill.
+
+    Returns:
+        {"skill_id": int, "skill_name": str, "evidence_count": int, "bullets": [...]}
+    """
+    skill = db.query_one(
+        "SELECT id, name, category, proficiency, bullet_ids FROM skills WHERE id = %s",
+        (skill_id,),
+    )
+    if not skill:
+        return jsonify({"error": "Skill not found"}), 404
+
+    bullet_ids = skill.get("bullet_ids") or []
+    if isinstance(bullet_ids, str):
+        try:
+            bullet_ids = json.loads(bullet_ids)
+        except (json.JSONDecodeError, TypeError):
+            bullet_ids = []
+
+    bullets = []
+    if bullet_ids:
+        bullets = db.query(
+            """
+            SELECT b.id, b.text, b.type, b.tags, ch.employer, ch.title AS role_title
+            FROM bullets b
+            LEFT JOIN career_history ch ON ch.id = b.career_history_id
+            WHERE b.id = ANY(%s)
+            ORDER BY b.id
+            """,
+            (bullet_ids,),
+        )
+
+    return jsonify({
+        "skill_id": skill_id,
+        "skill_name": skill["name"],
+        "category": skill.get("category"),
+        "proficiency": skill.get("proficiency"),
+        "evidence_count": len(bullets),
+        "bullets": bullets,
+    }), 200
+
+
+@bp.route("/api/skills/<int:skill_id>/evidence", methods=["POST"])
+def link_skill_evidence(skill_id):
+    """Link bullet IDs as evidence for a skill.
+
+    Body (JSON):
+        bullet_ids (list[int]): bullet IDs to link
+
+    Returns:
+        {"skill_id": int, "bullet_ids_linked": [...], "count": int}
+    """
+    data = request.get_json(force=True)
+    new_ids = data.get("bullet_ids", [])
+    if not new_ids:
+        return jsonify({"error": "bullet_ids list is required"}), 400
+
+    skill = db.query_one("SELECT id, name, bullet_ids FROM skills WHERE id = %s", (skill_id,))
+    if not skill:
+        return jsonify({"error": "Skill not found"}), 404
+
+    current = skill.get("bullet_ids") or []
+    if isinstance(current, str):
+        try:
+            current = json.loads(current)
+        except (json.JSONDecodeError, TypeError):
+            current = []
+
+    merged = list({*current, *new_ids})
+
+    updated = db.execute_returning(
+        "UPDATE skills SET bullet_ids = %s WHERE id = %s RETURNING id, name, bullet_ids",
+        (merged, skill_id),
+    )
+
+    db.execute(
+        "INSERT INTO activity_log (action, entity_type, entity_id, details) VALUES (%s, %s, %s, %s)",
+        (
+            "skill_evidence_linked",
+            "skill",
+            skill_id,
+            json.dumps({"bullet_ids_added": new_ids, "total_linked": len(merged)}),
+        ),
+    )
+
+    return jsonify({
+        "skill_id": skill_id,
+        "skill_name": skill["name"],
+        "bullet_ids_linked": merged,
+        "count": len(merged),
+    }), 200
+
+
+@bp.route("/api/skills/<int:skill_id>/evidence/<int:bullet_id>", methods=["DELETE"])
+def unlink_skill_evidence(skill_id, bullet_id):
+    """Remove a bullet from a skill's evidence list."""
+    skill = db.query_one("SELECT id, name, bullet_ids FROM skills WHERE id = %s", (skill_id,))
+    if not skill:
+        return jsonify({"error": "Skill not found"}), 404
+
+    current = skill.get("bullet_ids") or []
+    if isinstance(current, str):
+        try:
+            current = json.loads(current)
+        except (json.JSONDecodeError, TypeError):
+            current = []
+
+    updated_ids = [i for i in current if i != bullet_id]
+    db.execute(
+        "UPDATE skills SET bullet_ids = %s WHERE id = %s",
+        (updated_ids, skill_id),
+    )
+
+    return jsonify({"skill_id": skill_id, "bullet_id_removed": bullet_id, "remaining_count": len(updated_ids)}), 200
