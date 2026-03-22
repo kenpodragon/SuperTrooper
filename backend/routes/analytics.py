@@ -2,6 +2,11 @@
 
 from flask import Blueprint, jsonify
 import db
+from mcp_tools_reporting import (
+    get_weekly_rollup,
+    get_pipeline_report,
+    generate_strategy_recommendations,
+)
 
 bp = Blueprint("analytics", __name__)
 
@@ -55,3 +60,20 @@ def summary():
         """
     )
     return jsonify(stats), 200
+
+
+@bp.route("/api/analytics/weekly-digest", methods=["GET"])
+def weekly_digest():
+    """Weekly campaign digest: rollup + pipeline trends + strategy recommendations."""
+    try:
+        rollup = get_weekly_rollup()
+        pipeline = get_pipeline_report()
+        recommendations = generate_strategy_recommendations(rollup, pipeline)
+
+        return jsonify({
+            "rollup": rollup,
+            "pipeline": pipeline,
+            "recommendations": recommendations,
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

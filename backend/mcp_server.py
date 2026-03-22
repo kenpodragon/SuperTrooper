@@ -493,6 +493,29 @@ def get_weekly_rollup() -> dict:
     return _impl()
 
 
+@mcp.tool()
+def get_weekly_digest() -> dict:
+    """Get full weekly campaign digest: rollup metrics, pipeline trends, and strategy recommendations.
+
+    Combines get_weekly_rollup + get_pipeline_report + strategy recommendations into one call.
+    Recommendations include: application volume guidance, follow-up cadence triggers,
+    interview skill alerts, networking nudges, and positive momentum signals.
+    """
+    from mcp_tools_reporting import (
+        get_weekly_rollup as _rollup,
+        get_pipeline_report as _pipeline,
+        generate_strategy_recommendations as _recs,
+    )
+    rollup = _rollup()
+    pipeline = _pipeline()
+    recommendations = _recs(rollup, pipeline)
+    return {
+        "rollup": rollup,
+        "pipeline": pipeline,
+        "recommendations": recommendations,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
