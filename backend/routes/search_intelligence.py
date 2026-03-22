@@ -289,10 +289,10 @@ def delete_saved_search(search_id):
 
 @bp.route("/api/saved-searches/<int:search_id>/run", methods=["POST"])
 def run_saved_search(search_id):
-    """Manually trigger a saved search run.
+    """Re-run a saved search and return new jobs discovered since last run.
 
-    Marks the search as run and updates timestamps.
-    Actual search integration happens via MCP/cron.
+    Compares fresh_jobs linked to this saved_search_id against last_run_at
+    to surface net-new results. Updates timestamps and results_count.
     """
     existing = db.query_one(
         "SELECT * FROM saved_searches WHERE id = %s AND is_active = TRUE",
@@ -301,6 +301,41 @@ def run_saved_search(search_id):
     if not existing:
         return jsonify({"error": "Not found or inactive"}), 404
 
+    last_run_at = existing.get("last_run_at")
+
+    # Find jobs linked to this search that arrived since last run
+    if last_run_at:
+        new_jobs = db.query(
+            """
+            SELECT id, title, company, location, salary_range, auto_score,
+                   status, source_type, discovered_at
+            FROM fresh_jobs
+            WHERE saved_search_id = %s
+              AND discovered_at > %s
+            ORDER BY auto_score DESC NULLS LAST, discovered_at DESC
+            """,
+            (search_id, last_run_at),
+        )
+    else:
+        # First run — return all jobs linked to this search
+        new_jobs = db.query(
+            """
+            SELECT id, title, company, location, salary_range, auto_score,
+                   status, source_type, discovered_at
+            FROM fresh_jobs
+            WHERE saved_search_id = %s
+            ORDER BY auto_score DESC NULLS LAST, discovered_at DESC
+            """,
+            (search_id,),
+        )
+
+    # Total jobs ever linked to this search
+    total_linked = db.query_one(
+        "SELECT COUNT(*)::int AS count FROM fresh_jobs WHERE saved_search_id = %s",
+        (search_id,),
+    )
+    total_count = total_linked["count"] if total_linked else 0
+
     schedule_days = {"daily": 1, "twice_weekly": 3, "weekly": 7, "manual": None}
     days = schedule_days.get(existing.get("schedule", "daily"), 1)
     next_run = (datetime.utcnow() + timedelta(days=days)) if days else None
@@ -308,13 +343,252 @@ def run_saved_search(search_id):
     row = db.execute_returning(
         """
         UPDATE saved_searches
-        SET last_run_at = NOW(), next_run_at = %s, updated_at = NOW()
+        SET last_run_at = NOW(), next_run_at = %s, results_count = %s, updated_at = NOW()
         WHERE id = %s
         RETURNING *
         """,
-        (next_run, search_id),
+        (next_run, total_count, search_id),
     )
-    return jsonify({"message": "Search run triggered", "search": row}), 200
+
+    return jsonify({
+        "search": row,
+        "new_since_last_run": len(new_jobs),
+        "new_jobs": new_jobs,
+        "total_linked": total_count,
+        "previous_run": last_run_at.isoformat() if hasattr(last_run_at, "isoformat") else str(last_run_at) if last_run_at else None,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Auto-Score Fresh Job on Arrival
+# ---------------------------------------------------------------------------
+
+def _compute_fit_score(jd_text: str) -> float | None:
+    """Keyword-based fit score for a JD against candidate skills. Returns 0-100 or None."""
+    if not jd_text:
+        return None
+    skills = db.query("SELECT name FROM skills")
+    if not skills:
+        return None
+    jd_lower = jd_text.lower()
+    common_skills = [
+        "python", "java", "javascript", "typescript", "react", "node",
+        "aws", "azure", "gcp", "docker", "kubernetes", "sql", "nosql",
+        "machine learning", "ai", "data science", "agile", "scrum",
+        "leadership", "strategy", "product management", "devops",
+        "terraform", "ci/cd", "microservices", "rest", "graphql",
+        "pandas", "spark", "kafka", "redis", "mongodb", "postgresql",
+    ]
+    candidate_skills = {s["name"].lower() for s in skills}
+    all_skills = candidate_skills | set(common_skills)
+    matched = sum(1 for kw in candidate_skills if kw in jd_lower)
+    total_relevant = sum(1 for kw in all_skills if kw in jd_lower)
+    if total_relevant == 0:
+        return None
+    return round((matched / total_relevant) * 100, 1)
+
+
+@bp.route("/api/fresh-jobs/<int:job_id>/score", methods=["POST"])
+def score_fresh_job(job_id):
+    """Compute and persist auto_score for a single fresh job.
+
+    Call after creating a fresh job to populate the fit score.
+    Also callable on demand to re-score.
+    """
+    job = db.query_one("SELECT id, jd_full, jd_snippet FROM fresh_jobs WHERE id = %s", (job_id,))
+    if not job:
+        return jsonify({"error": "Fresh job not found"}), 404
+
+    jd_text = job.get("jd_full") or job.get("jd_snippet") or ""
+    score = _compute_fit_score(jd_text)
+
+    if score is None:
+        return jsonify({"id": job_id, "auto_score": None, "message": "No JD text or no skills to match"}), 200
+
+    db.execute(
+        "UPDATE fresh_jobs SET auto_score = %s WHERE id = %s",
+        (score, job_id),
+    )
+    return jsonify({"id": job_id, "auto_score": score}), 200
+
+
+@bp.route("/api/fresh-jobs/score-unscored", methods=["POST"])
+def score_unscored_jobs():
+    """Batch-score all fresh_jobs where auto_score is NULL.
+
+    Safe to run repeatedly — only touches unscored rows.
+    """
+    unscored = db.query(
+        "SELECT id, jd_full, jd_snippet FROM fresh_jobs WHERE auto_score IS NULL"
+    )
+    if not unscored:
+        return jsonify({"scored": 0, "message": "All jobs already scored"}), 200
+
+    updated = 0
+    skipped = 0
+    for job in unscored:
+        jd_text = job.get("jd_full") or job.get("jd_snippet") or ""
+        score = _compute_fit_score(jd_text)
+        if score is not None:
+            db.execute(
+                "UPDATE fresh_jobs SET auto_score = %s WHERE id = %s",
+                (score, job["id"]),
+            )
+            updated += 1
+        else:
+            skipped += 1
+
+    return jsonify({
+        "scored": updated,
+        "skipped_no_jd": skipped,
+        "total_processed": len(unscored),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Cross-Platform Deduplication
+# ---------------------------------------------------------------------------
+
+def _title_slug(title: str) -> str:
+    """Normalize job title for fuzzy comparison."""
+    import re as _re
+    t = title.lower().strip()
+    # Remove seniority prefixes and suffixes that vary across postings
+    t = _re.sub(r"\b(senior|sr|junior|jr|lead|staff|principal|associate|mid|entry)\b", "", t)
+    t = _re.sub(r"[^a-z0-9 ]", " ", t)
+    t = _re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+@bp.route("/api/fresh-jobs/<int:job_id>/check-duplicate", methods=["GET"])
+def check_duplicate_job(job_id):
+    """Check if a fresh job is a duplicate of an existing saved job or fresh job.
+
+    Matches on normalized company name + normalized title similarity.
+    Returns any suspected duplicates with match confidence.
+    """
+    job = db.query_one(
+        "SELECT id, title, company FROM fresh_jobs WHERE id = %s", (job_id,)
+    )
+    if not job:
+        return jsonify({"error": "Fresh job not found"}), 404
+
+    company = (job.get("company") or "").lower().strip()
+    title_slug = _title_slug(job.get("title") or "")
+
+    if not company and not title_slug:
+        return jsonify({"is_duplicate": False, "matches": [], "reason": "No company or title to match on"}), 200
+
+    # Check saved_jobs
+    saved_candidates = db.query(
+        """
+        SELECT id, title, company, 'saved_job' AS source_table
+        FROM saved_jobs
+        WHERE LOWER(TRIM(company)) = %s
+        """,
+        (company,),
+    ) if company else []
+
+    # Check other fresh_jobs (exclude self)
+    fresh_candidates = db.query(
+        """
+        SELECT id, title, company, 'fresh_job' AS source_table
+        FROM fresh_jobs
+        WHERE LOWER(TRIM(company)) = %s
+          AND id != %s
+          AND status NOT IN ('passed', 'expired')
+        """,
+        (company, job_id),
+    ) if company else []
+
+    matches = []
+    for candidate in (saved_candidates + fresh_candidates):
+        candidate_slug = _title_slug(candidate.get("title") or "")
+        if not candidate_slug or not title_slug:
+            continue
+        # Compute simple word-overlap similarity
+        words_a = set(title_slug.split())
+        words_b = set(candidate_slug.split())
+        if not words_a or not words_b:
+            continue
+        overlap = len(words_a & words_b)
+        union = len(words_a | words_b)
+        similarity = round(overlap / union, 2) if union > 0 else 0.0
+        if similarity >= 0.5:
+            matches.append({
+                "id": candidate["id"],
+                "source_table": candidate["source_table"],
+                "title": candidate["title"],
+                "company": candidate["company"],
+                "title_similarity": similarity,
+            })
+
+    matches.sort(key=lambda x: -x["title_similarity"])
+    is_duplicate = len(matches) > 0
+
+    return jsonify({
+        "is_duplicate": is_duplicate,
+        "matches": matches,
+        "checked_job": {"id": job_id, "title": job["title"], "company": job["company"]},
+    }), 200
+
+
+@bp.route("/api/fresh-jobs/dedup-scan", methods=["POST"])
+def dedup_scan():
+    """Scan all 'new' fresh jobs for duplicates against saved_jobs and each other.
+
+    Returns a list of suspected duplicate pairs. Does not auto-delete.
+    Caller decides what to do with duplicates (pass/merge/keep).
+    """
+    new_jobs = db.query(
+        "SELECT id, title, company FROM fresh_jobs WHERE status = 'new'"
+    )
+    saved_jobs = db.query(
+        "SELECT id, title, company FROM saved_jobs WHERE status NOT IN ('archived', 'passed')"
+    )
+
+    duplicate_pairs = []
+    seen_pairs = set()
+
+    for job in new_jobs:
+        company = (job.get("company") or "").lower().strip()
+        title_slug = _title_slug(job.get("title") or "")
+        if not company or not title_slug:
+            continue
+
+        # Compare against saved_jobs
+        for saved in saved_jobs:
+            if (saved.get("company") or "").lower().strip() != company:
+                continue
+            saved_slug = _title_slug(saved.get("title") or "")
+            if not saved_slug:
+                continue
+            words_a = set(title_slug.split())
+            words_b = set(saved_slug.split())
+            if not words_a or not words_b:
+                continue
+            overlap = len(words_a & words_b)
+            union = len(words_a | words_b)
+            similarity = round(overlap / union, 2) if union > 0 else 0.0
+            if similarity >= 0.5:
+                pair_key = f"fresh_{job['id']}__saved_{saved['id']}"
+                if pair_key not in seen_pairs:
+                    seen_pairs.add(pair_key)
+                    duplicate_pairs.append({
+                        "fresh_job_id": job["id"],
+                        "fresh_title": job["title"],
+                        "duplicate_id": saved["id"],
+                        "duplicate_source": "saved_job",
+                        "duplicate_title": saved["title"],
+                        "company": job["company"],
+                        "similarity": similarity,
+                    })
+
+    return jsonify({
+        "scanned_fresh_jobs": len(new_jobs),
+        "duplicate_pairs_found": len(duplicate_pairs),
+        "pairs": duplicate_pairs,
+    }), 200
 
 
 # ---------------------------------------------------------------------------
