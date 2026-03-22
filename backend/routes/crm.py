@@ -189,7 +189,7 @@ def update_task(task_id):
 # Stage
 # ---------------------------------------------------------------------------
 
-@bp.route("/api/crm/contacts/<int:contact_id>/stage", methods=["PUT"])
+@bp.route("/api/crm/contacts/<int:contact_id>/stage", methods=["PUT", "PATCH"])
 def update_stage(contact_id):
     """Update a contact's relationship stage."""
     valid_stages = {"cold", "warm", "active", "close", "dormant"}
@@ -1173,3 +1173,88 @@ def add_event_attendees(event_id):
         "already_existed": already_exists,
         "not_found": not_found,
     }), 201
+
+
+# ---------------------------------------------------------------------------
+# Outreach Generation
+# ---------------------------------------------------------------------------
+
+OUTREACH_TEMPLATES = {
+    "cold": {
+        "subject": "Connecting re: {role} at {company}",
+        "body": (
+            "Hi {name},\n\n"
+            "I came across your profile and wanted to reach out. "
+            "I'm exploring opportunities in the {company} space and would love "
+            "to learn more about what your team is working on.\n\n"
+            "Would you have 15 minutes for a quick chat?\n\n"
+            "Best,\nStephen"
+        ),
+        "channel": "email",
+    },
+    "warm": {
+        "subject": "Great catching up — {company}",
+        "body": (
+            "Hi {name},\n\n"
+            "It was great connecting recently. I've been following what "
+            "{company} has been up to and I'm really impressed.\n\n"
+            "I'd love to hear more about your experience there and explore "
+            "whether there might be a fit for someone with my background.\n\n"
+            "Let me know if you have time this week.\n\n"
+            "Cheers,\nStephen"
+        ),
+        "channel": "email",
+    },
+    "follow_up": {
+        "subject": "Following up — {company}",
+        "body": (
+            "Hi {name},\n\n"
+            "Just wanted to follow up on my earlier message. I understand "
+            "you're busy... no rush at all. If the timing works better down "
+            "the road, I'm happy to reconnect then.\n\n"
+            "Thanks,\nStephen"
+        ),
+        "channel": "email",
+    },
+}
+
+
+@bp.route("/api/crm/generate-outreach", methods=["POST"])
+def generate_outreach():
+    """Generate a template-based outreach message for a contact.
+
+    Body JSON:
+        contact_id (int, required): ID of the contact
+        type (str): "cold", "warm", or "follow_up" (default: "cold")
+
+    Returns: {outreach: {subject, body, channel}}
+    """
+    data = request.get_json(force=True)
+    contact_id = data.get("contact_id")
+    outreach_type = data.get("type", "cold")
+
+    if not contact_id:
+        return jsonify({"error": "contact_id is required"}), 400
+
+    if outreach_type not in OUTREACH_TEMPLATES:
+        return jsonify({"error": f"Invalid type '{outreach_type}'. Use: cold, warm, follow_up"}), 400
+
+    contact = db.query_one(
+        "SELECT id, name, company, title, relationship_stage FROM contacts WHERE id = %s",
+        (contact_id,),
+    )
+    if not contact:
+        return jsonify({"error": "Contact not found"}), 404
+
+    name = (contact.get("name") or "there").split()[0]  # first name
+    company = contact.get("company") or "your company"
+    role = contact.get("title") or "your team"
+
+    template = OUTREACH_TEMPLATES[outreach_type]
+    outreach = {
+        "subject": template["subject"].format(name=name, company=company, role=role),
+        "body": template["body"].format(name=name, company=company, role=role),
+        "channel": template["channel"],
+    }
+
+    return jsonify({"outreach": outreach}), 200

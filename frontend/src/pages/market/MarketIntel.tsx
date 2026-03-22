@@ -128,7 +128,7 @@ export default function MarketIntel() {
 
   const { data: signals, isLoading } = useQuery({
     queryKey: ['market-signals', sourceFilter, typeFilter, severityFilter],
-    queryFn: () => api.get<MarketSignal[]>(`/market-intelligence${qs}`),
+    queryFn: () => api.get<{ count: number; signals: MarketSignal[] }>(`/market-intelligence${qs}`).then(r => r.signals),
   });
 
   const { data: summary } = useQuery({

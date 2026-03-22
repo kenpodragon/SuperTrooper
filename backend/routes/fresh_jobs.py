@@ -135,7 +135,7 @@ def update_fresh_job(job_id):
     return jsonify(row), 200
 
 
-@bp.route("/api/fresh-jobs/<int:job_id>/triage", methods=["PUT"])
+@bp.route("/api/fresh-jobs/<int:job_id>/triage", methods=["PUT", "POST"])
 def triage_fresh_job(job_id):
     """Triage a fresh job: save, pass, snooze, or review.
 

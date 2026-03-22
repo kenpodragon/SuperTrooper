@@ -1,8 +1,12 @@
 """Routes for Application Materials Generation (cover letters, thank-yous, outreach)."""
 
 import json
+import logging
 from flask import Blueprint, request, jsonify
 import db
+from ai_providers.router import route_inference
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("materials", __name__)
 
@@ -329,9 +333,9 @@ def delete_material(material_id):
 # Outreach Messages
 # ---------------------------------------------------------------------------
 
-@bp.route("/api/outreach", methods=["GET"])
-def list_outreach():
-    """List outreach messages with optional filters.
+@bp.route("/api/materials/outreach", methods=["GET"])
+def list_materials_outreach():
+    """List outreach messages with optional filters (materials view).
 
     Query params:
         contact_id: filter by contact
@@ -377,8 +381,8 @@ def list_outreach():
     return jsonify(rows), 200
 
 
-@bp.route("/api/outreach/<int:message_id>", methods=["GET"])
-def get_outreach(message_id):
+@bp.route("/api/materials/outreach/<int:message_id>", methods=["GET"])
+def get_materials_outreach(message_id):
     """Get a single outreach message by ID."""
     row = db.query_one(
         "SELECT * FROM outreach_messages WHERE id = %s",
@@ -724,8 +728,8 @@ def batch_outreach():
     return jsonify({"count": len(created), "messages": created}), 201
 
 
-@bp.route("/api/outreach/<int:message_id>", methods=["PUT", "PATCH"])
-def update_outreach(message_id):
+@bp.route("/api/materials/outreach/<int:message_id>", methods=["PUT", "PATCH"])
+def update_materials_outreach(message_id):
     """Update an outreach message.
 
     Body (JSON): any subset of updatable fields.

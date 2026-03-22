@@ -147,6 +147,7 @@ export default function Networking() {
   }>({ contact_id: null, note: '', type: 'email' });
   const [showTouchpoint, setShowTouchpoint] = useState(false);
   const [outreachContactId, setOutreachContactId] = useState<number | null>(null);
+  const [outreachData, setOutreachData] = useState<OutreachDraft | null>(null);
 
   const pipeline = useQuery({
     queryKey: ['crm-pipeline'],
@@ -163,10 +164,10 @@ export default function Networking() {
     queryFn: () => api.get<NetworkingTask[]>('/crm/tasks/upcoming'),
   });
 
-  const outreach = useQuery({
-    queryKey: ['outreach-draft', outreachContactId],
-    queryFn: () => api.post<OutreachDraft>('/crm/generate-outreach', { contact_id: outreachContactId }),
-    enabled: outreachContactId != null,
+  const outreach = useMutation({
+    mutationFn: (contactId: number) => api.post<OutreachDraft>('/crm/generate-outreach', { contact_id: contactId }),
+    onSuccess: (data) => setOutreachData(data),
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to generate outreach'),
   });
 
   const logTouchpoint = useMutation({
@@ -181,6 +182,7 @@ export default function Networking() {
       setShowTouchpoint(false);
       setTouchpointForm({ contact_id: null, note: '', type: 'email' });
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to log touchpoint'),
   });
 
   const updateStage = useMutation({
@@ -189,6 +191,7 @@ export default function Networking() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-pipeline'] });
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to update stage'),
   });
 
   const pipelineData = pipeline.data ?? {} as PipelineData;
@@ -206,6 +209,8 @@ export default function Networking() {
 
   function openOutreach(contactId: number) {
     setOutreachContactId(contactId);
+    setOutreachData(null);
+    outreach.mutate(contactId);
   }
 
   return (
@@ -225,15 +230,15 @@ export default function Networking() {
         <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-semibold text-blue-900">Outreach Draft</h3>
-            <button onClick={() => setOutreachContactId(null)} className="text-blue-400 hover:text-blue-600">&times;</button>
+            <button onClick={() => { setOutreachContactId(null); setOutreachData(null); }} className="text-blue-400 hover:text-blue-600">&times;</button>
           </div>
-          {outreach.isLoading && <p className="text-xs text-blue-600">Generating...</p>}
-          {outreach.data && (
+          {outreach.isPending && <p className="text-xs text-blue-600">Generating...</p>}
+          {outreachData && (
             <div className="bg-white rounded border border-blue-100 p-3">
-              {outreach.data.subject && (
-                <p className="text-xs font-medium text-gray-700 mb-1">Subject: {outreach.data.subject}</p>
+              {outreachData.subject && (
+                <p className="text-xs font-medium text-gray-700 mb-1">Subject: {outreachData.subject}</p>
               )}
-              <p className="text-xs text-gray-600 whitespace-pre-wrap">{outreach.data.body}</p>
+              <p className="text-xs text-gray-600 whitespace-pre-wrap">{outreachData.body}</p>
             </div>
           )}
         </div>

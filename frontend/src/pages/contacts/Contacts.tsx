@@ -63,11 +63,11 @@ function DetailPanel({
     queryFn: () => api.get<ContactDetail>(`/contacts/${contact.id}`),
   });
 
-  const [showOutreach, setShowOutreach] = useState(false);
-  const outreach = useQuery({
-    queryKey: ['contact-outreach', contact.id],
-    queryFn: () => api.post<OutreachDraft>('/crm/generate-outreach', { contact_id: contact.id }),
-    enabled: showOutreach,
+  const [outreachData, setOutreachData] = useState<OutreachDraft | null>(null);
+  const outreach = useMutation({
+    mutationFn: () => api.post<OutreachDraft>('/crm/generate-outreach', { contact_id: contact.id }),
+    onSuccess: (data) => setOutreachData(data),
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to generate outreach'),
   });
 
   const d = detail ?? (contact as any);
@@ -141,18 +141,18 @@ function DetailPanel({
         {/* Generate Outreach */}
         <div className="border-t border-gray-200 pt-3">
           <button
-            onClick={() => setShowOutreach(true)}
-            className="px-3 py-1.5 bg-gray-900 text-white text-xs rounded hover:bg-gray-700"
+            onClick={() => outreach.mutate()}
+            disabled={outreach.isPending}
+            className="px-3 py-1.5 bg-gray-900 text-white text-xs rounded hover:bg-gray-700 disabled:opacity-50"
           >
-            Generate Outreach
+            {outreach.isPending ? 'Generating...' : 'Generate Outreach'}
           </button>
-          {outreach.isLoading && <p className="text-xs text-gray-400 mt-2">Generating...</p>}
-          {outreach.data && (
+          {outreachData && (
             <div className="mt-2 bg-gray-50 rounded border border-gray-200 p-3">
-              {outreach.data.subject && (
-                <p className="text-xs font-medium text-gray-700 mb-1">Subject: {outreach.data.subject}</p>
+              {outreachData.subject && (
+                <p className="text-xs font-medium text-gray-700 mb-1">Subject: {outreachData.subject}</p>
               )}
-              <p className="text-xs text-gray-600 whitespace-pre-wrap">{outreach.data.body}</p>
+              <p className="text-xs text-gray-600 whitespace-pre-wrap">{outreachData.body}</p>
             </div>
           )}
         </div>

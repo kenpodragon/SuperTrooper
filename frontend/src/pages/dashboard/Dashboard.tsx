@@ -58,12 +58,12 @@ export default function Dashboard() {
 
   const marketSignals = useQuery({
     queryKey: ['market-signals'],
-    queryFn: () => api.get<MarketSignal[]>('/market-intelligence/signals?limit=5'),
+    queryFn: () => api.get<{ count: number; signals: MarketSignal[] }>('/market-intelligence/signals?limit=5').then(r => r.signals),
   });
 
   const staleAlerts = useQuery({
     queryKey: ['stale-alerts'],
-    queryFn: () => api.get<StaleApp[]>('/aging/stale-applications'),
+    queryFn: () => api.get<{ count: number; applications: StaleApp[] }>('/aging/stale-applications').then(r => r.applications),
   });
 
   const appData = apps.data ?? [];

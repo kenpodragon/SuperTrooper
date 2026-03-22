@@ -580,7 +580,7 @@ def close_out_preview():
 # POST /api/campaign/archive — Archive campaign data
 # ---------------------------------------------------------------------------
 
-@bp.route("/api/campaign/archive", methods=["POST"])
+@bp.route("/api/campaign/archive-full", methods=["POST"])
 def archive_full_campaign():
     """Archive completed campaign data for historical reference.
 
