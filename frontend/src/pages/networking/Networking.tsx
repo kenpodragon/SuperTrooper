@@ -4,25 +4,38 @@ import { api } from '../../api/client';
 
 interface Contact {
   id: number;
-  contact_id?: number;
   name: string;
   company?: string;
-  stage?: string;
-  last_touchpoint?: string;
+  relationship_stage?: string;
+  last_touchpoint_at?: string;
+  health_score?: number;
+}
+
+interface PipelineStage {
+  count: number;
+  contacts: Contact[];
+}
+
+interface PipelineData {
+  cold: PipelineStage;
+  warm: PipelineStage;
+  active: PipelineStage;
+  close: PipelineStage;
+  dormant: PipelineStage;
 }
 
 interface HealthEntry {
-  contact_id: number;
+  id: number;
   health_score: number;
 }
 
 interface NetworkingTask {
   id: number;
-  name: string;
-  company?: string;
+  contact_name: string;
+  contact_company?: string;
   task_type: string;
+  title?: string;
   due_date?: string;
-  priority: string;
 }
 
 interface TouchpointResponse {
@@ -32,13 +45,13 @@ interface TouchpointResponse {
   type: string;
 }
 
-const STAGES = ['cold', 'warm', 'hot', 'champion', 'dormant'];
+const STAGES = ['cold', 'warm', 'active', 'close', 'dormant'];
 
 const STAGE_COLORS: Record<string, string> = {
   cold: 'bg-gray-100',
   warm: 'bg-yellow-50',
-  hot: 'bg-orange-50',
-  champion: 'bg-green-50',
+  active: 'bg-orange-50',
+  close: 'bg-green-50',
   dormant: 'bg-gray-50',
 };
 
@@ -57,9 +70,9 @@ export default function Networking() {
   }>({ contact_id: null, note: '', type: 'email' });
   const [showTouchpoint, setShowTouchpoint] = useState(false);
 
-  const relationships = useQuery({
-    queryKey: ['crm-relationships'],
-    queryFn: () => api.get<Contact[]>('/crm/relationships'),
+  const pipeline = useQuery({
+    queryKey: ['crm-pipeline'],
+    queryFn: () => api.get<PipelineData>('/crm/pipeline'),
   });
 
   const health = useQuery({
@@ -69,13 +82,16 @@ export default function Networking() {
 
   const tasks = useQuery({
     queryKey: ['networking-tasks'],
-    queryFn: () => api.get<NetworkingTask[]>('/crm/networking-tasks'),
+    queryFn: () => api.get<NetworkingTask[]>('/crm/tasks/upcoming'),
   });
 
   const logTouchpoint = useMutation({
-    mutationFn: (data: typeof touchpointForm) => api.post<TouchpointResponse>('/crm/touchpoints', data),
+    mutationFn: (data: typeof touchpointForm) => {
+      if (!data.contact_id) throw new Error('contact_id required');
+      return api.post<TouchpointResponse>(`/crm/contacts/${data.contact_id}/touchpoints`, { note: data.note, type: data.type });
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['crm-relationships'] });
+      qc.invalidateQueries({ queryKey: ['crm-pipeline'] });
       qc.invalidateQueries({ queryKey: ['crm-health'] });
       qc.invalidateQueries({ queryKey: ['networking-tasks'] });
       setShowTouchpoint(false);
@@ -86,17 +102,15 @@ export default function Networking() {
     },
   });
 
-  const relData = relationships.data ?? [];
+  const pipelineData = pipeline.data ?? {} as PipelineData;
   const healthMap: Record<number, number> = {};
-  (health.data ?? []).forEach((h: HealthEntry) => { healthMap[h.contact_id] = h.health_score; });
+  (health.data ?? []).forEach((h: HealthEntry) => { healthMap[h.id] = h.health_score; });
+
+  // Flatten all contacts from pipeline for the touchpoint selector
+  const allContacts: Contact[] = STAGES.flatMap(s => (pipelineData as any)[s]?.contacts ?? []);
 
   const byStage: Record<string, Contact[]> = {};
-  STAGES.forEach(s => { byStage[s] = []; });
-  relData.forEach((r: Contact) => {
-    const stage = r.stage ?? 'cold';
-    if (byStage[stage]) byStage[stage].push(r);
-    else byStage['cold'].push(r);
-  });
+  STAGES.forEach(s => { byStage[s] = (pipelineData as any)[s]?.contacts ?? []; });
 
   return (
     <div>
@@ -122,8 +136,8 @@ export default function Networking() {
                 onChange={e => setTouchpointForm(p => ({ ...p, contact_id: Number(e.target.value) || null }))}
               >
                 <option value="">Select a contact...</option>
-                {relData.map((r: Contact) => (
-                  <option key={r.contact_id ?? r.id} value={r.contact_id ?? r.id}>
+                {allContacts.map((r: Contact) => (
+                  <option key={r.id} value={r.id}>
                     {r.name}{r.company ? ` — ${r.company}` : ''}
                   </option>
                 ))}
@@ -173,22 +187,22 @@ export default function Networking() {
               <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide capitalize">{stage}</h3>
               <span className="text-xs text-gray-500">{byStage[stage].length}</span>
             </div>
-            {relationships.isLoading && <p className="text-xs text-gray-400">Loading...</p>}
+            {pipeline.isLoading && <p className="text-xs text-gray-400">Loading...</p>}
             {byStage[stage].map((r: Contact) => (
               <div key={r.id} className="bg-white rounded border border-gray-100 p-2 mb-2 last:mb-0">
                 <div className="flex items-center gap-1.5">
-                  <HealthDot score={healthMap[r.contact_id ?? r.id]} />
+                  <HealthDot score={healthMap[r.id]} />
                   <p className="text-xs font-medium text-gray-800 truncate">{r.name}</p>
                 </div>
                 <p className="text-xs text-gray-500 truncate">{r.company}</p>
-                {r.last_touchpoint && (
+                {r.last_touchpoint_at && (
                   <p className="text-xs text-gray-400 mt-0.5">
-                    {new Date(r.last_touchpoint).toLocaleDateString()}
+                    {new Date(r.last_touchpoint_at).toLocaleDateString()}
                   </p>
                 )}
               </div>
             ))}
-            {!relationships.isLoading && byStage[stage].length === 0 && (
+            {!pipeline.isLoading && byStage[stage].length === 0 && (
               <p className="text-xs text-gray-400 italic">None</p>
             )}
           </div>
@@ -205,12 +219,11 @@ export default function Networking() {
         {(tasks.data ?? []).map((t: NetworkingTask) => (
           <div key={t.id} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
             <div>
-              <p className="text-sm font-medium text-gray-800">{t.name}</p>
-              <p className="text-xs text-gray-500">{t.company} &mdash; {t.task_type}</p>
+              <p className="text-sm font-medium text-gray-800">{t.title ?? t.task_type}</p>
+              <p className="text-xs text-gray-500">{t.contact_name}{t.contact_company ? ` — ${t.contact_company}` : ''} &mdash; {t.task_type}</p>
             </div>
             <div className="text-right">
               <p className="text-xs text-gray-500">{t.due_date ? new Date(t.due_date).toLocaleDateString() : 'No date'}</p>
-              <p className="text-xs text-gray-400 capitalize">{t.priority}</p>
             </div>
           </div>
         ))}

@@ -15,6 +15,17 @@ interface VelocityData {
   interview_rate?: number;
   offer_rate?: number;
   rejection_rate?: number;
+  // fields from /analytics/summary
+  applied?: number;
+  in_progress?: number;
+  offers?: number;
+  rejected?: number;
+  ghosted?: number;
+  total_interviews?: number;
+  total_companies?: number;
+  total_contacts?: number;
+  total_emails?: number;
+  unique_sources?: number;
 }
 
 interface SourceEntry {
@@ -51,7 +62,7 @@ export default function Analytics() {
 
   const velocity = useQuery({
     queryKey: ['analytics-velocity'],
-    queryFn: () => api.get<VelocityData>('/analytics/velocity'),
+    queryFn: () => api.get<VelocityData>('/analytics/summary'),
   });
 
   const sources = useQuery({
