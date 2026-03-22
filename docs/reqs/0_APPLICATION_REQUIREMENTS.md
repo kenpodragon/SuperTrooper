@@ -1166,3 +1166,91 @@ Signals specific to your role type, skills, and target market.
 - [ ] Source ROI: which job boards/channels yield the most interviews per application
 - [ ] Networking ROI: which contacts/channels lead to the most warm intros/referrals
 - [ ] Activity recommendations engine ("you haven't applied in 5 days", "3 follow-ups overdue", "resume V32 outperforms V31 by 2x")
+
+---
+
+## 17. Anti-AI Detection Integration
+
+Integrate with the AntiAI Detection MCP server — a separate locally-hosted project that detects AI-generated patterns in text and humanizes output. The AntiAI tool runs as its own MCP server alongside SuperTroopers. Users can run either project standalone, but the combination is the recommended setup for job seekers.
+
+**Dependency:** The AntiAI Detection project is being built separately. Integration here is DEFERRED until that project exposes stable MCP endpoints. These requirements define what SuperTroopers needs from it and where it plugs in.
+
+**Architecture:** AntiAI runs as a separate MCP server (its own repo, its own Docker container or local process). SuperTroopers calls it via MCP tool calls or HTTP, depending on how the AntiAI server exposes its interface. No code from AntiAI is embedded in SuperTroopers... it's a peer service, not a dependency.
+
+### 17.1 AntiAI MCP Connection
+- [ ] AntiAI MCP server registered in `.mcp.json` alongside SuperTroopers MCP
+- [ ] Health check: verify AntiAI MCP is reachable before attempting calls
+- [ ] Graceful degradation: if AntiAI MCP is unavailable, content generation still works (skip detection, warn user)
+- [ ] Connection config in Settings page (AntiAI endpoint URL, enable/disable toggle)
+- [ ] Status indicator on frontend dashboard (connected / disconnected / not configured)
+
+### 17.2 AI Detection Scanning
+Run AI detection on all generated content before presenting to the user. Every content generation endpoint should have an optional "scan" step.
+- [ ] **Resume bullets**: after generating or rewriting bullets, scan for AI patterns
+- [ ] **Professional summaries**: scan generated summary variants
+- [ ] **Cover letters**: scan full cover letter text (7.1)
+- [ ] **Outreach messages**: scan cold/warm outreach drafts (7.2)
+- [ ] **Thank-you notes**: scan generated thank-you text (7.3)
+- [ ] **LinkedIn posts**: scan generated post content (9.4.5)
+- [ ] **Interview prep talking points**: scan generated talking points (8.2)
+- [ ] **Open-ended ATS answers**: scan auto-generated application question answers (14.4.4)
+- [ ] Detection result includes: AI probability score, flagged patterns/phrases, confidence level
+- [ ] Configurable threshold: user sets their acceptable AI detection score (default: flag if >20% AI probability)
+- [ ] Results displayed inline with generated content (highlight flagged phrases, show score)
+
+### 17.3 Humanization Pipeline
+When AI detection flags content above threshold, automatically humanize it.
+- [ ] **Auto-humanize mode**: if detection score exceeds threshold, send to AntiAI humanizer before presenting
+- [ ] **Manual humanize mode**: user reviews detection results, clicks "Humanize" on flagged sections
+- [ ] **Iterative loop**: humanize → re-scan → if still flagged → humanize again (max 3 iterations, then present with warning)
+- [ ] **Voice preservation**: humanized output must still pass SuperTroopers voice rules (`check_voice`). If humanization breaks voice rules, rewrite using both voice rules AND humanization guidance
+- [ ] **Before/after comparison**: show original AI-generated text alongside humanized version so user can pick
+- [ ] **Selective humanization**: user can choose to humanize specific paragraphs/bullets rather than entire document
+
+### 17.4 Integration Points in Existing Workflows
+Where AntiAI detection plugs into existing SuperTroopers flows:
+
+#### 17.4.1 Resume Generation (Section 3)
+- [ ] Post-generation scan: after `generate_resume` produces output, scan all generated text blocks
+- [ ] Recipe-level setting: per-recipe toggle for auto-humanize (some recipes may be for internal use, don't need it)
+- [ ] ATS score + AI detection score shown side-by-side in resume builder (11.3)
+
+#### 17.4.2 Application Materials (Section 7)
+- [ ] Cover letter generation pipeline: generate → voice check → AI scan → humanize if needed → final voice check → present
+- [ ] Outreach message pipeline: same flow as cover letters
+- [ ] Thank-you note pipeline: same flow
+- [ ] All materials in `generated_materials` table get an `ai_detection_score` column (nullable, populated when scanned)
+
+#### 17.4.3 Browser Plugin (Section 14)
+- [ ] One-click materials generation (14.3) includes AI detection step before download
+- [ ] Batch apply pipeline (14.15) includes AI scan + auto-humanize per application
+- [ ] Open-ended question answers (14.4.4) scanned before form fill
+
+#### 17.4.4 LinkedIn Content (Section 9.4)
+- [ ] Post generation (9.4.5) includes AI detection before presenting draft
+- [ ] LinkedIn voice check + AI detection as combined quality gate
+- [ ] Content calendar posts auto-scanned on generation
+
+#### 17.4.5 Workflow Automation (Section 15.2)
+- [ ] New action type: "Scan for AI patterns" (can be added to any workflow)
+- [ ] New action type: "Humanize text" (runs after scan, conditional on score)
+- [ ] Example workflow: "Generate cover letter → scan AI → if score > 20% → humanize → voice check → notify"
+
+### 17.5 Reporting & Analytics
+- [ ] AI detection score history: track average scores over time (are we getting better at human-sounding output?)
+- [ ] Per-content-type breakdown: which types of content score highest on AI detection (resumes vs. cover letters vs. outreach)
+- [ ] Humanization effectiveness: before/after scores showing improvement
+- [ ] Flag patterns that repeatedly trigger detection (feed back into voice rules as new banned patterns)
+- [ ] Dashboard widget: "AI Detection Health" showing recent scan results and trends (11.9)
+
+### 17.6 Voice Rules Feedback Loop
+AI detection findings should feed back into the voice system to prevent future AI-sounding output.
+- [ ] When a specific phrase or pattern is repeatedly flagged by AI detection, suggest adding it to voice_rules as a banned pattern
+- [ ] Periodic review: "These 10 phrases triggered AI detection most often this month — add to banned list?"
+- [ ] AntiAI detection categories mapped to voice rule categories (so detection insights are actionable)
+
+### 17.7 Multi-User & Configuration
+- [ ] Per-user AntiAI settings: detection threshold, auto-humanize on/off, which content types to scan
+- [ ] Global default settings in platform config
+- [ ] API endpoints for AntiAI configuration CRUD
+- [ ] Settings page section for AntiAI preferences (under existing Settings, see 11.11)

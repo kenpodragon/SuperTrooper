@@ -39,6 +39,7 @@ When the user asks for something, route to the right tool:
 | Prepare for an interview | `save_interview_prep` |
 | Interview debrief | `save_interview_debrief` |
 | Check my writing / voice | `get_voice_rules`, `check_voice` |
+| Does this sound like AI / AI detection / humanize | AntiAI Detection MCP tools (if connected) |
 | Search my bullets | `search_bullets` |
 | Show my career history | `get_career_history` |
 | My skills | `get_skills` |
@@ -67,6 +68,10 @@ Every piece of generated text (resumes, cover letters, outreach, interview prep)
 4. If anything triggers a violation, rewrite from scratch... don't patch
 
 Use `get_voice_rules(category="final_check")` for the 8-point Final Check before delivering any content.
+
+### Anti-AI Detection (When Available)
+
+When the AntiAI Detection MCP server is connected, add an AI detection scan step after voice check for all generated content. The pipeline becomes: generate → voice check → AI scan → humanize if score exceeds threshold → re-check voice → present. If the AntiAI MCP is not connected, skip the scan and proceed normally. See the [Setup Guide](docs/SETUP.md) Section 12 for connection instructions.
 
 ---
 

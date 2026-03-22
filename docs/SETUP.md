@@ -21,6 +21,7 @@ Your personal reverse recruiting platform. This guide walks you through installi
 9. [Next Steps](#9-next-steps)
 10. [Using Other AI Agents](#10-using-other-ai-agents)
 11. [Stopping and Starting](#11-stopping-and-starting)
+12. [Connect Anti-AI Detection (Optional, Recommended)](#12-connect-anti-ai-detection-optional-recommended)
 
 ---
 
@@ -406,6 +407,70 @@ docker compose up -d --build
 ```
 
 This rebuilds the containers with the latest code while keeping your data intact.
+
+---
+
+## 12. Connect Anti-AI Detection (Optional, Recommended)
+
+The AntiAI Detection MCP server is a separate project that scans generated text for AI patterns and humanizes flagged content. It runs alongside SuperTroopers as a peer MCP server. You don't need it to use SuperTroopers, but it's strongly recommended for job seekers... recruiters and ATS systems increasingly flag AI-generated content.
+
+### Install the AntiAI Detection server
+
+Follow the setup instructions in the AntiAI Detection project repository. It runs as its own local process (separate from SuperTroopers Docker containers).
+
+> **Note:** The AntiAI project is still being built. These instructions will be updated with the exact repo URL and install steps once it's ready.
+
+### Add AntiAI to your MCP config
+
+Once the AntiAI server is running, add it to your `.mcp.json` alongside SuperTroopers:
+
+```json
+{
+  "mcpServers": {
+    "supertroopers": {
+      "type": "sse",
+      "url": "http://localhost:8056/sse"
+    },
+    "antiai": {
+      "type": "sse",
+      "url": "http://localhost:PORT/sse"
+    }
+  }
+}
+```
+
+Replace `PORT` with the actual port the AntiAI server runs on (TBD).
+
+### Verify it works
+
+Start Claude Code and ask:
+
+> "What MCP tools do you have?"
+
+You should see both SuperTroopers tools (42+) and AntiAI detection tools listed.
+
+### Configure in SuperTroopers
+
+1. Open the frontend dashboard at http://localhost:5175
+2. Go to **Settings**
+3. Under **Anti-AI Detection**, enter the AntiAI endpoint URL and enable scanning
+4. Set your detection threshold (default: flag content with >20% AI probability)
+
+### How it works together
+
+When you generate content through SuperTroopers (resumes, cover letters, outreach, LinkedIn posts), the platform will:
+
+1. Generate the content using your career data + voice rules
+2. Send it to AntiAI for detection scanning
+3. If the AI score exceeds your threshold, automatically humanize it
+4. Re-check with voice rules to make sure humanization didn't break your style
+5. Present the final output with the detection score
+
+You can disable scanning per content type in Settings, or turn it off entirely if you don't need it.
+
+> **Running SuperTroopers without AntiAI?** Everything works fine. You just won't get AI detection scanning. The platform warns you when AntiAI is not connected but never blocks content generation.
+
+> **Running AntiAI without SuperTroopers?** The AntiAI project works standalone for general-purpose AI detection and humanization. See its own repo for standalone usage.
 
 ---
 
