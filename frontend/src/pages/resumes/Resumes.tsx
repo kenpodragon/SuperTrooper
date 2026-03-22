@@ -62,11 +62,13 @@ export default function Resumes() {
       setShowCreate(false);
       setCreateForm({ name: '', description: '', template_id: 1 });
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to create recipe'),
   });
 
   const cloneRecipe = useMutation({
     mutationFn: (id: number) => api.post<Recipe>(`/resume/recipes/${id}/clone`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['recipes'] }),
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to clone recipe'),
   });
 
   const deleteRecipe = useMutation({
@@ -78,16 +80,19 @@ export default function Resumes() {
         setSelectedId(null);
       }
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to delete recipe'),
   });
 
   const generateResume = useMutation({
     mutationFn: (id: number) => api.post<GenerateResult>(`/resume/recipes/${id}/generate`, {}),
     onSuccess: (data) => setGenResult(data),
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to generate resume'),
   });
 
   const runAtsScore = useMutation({
     mutationFn: (data: typeof atsForm) => api.post<AtsScoreResult>('/resume/ats-score', data),
     onSuccess: (data) => setAtsResult(data),
+    onError: (err: any) => alert(err?.response?.data?.error || 'ATS scoring failed'),
   });
 
   // Detail view

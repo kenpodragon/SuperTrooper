@@ -83,6 +83,7 @@ export default function Interviews() {
       setShowDebrief(null);
       setDebrief(emptyDebrief);
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to save debrief'),
   });
 
   return (
