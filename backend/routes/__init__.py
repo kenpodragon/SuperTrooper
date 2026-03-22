@@ -31,6 +31,8 @@ from routes.search_intelligence import bp as search_intelligence_bp
 from routes.references import bp as references_bp
 from routes.skills_development import bp as skills_development_bp
 from routes.campaign import bp as campaign_bp
+from routes.path_finding import bp as path_finding_bp
+from routes.linkedin_import import bp as linkedin_import_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -64,4 +66,6 @@ ALL_BLUEPRINTS = [
     references_bp,
     skills_development_bp,
     campaign_bp,
+    path_finding_bp,
+    linkedin_import_bp,
 ]

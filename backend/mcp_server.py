@@ -3370,6 +3370,45 @@ def get_campaign_summary() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Networking & LinkedIn Import (S8.4, S9)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def find_warm_paths(company_name: str) -> dict:
+    """Find warm intro paths to a target company through existing contacts.
+
+    Args:
+        company_name: target company to find connections to
+    """
+    from mcp_tools_networking import find_warm_paths as _impl
+    return _impl(company_name)
+
+
+@mcp.tool()
+def import_linkedin_connections(connections: list) -> dict:
+    """Import LinkedIn connections as contacts with deduplication.
+
+    Args:
+        connections: list of {name, company, title, connected_on} dicts
+    """
+    from mcp_tools_networking import import_linkedin_connections as _impl
+    return _impl(connections)
+
+
+@mcp.tool()
+def import_linkedin_profile(positions: list, skills: list | None = None) -> dict:
+    """Import LinkedIn profile data: career history, bullets, and skills.
+
+    Args:
+        positions: list of {title, company, start_date, end_date, description}
+        skills: optional list of skill name strings
+    """
+    from mcp_tools_networking import import_linkedin_profile as _impl
+    return _impl(positions, skills or [])
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
