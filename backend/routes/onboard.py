@@ -1180,3 +1180,111 @@ def create_starter_recipes():
         "created_count": len(created),
         "skipped_count": len(skipped),
     }), 201
+
+
+# ---------------------------------------------------------------------------
+# Onboarding Checklist
+# ---------------------------------------------------------------------------
+
+ONBOARD_STEPS = [
+    {"key": "upload_resume", "name": "Upload Resume", "description": "Upload your primary resume (.docx or .pdf)"},
+    {"key": "parse_career", "name": "Parse Career History", "description": "Extract roles, bullets, and skills from resume"},
+    {"key": "set_target_roles", "name": "Set Target Roles", "description": "Define the roles you are targeting"},
+    {"key": "configure_voice", "name": "Configure Voice Rules", "description": "Set up writing style preferences"},
+    {"key": "add_contacts", "name": "Add Contacts", "description": "Import or add networking contacts"},
+    {"key": "connect_integrations", "name": "Connect Integrations", "description": "Link Gmail, Calendar, or LinkedIn"},
+    {"key": "first_application", "name": "Track First Application", "description": "Add your first job application"},
+    {"key": "generate_resume", "name": "Generate Tailored Resume", "description": "Create a recipe and generate a resume"},
+]
+
+
+@bp.route("/api/onboard/checklist", methods=["GET"])
+def onboard_checklist():
+    """Step-by-step onboarding checklist with completion status."""
+    steps = []
+    for step_def in ONBOARD_STEPS:
+        completed = False
+        key = step_def["key"]
+
+        try:
+            if key == "upload_resume":
+                r = db.query_one("SELECT COUNT(*) AS cnt FROM resume_templates")
+                completed = (r and r["cnt"] > 0)
+            elif key == "parse_career":
+                r = db.query_one("SELECT COUNT(*) AS cnt FROM career_history")
+                completed = (r and r["cnt"] > 0)
+            elif key == "set_target_roles":
+                r = db.query_one("SELECT preferences FROM settings WHERE id = 1")
+                prefs = r.get("preferences") or {} if r else {}
+                if isinstance(prefs, str):
+                    prefs = json.loads(prefs) if prefs else {}
+                completed = bool(prefs.get("target_roles"))
+            elif key == "configure_voice":
+                r = db.query_one("SELECT COUNT(*) AS cnt FROM voice_rules")
+                completed = (r and r["cnt"] > 0)
+            elif key == "add_contacts":
+                r = db.query_one("SELECT COUNT(*) AS cnt FROM contacts")
+                completed = (r and r["cnt"] > 0)
+            elif key == "connect_integrations":
+                completed = bool(os.environ.get("GMAIL_TOKEN") or os.environ.get("GOOGLE_TOKEN"))
+            elif key == "first_application":
+                r = db.query_one("SELECT COUNT(*) AS cnt FROM applications")
+                completed = (r and r["cnt"] > 0)
+            elif key == "generate_resume":
+                r = db.query_one("SELECT COUNT(*) AS cnt FROM resume_recipes")
+                completed = (r and r["cnt"] > 0)
+        except Exception:
+            completed = False
+
+        # Check if step was explicitly skipped
+        skip_row = db.query_one(
+            "SELECT 1 FROM settings WHERE id = 1 AND (preferences->>'skipped_onboard_steps')::jsonb ? %s",
+            (key,),
+        ) if key else None
+        skipped = bool(skip_row) if skip_row else False
+
+        steps.append({**step_def, "completed": completed, "skipped": skipped})
+
+    completed_count = sum(1 for s in steps if s["completed"] or s["skipped"])
+    total = len(steps)
+
+    return jsonify({
+        "steps": steps,
+        "completed_count": completed_count,
+        "total_steps": total,
+        "completion_pct": round(completed_count / total * 100) if total else 0,
+    }), 200
+
+
+@bp.route("/api/onboard/skip-step", methods=["POST"])
+def skip_onboard_step():
+    """Mark an onboarding step as skipped.
+
+    Body JSON: {"step_key": str}
+    """
+    data = request.get_json(force=True)
+    step_key = data.get("step_key")
+    if not step_key:
+        return jsonify({"error": "step_key is required"}), 400
+
+    valid_keys = {s["key"] for s in ONBOARD_STEPS}
+    if step_key not in valid_keys:
+        return jsonify({"error": f"Invalid step_key. Valid: {', '.join(sorted(valid_keys))}"}), 400
+
+    # Read current preferences
+    row = db.query_one("SELECT preferences FROM settings WHERE id = 1")
+    prefs = (row.get("preferences") or {}) if row else {}
+    if isinstance(prefs, str):
+        prefs = json.loads(prefs) if prefs else {}
+
+    skipped = prefs.get("skipped_onboard_steps", [])
+    if step_key not in skipped:
+        skipped.append(step_key)
+    prefs["skipped_onboard_steps"] = skipped
+
+    db.execute(
+        "UPDATE settings SET preferences = %s::jsonb, updated_at = NOW() WHERE id = 1",
+        (json.dumps(prefs),),
+    )
+
+    return jsonify({"skipped_step": step_key, "all_skipped": skipped}), 200

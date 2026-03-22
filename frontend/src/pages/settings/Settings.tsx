@@ -19,8 +19,10 @@ interface TestResult {
 }
 
 interface OnboardStatus {
-  steps?: { name: string; completed: boolean; description?: string }[];
+  steps?: { name: string; completed: boolean; description?: string; skipped?: boolean; key?: string }[];
   completion_pct?: number;
+  completed_count?: number;
+  total_steps?: number;
   next_steps?: string[];
 }
 
@@ -31,12 +33,25 @@ interface VoiceRule {
   severity?: string;
 }
 
+interface Integration {
+  name: string;
+  key: string;
+  description: string;
+  connected: boolean;
+  icon: string;
+}
+
+type SettingsTab = 'general' | 'integrations' | 'backup';
+
 export default function Settings() {
   const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [newRule, setNewRule] = useState({ category: 'custom', rule_text: '' });
   const [quickSetup, setQuickSetup] = useState({ name: '', email: '', target_roles: '' });
+  const [importText, setImportText] = useState('');
+  const [importStatus, setImportStatus] = useState<string | null>(null);
 
   const health = useQuery({
     queryKey: ['health'],
@@ -56,7 +71,13 @@ export default function Settings() {
 
   const onboardStatus = useQuery({
     queryKey: ['onboard-status'],
-    queryFn: () => api.get<OnboardStatus>('/onboard/status'),
+    queryFn: () => api.get<OnboardStatus>('/onboard/checklist'),
+  });
+
+  const integrations = useQuery({
+    queryKey: ['integrations'],
+    queryFn: () => api.get<{ integrations: Integration[] }>('/settings/integrations'),
+    select: (d) => d.integrations,
   });
 
   const voiceRules = useQuery({
@@ -90,6 +111,39 @@ export default function Settings() {
     },
   });
 
+  const skipStep = useMutation({
+    mutationFn: (stepKey: string) => api.post('/onboard/skip-step', { step_key: stepKey }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['onboard-status'] }),
+  });
+
+  const handleExport = async () => {
+    try {
+      const data = await api.get('/settings/export');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `supertroopers-settings-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Export failed:', e);
+    }
+  };
+
+  const handleImport = async () => {
+    try {
+      const parsed = JSON.parse(importText);
+      await api.post('/settings/import', parsed);
+      setImportStatus('Settings imported successfully');
+      setImportText('');
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['voice-rules'] });
+    } catch (e) {
+      setImportStatus(`Import failed: ${String(e)}`);
+    }
+  };
+
   const testAi = async (provider?: string) => {
     setTestResult(null);
     setTesting(true);
@@ -108,11 +162,92 @@ export default function Settings() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Settings</h1>
+      <h1 className="text-2xl font-bold text-gray-900 mb-4">Settings</h1>
 
-      {/* Onboarding Status */}
+      {/* Tab Navigation */}
+      <div className="flex gap-1 mb-6 border-b border-gray-200">
+        {([['general', 'General'], ['integrations', 'Integrations'], ['backup', 'Export / Import']] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+              activeTab === key
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* === INTEGRATIONS TAB === */}
+      {activeTab === 'integrations' && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Available Integrations</h2>
+          {integrations.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {(integrations.data ?? []).map((intg) => (
+              <div key={intg.key} className="flex items-start gap-3 p-3 border border-gray-100 rounded-lg">
+                <span className={`mt-1 inline-block w-3 h-3 rounded-full ${intg.connected ? 'bg-green-500' : 'bg-gray-300'}`} />
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-sm text-gray-900">{intg.name}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      intg.connected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                    }`}>
+                      {intg.connected ? 'Connected' : 'Not Connected'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">{intg.description}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* === EXPORT / IMPORT TAB === */}
+      {activeTab === 'backup' && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <h2 className="text-lg font-semibold text-gray-900 mb-3">Export Settings</h2>
+            <p className="text-sm text-gray-500 mb-3">Download all settings, voice rules, and preferences as a JSON backup file.</p>
+            <button onClick={handleExport} className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700">
+              Download Backup
+            </button>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <h2 className="text-lg font-semibold text-gray-900 mb-3">Import Settings</h2>
+            <p className="text-sm text-gray-500 mb-3">Paste the contents of a settings backup JSON to restore.</p>
+            <textarea
+              className="w-full border border-gray-200 rounded px-3 py-2 text-sm font-mono h-32 focus:outline-none focus:ring-1 focus:ring-blue-400"
+              value={importText}
+              onChange={e => setImportText(e.target.value)}
+              placeholder='Paste exported JSON here...'
+            />
+            <button
+              onClick={handleImport}
+              disabled={!importText.trim()}
+              className="mt-2 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
+            >
+              Import
+            </button>
+            {importStatus && (
+              <p className={`mt-2 text-sm ${importStatus.includes('failed') ? 'text-red-600' : 'text-green-600'}`}>
+                {importStatus}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* === GENERAL TAB === */}
+      {activeTab === 'general' && <>
+
+      {/* Onboarding Checklist */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">Onboarding Status</h2>
+        <h2 className="text-lg font-semibold text-gray-900 mb-3">Onboarding Checklist</h2>
         {onboardStatus.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
         {onboardStatus.isError && <p className="text-sm text-gray-400">Onboarding status unavailable</p>}
         {onboard && (
@@ -120,7 +255,7 @@ export default function Settings() {
             {onboard.completion_pct != null && (
               <div className="mb-3">
                 <div className="flex justify-between text-xs text-gray-500 mb-1">
-                  <span>Completion</span>
+                  <span>Completion ({onboard.completed_count ?? 0}/{onboard.total_steps ?? 0})</span>
                   <span>{onboard.completion_pct}%</span>
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2">
@@ -134,22 +269,28 @@ export default function Settings() {
             {(onboard.steps ?? []).map((step, idx) => (
               <div key={idx} className="flex items-center gap-2 py-1.5 border-b border-gray-100 last:border-0">
                 <span className={`inline-block w-4 h-4 rounded-full text-xs text-center leading-4 font-medium ${
-                  step.completed ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-400'
+                  step.completed ? 'bg-green-100 text-green-700' :
+                  step.skipped ? 'bg-yellow-100 text-yellow-600' :
+                  'bg-gray-100 text-gray-400'
                 }`}>
-                  {step.completed ? '\u2713' : '\u2022'}
+                  {step.completed ? '\u2713' : step.skipped ? 'S' : '\u2022'}
                 </span>
-                <span className={`text-sm ${step.completed ? 'text-gray-500 line-through' : 'text-gray-900'}`}>{step.name}</span>
-                {step.description && <span className="text-xs text-gray-400 ml-auto">{step.description}</span>}
+                <span className={`text-sm flex-1 ${
+                  step.completed ? 'text-gray-500 line-through' :
+                  step.skipped ? 'text-gray-400 italic' :
+                  'text-gray-900'
+                }`}>{step.name}</span>
+                {step.description && <span className="text-xs text-gray-400 hidden md:inline">{step.description}</span>}
+                {!step.completed && !step.skipped && step.key && (
+                  <button
+                    onClick={() => skipStep.mutate(step.key!)}
+                    className="text-xs text-gray-400 hover:text-yellow-600 ml-2"
+                  >
+                    Skip
+                  </button>
+                )}
               </div>
             ))}
-            {onboard.next_steps && onboard.next_steps.length > 0 && (
-              <div className="mt-3 p-3 bg-blue-50 rounded-lg">
-                <p className="text-xs font-medium text-blue-700 mb-1">Next Steps</p>
-                <ul className="list-disc list-inside text-sm text-blue-800 space-y-1">
-                  {onboard.next_steps.map((s, i) => <li key={i}>{s}</li>)}
-                </ul>
-              </div>
-            )}
           </>
         )}
       </div>
@@ -386,6 +527,8 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      </>}
     </div>
   );
 }

@@ -681,6 +681,144 @@ def source_conversion():
     return jsonify({"conversion_rates": rows, "count": len(rows)}), 200
 
 
+# ---------------------------------------------------------------------------
+# Application Timeline
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/pipeline/timeline/<int:app_id>", methods=["GET"])
+def application_timeline(app_id):
+    """Full timeline for an application: status changes, interviews, materials, follow-ups."""
+    app = db.query_one("SELECT id, company_name, role FROM applications WHERE id = %s", (app_id,))
+    if not app:
+        return jsonify({"error": "Application not found"}), 404
+
+    events = []
+
+    # Status changes
+    for r in db.query(
+        "SELECT old_status, new_status, notes, changed_at FROM application_status_history WHERE application_id = %s",
+        (app_id,),
+    ) or []:
+        events.append({"type": "status_change", "date": r["changed_at"],
+                        "detail": f"{r['old_status']} -> {r['new_status']}", "notes": r.get("notes")})
+
+    # Interviews
+    for r in db.query(
+        "SELECT date, type, outcome, notes FROM interviews WHERE application_id = %s", (app_id,),
+    ) or []:
+        events.append({"type": "interview", "date": r["date"],
+                        "detail": f"{r['type']} interview - {r['outcome']}", "notes": r.get("notes")})
+
+    # Materials
+    for r in db.query(
+        "SELECT type, generated_at, version_label, file_path FROM generated_materials WHERE application_id = %s",
+        (app_id,),
+    ) or []:
+        events.append({"type": "material", "date": r["generated_at"],
+                        "detail": f"{r['type']} generated ({r.get('version_label', '')})", "file_path": r.get("file_path")})
+
+    # Follow-ups
+    for r in db.query(
+        "SELECT attempt_number, date_sent, method, response_received, notes FROM follow_ups WHERE application_id = %s",
+        (app_id,),
+    ) or []:
+        events.append({"type": "follow_up", "date": r["date_sent"],
+                        "detail": f"Follow-up #{r['attempt_number']} via {r.get('method', 'unknown')}",
+                        "response_received": r.get("response_received"), "notes": r.get("notes")})
+
+    # Sort by date descending
+    events.sort(key=lambda e: str(e.get("date") or ""), reverse=True)
+
+    return jsonify({"application": app, "timeline": events, "event_count": len(events)}), 200
+
+
+# ---------------------------------------------------------------------------
+# Bulk Status Update
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/pipeline/bulk-update", methods=["POST"])
+def bulk_update_status():
+    """Update status for multiple applications at once.
+
+    Body JSON:
+        application_ids (list[int]): IDs to update
+        status (str): new status value
+        notes (str, optional): reason for bulk update
+    """
+    data = request.get_json(force=True)
+    app_ids = data.get("application_ids", [])
+    new_status = data.get("status")
+    notes = data.get("notes", "Bulk status update")
+
+    if not app_ids or not isinstance(app_ids, list):
+        return jsonify({"error": "application_ids array is required"}), 400
+    if not new_status:
+        return jsonify({"error": "status is required"}), 400
+
+    updated = []
+    for aid in app_ids:
+        old_row = db.query_one("SELECT status FROM applications WHERE id = %s", (aid,))
+        if not old_row:
+            continue
+        old_status = old_row["status"]
+        db.execute(
+            "UPDATE applications SET status = %s, last_status_change = NOW() WHERE id = %s",
+            (new_status, aid),
+        )
+        if old_status != new_status:
+            db.execute(
+                "INSERT INTO application_status_history (application_id, old_status, new_status, notes) VALUES (%s, %s, %s, %s)",
+                (aid, old_status, new_status, notes),
+            )
+        updated.append(aid)
+
+    return jsonify({"updated_count": len(updated), "updated_ids": updated, "new_status": new_status}), 200
+
+
+# ---------------------------------------------------------------------------
+# Upcoming Deadlines
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/pipeline/deadlines", methods=["GET"])
+def upcoming_deadlines():
+    """Upcoming deadlines: response deadlines, follow-up dates, interview dates.
+
+    Query params:
+        days (int, default 14): look-ahead window
+    """
+    days = int(request.args.get("days", 14))
+    deadlines = []
+
+    # Upcoming interviews
+    for r in db.query(
+        """SELECT i.id, i.date, i.type, a.company_name, a.role, a.id AS application_id
+           FROM interviews i JOIN applications a ON a.id = i.application_id
+           WHERE i.date >= CURRENT_DATE AND i.date <= CURRENT_DATE + %s * INTERVAL '1 day'
+             AND i.outcome = 'pending'
+           ORDER BY i.date ASC""",
+        (days,),
+    ) or []:
+        deadlines.append({"type": "interview", "date": r["date"], "company": r["company_name"],
+                           "role": r["role"], "detail": f"{r['type']} interview", "application_id": r["application_id"]})
+
+    # Follow-up reminders (follow_ups with no response)
+    for r in db.query(
+        """SELECT f.id, f.date_sent, f.method, a.company_name, a.role, a.id AS application_id
+           FROM follow_ups f JOIN applications a ON a.id = f.application_id
+           WHERE f.response_received = FALSE
+             AND f.date_sent >= CURRENT_DATE - INTERVAL '30 days'
+             AND a.status NOT IN ('Rejected', 'Ghosted', 'Withdrawn', 'Accepted')
+           ORDER BY f.date_sent ASC""",
+        (),
+    ) or []:
+        deadlines.append({"type": "follow_up_pending", "date": r["date_sent"], "company": r["company_name"],
+                           "role": r["role"], "detail": f"Follow-up via {r.get('method', 'unknown')} - awaiting response",
+                           "application_id": r["application_id"]})
+
+    deadlines.sort(key=lambda d: str(d.get("date") or ""))
+    return jsonify({"deadlines": deadlines, "count": len(deadlines), "look_ahead_days": days}), 200
+
+
 @bp.route("/api/applications/stale", methods=["GET"])
 def stale_applications():
     """Find applications with no activity for N days."""

@@ -1013,6 +1013,120 @@ def list_networking_events():
     return jsonify({"events": events, "count": len(events)}), 200
 
 
+# ---------------------------------------------------------------------------
+# Activity Feed
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/crm/activity-feed", methods=["GET"])
+def activity_feed():
+    """Recent CRM activity: touchpoints, stage changes, tasks completed - chronologically.
+
+    Query params:
+        limit (int, default 50): max events
+        days (int, default 30): look-back window
+    """
+    limit = int(request.args.get("limit", 50))
+    days = int(request.args.get("days", 30))
+    events = []
+
+    # Recent touchpoints
+    for r in db.query(
+        """SELECT t.id, t.contact_id, t.type, t.channel, t.direction, t.notes, t.logged_at,
+                  c.name AS contact_name, c.company AS contact_company
+           FROM touchpoints t
+           JOIN contacts c ON c.id = t.contact_id
+           WHERE t.logged_at >= NOW() - %s * INTERVAL '1 day'
+           ORDER BY t.logged_at DESC LIMIT %s""",
+        (days, limit),
+    ) or []:
+        events.append({"event_type": "touchpoint", "date": r["logged_at"],
+                        "contact_name": r["contact_name"], "company": r.get("contact_company"),
+                        "detail": f"{r['type']} via {r.get('channel', 'unknown')} ({r.get('direction', '')})",
+                        "notes": r.get("notes")})
+
+    # Recently completed tasks
+    for r in db.query(
+        """SELECT nt.id, nt.title, nt.task_type, nt.completed_at,
+                  c.name AS contact_name, c.company AS contact_company
+           FROM networking_tasks nt
+           JOIN contacts c ON c.id = nt.contact_id
+           WHERE nt.completed = TRUE AND nt.completed_at >= NOW() - %s * INTERVAL '1 day'
+           ORDER BY nt.completed_at DESC LIMIT %s""",
+        (days, limit),
+    ) or []:
+        events.append({"event_type": "task_completed", "date": r["completed_at"],
+                        "contact_name": r["contact_name"], "company": r.get("contact_company"),
+                        "detail": f"Task completed: {r['title']}"})
+
+    # Recently completed CRM tasks
+    for r in db.query(
+        """SELECT ct.id, ct.task_type, ct.description, ct.completed_at,
+                  c.name AS contact_name, c.company AS contact_company
+           FROM crm_tasks ct
+           LEFT JOIN contacts c ON c.id = ct.contact_id
+           WHERE ct.status = 'completed' AND ct.completed_at >= NOW() - %s * INTERVAL '1 day'
+           ORDER BY ct.completed_at DESC LIMIT %s""",
+        (days, limit),
+    ) or []:
+        events.append({"event_type": "crm_task_completed", "date": r["completed_at"],
+                        "contact_name": r.get("contact_name"), "company": r.get("contact_company"),
+                        "detail": f"CRM task: {r.get('description', r['task_type'])}"})
+
+    events.sort(key=lambda e: str(e.get("date") or ""), reverse=True)
+    return jsonify({"activity": events[:limit], "count": min(len(events), limit)}), 200
+
+
+# ---------------------------------------------------------------------------
+# Bulk Touchpoint
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/crm/bulk-touchpoint", methods=["POST"])
+def bulk_touchpoint():
+    """Log the same touchpoint for multiple contacts (e.g., 'met at conference').
+
+    Body JSON:
+        contact_ids (list[int]): contacts to log for
+        type (str): touchpoint type (meeting, email, call, etc.)
+        channel (str, optional): communication channel
+        direction (str, optional): inbound/outbound
+        notes (str, optional): shared notes
+    """
+    data = request.get_json(force=True)
+    contact_ids = data.get("contact_ids", [])
+    tp_type = data.get("type")
+
+    if not contact_ids or not isinstance(contact_ids, list):
+        return jsonify({"error": "contact_ids array is required"}), 400
+    if not tp_type:
+        return jsonify({"error": "type is required"}), 400
+
+    logged = []
+    not_found = []
+    for cid in contact_ids:
+        contact = db.query_one("SELECT id, name FROM contacts WHERE id = %s", (cid,))
+        if not contact:
+            not_found.append(cid)
+            continue
+
+        row = db.execute_returning(
+            """INSERT INTO touchpoints (contact_id, type, channel, direction, notes)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id, contact_id""",
+            (cid, tp_type, data.get("channel", "in_person"), data.get("direction", "outbound"), data.get("notes")),
+        )
+        db.execute(
+            "UPDATE contacts SET last_touchpoint_at = NOW(), last_contact = CURRENT_DATE, updated_at = NOW() WHERE id = %s",
+            (cid,),
+        )
+        logged.append({"contact_id": cid, "contact_name": contact["name"], "touchpoint_id": row["id"]})
+
+    return jsonify({
+        "logged_count": len(logged),
+        "logged": logged,
+        "not_found": not_found,
+        "touchpoint_type": tp_type,
+    }), 201
+
+
 @bp.route("/api/crm/events/<int:event_id>/attendees", methods=["POST"])
 def add_event_attendees(event_id):
     """Add contacts as attendees to a networking event.

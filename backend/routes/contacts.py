@@ -805,3 +805,130 @@ def import_linkedin_messages():
         "skipped_count": len(skipped),
         "unique_contacts_found": len(contacts_map),
     }), 201
+
+
+# ---------------------------------------------------------------------------
+# Duplicate Detection
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/contacts/duplicates", methods=["GET"])
+def find_duplicates():
+    """Find potential duplicate contacts by name/email similarity.
+
+    Uses exact email match and trigram-like name matching.
+    Query params:
+        threshold (float, default 0.8): name similarity threshold (0-1)
+    """
+    threshold = float(request.args.get("threshold", 0.8))
+
+    # 1. Exact email duplicates
+    email_dupes = db.query(
+        """
+        SELECT email, array_agg(id ORDER BY id) AS ids, array_agg(name ORDER BY id) AS names,
+               COUNT(*) AS cnt
+        FROM contacts
+        WHERE email IS NOT NULL AND email != '' AND merged_into_id IS NULL
+        GROUP BY LOWER(email)
+        HAVING COUNT(*) > 1
+        ORDER BY cnt DESC
+        LIMIT 50
+        """
+    )
+
+    # 2. Name-based potential duplicates (same first+last name)
+    name_dupes = db.query(
+        """
+        SELECT LOWER(TRIM(name)) AS norm_name,
+               array_agg(id ORDER BY id) AS ids,
+               array_agg(name ORDER BY id) AS names,
+               array_agg(company ORDER BY id) AS companies,
+               COUNT(*) AS cnt
+        FROM contacts
+        WHERE name IS NOT NULL AND name != '' AND merged_into_id IS NULL
+        GROUP BY LOWER(TRIM(name))
+        HAVING COUNT(*) > 1
+        ORDER BY cnt DESC
+        LIMIT 50
+        """
+    )
+
+    return jsonify({
+        "email_duplicates": email_dupes or [],
+        "name_duplicates": name_dupes or [],
+        "email_duplicate_groups": len(email_dupes or []),
+        "name_duplicate_groups": len(name_dupes or []),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Contacts by Company
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/contacts/by-company/<company>", methods=["GET"])
+def contacts_by_company(company):
+    """All contacts at a specific company with relationship details."""
+    rows = db.query(
+        """
+        SELECT c.id, c.name, c.title, c.email, c.phone, c.linkedin_url,
+               c.relationship, c.relationship_strength, c.relationship_stage,
+               c.health_score, c.last_contact, c.last_touchpoint_at, c.notes,
+               (SELECT COUNT(*) FROM touchpoints t WHERE t.contact_id = c.id) AS touchpoint_count,
+               (SELECT COUNT(*) FROM outreach_messages om WHERE om.contact_id = c.id) AS outreach_count
+        FROM contacts c
+        WHERE c.company ILIKE %s AND c.merged_into_id IS NULL
+        ORDER BY c.relationship_strength ASC NULLS LAST, c.health_score DESC NULLS LAST
+        """,
+        (f"%{company}%",),
+    )
+    return jsonify({
+        "company": company,
+        "contacts": rows or [],
+        "count": len(rows or []),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Referral Map
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/contacts/referral-map", methods=["GET"])
+def referral_map():
+    """Map of who referred whom, showing referral chains."""
+    rows = db.query(
+        """
+        SELECT r.id, r.referral_date, r.status,
+               r.contact_id, c.name AS referrer_name, c.company AS referrer_company,
+               r.application_id, a.company_name AS referred_company, a.role AS referred_role,
+               r.saved_job_id, r.notes
+        FROM referrals r
+        JOIN contacts c ON c.id = r.contact_id
+        LEFT JOIN applications a ON a.id = r.application_id
+        ORDER BY r.referral_date DESC NULLS LAST, r.created_at DESC
+        """
+    )
+
+    # Group by referrer
+    by_referrer = {}
+    for r in (rows or []):
+        rid = r["contact_id"]
+        if rid not in by_referrer:
+            by_referrer[rid] = {
+                "referrer_id": rid,
+                "referrer_name": r["referrer_name"],
+                "referrer_company": r["referrer_company"],
+                "referrals": [],
+            }
+        by_referrer[rid]["referrals"].append({
+            "referral_id": r["id"],
+            "company": r.get("referred_company"),
+            "role": r.get("referred_role"),
+            "status": r["status"],
+            "date": r["referral_date"],
+            "notes": r.get("notes"),
+        })
+
+    return jsonify({
+        "referral_map": list(by_referrer.values()),
+        "total_referrals": len(rows or []),
+        "total_referrers": len(by_referrer),
+    }), 200

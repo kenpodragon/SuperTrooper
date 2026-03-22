@@ -461,3 +461,140 @@ def update_preferences():
         "preferences": prefs,
         "updated_keys": list(data.keys()),
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# Health Check
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/health", methods=["GET"])
+def health_check():
+    """Simple health check returning status and version."""
+    try:
+        db.query_one("SELECT 1")
+        db_status = "connected"
+    except Exception:
+        db_status = "disconnected"
+    return jsonify({"status": "ok", "version": "1.0", "db": db_status}), 200
+
+
+# ---------------------------------------------------------------------------
+# Settings Export / Import
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/settings/export", methods=["GET"])
+def export_settings():
+    """Export all settings as JSON for backup."""
+    row = db.query_one(
+        """SELECT id, ai_provider, ai_enabled, ai_model, default_template_id,
+                  duplicate_threshold, preferences, created_at, updated_at
+           FROM settings WHERE id = 1"""
+    )
+    if not row:
+        return jsonify({"error": "Settings row not found"}), 404
+
+    settings_data = _serialize_row(row)
+
+    # Include voice rules
+    voice_rules = db.query("SELECT category, subcategory, rule_text, explanation FROM voice_rules ORDER BY id")
+
+    # Include aging rules from preferences
+    prefs = settings_data.get("preferences") or {}
+    if isinstance(prefs, str):
+        try:
+            prefs = json.loads(prefs)
+        except (json.JSONDecodeError, TypeError):
+            prefs = {}
+
+    return jsonify({
+        "export_version": "1.0",
+        "exported_at": __import__("datetime").datetime.utcnow().isoformat(),
+        "settings": settings_data,
+        "voice_rules": voice_rules or [],
+        "preferences": prefs,
+    }), 200
+
+
+@bp.route("/api/settings/import", methods=["POST"])
+def import_settings():
+    """Import settings from JSON backup.
+
+    Body JSON: output of GET /api/settings/export
+    """
+    data = request.get_json(force=True)
+    if not data.get("settings"):
+        return jsonify({"error": "Missing 'settings' key in import data"}), 400
+
+    imported = data["settings"]
+    updates = {k: v for k, v in imported.items() if k in ALLOWED_FIELDS}
+
+    if updates:
+        set_clauses = ", ".join(f"{col} = %s" for col in updates)
+        values = list(updates.values()) + [1]
+        db.execute(
+            f"UPDATE settings SET {set_clauses}, updated_at = NOW() WHERE id = %s",
+            values,
+        )
+
+    # Import voice rules if present
+    imported_rules = 0
+    for rule in data.get("voice_rules", []):
+        existing = db.query_one(
+            "SELECT id FROM voice_rules WHERE category = %s AND rule_text = %s",
+            (rule.get("category"), rule.get("rule_text")),
+        )
+        if not existing:
+            db.execute(
+                """INSERT INTO voice_rules (part, part_title, category, subcategory, rule_text, explanation, sort_order)
+                   VALUES (99, 'Imported', %s, %s, %s, %s, 999)""",
+                (rule.get("category"), rule.get("subcategory"), rule.get("rule_text"), rule.get("explanation")),
+            )
+            imported_rules += 1
+
+    return jsonify({
+        "status": "imported",
+        "settings_fields_updated": list(updates.keys()),
+        "voice_rules_imported": imported_rules,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Integrations Status
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/settings/integrations", methods=["GET"])
+def list_integrations():
+    """List available integrations and their connection status."""
+    import os
+
+    integrations = [
+        {
+            "name": "Gmail",
+            "key": "gmail",
+            "description": "Email search and recruiter detection",
+            "connected": bool(os.environ.get("GMAIL_TOKEN") or os.environ.get("GOOGLE_TOKEN")),
+            "icon": "mail",
+        },
+        {
+            "name": "Google Calendar",
+            "key": "google_calendar",
+            "description": "Interview scheduling and event tracking",
+            "connected": bool(os.environ.get("GCAL_TOKEN") or os.environ.get("GOOGLE_TOKEN")),
+            "icon": "calendar",
+        },
+        {
+            "name": "Indeed",
+            "key": "indeed",
+            "description": "Job search and company data",
+            "connected": bool(os.environ.get("INDEED_API_KEY") or os.environ.get("INDEED_TOKEN")),
+            "icon": "briefcase",
+        },
+        {
+            "name": "LinkedIn",
+            "key": "linkedin",
+            "description": "Profile import, connection sync, and content",
+            "connected": bool(os.environ.get("LINKEDIN_TOKEN") or os.environ.get("LINKEDIN_COOKIE")),
+            "icon": "users",
+        },
+    ]
+    return jsonify({"integrations": integrations}), 200
