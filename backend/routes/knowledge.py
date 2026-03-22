@@ -166,6 +166,62 @@ def get_voice_rules():
     })
 
 
+@bp.route("/api/voice-rules", methods=["POST"])
+def add_voice_rule():
+    """Add a custom voice rule.
+
+    Body (JSON):
+        category (required): banned_word, banned_construction, resume_rule, style_rule, custom
+        rule_text (required): the rule text or banned word/phrase
+        subcategory: optional grouping
+        explanation: why this rule exists
+    """
+    data = request.get_json(force=True)
+    category = data.get("category")
+    rule_text = data.get("rule_text", "").strip()
+
+    if not category or not rule_text:
+        return jsonify({"error": "category and rule_text are required"}), 400
+
+    existing = db.query_one(
+        "SELECT id FROM voice_rules WHERE category = %s AND rule_text = %s",
+        (category, rule_text),
+    )
+    if existing:
+        return jsonify({"error": "Rule already exists", "existing_id": existing["id"]}), 409
+
+    row = db.execute_returning(
+        """
+        INSERT INTO voice_rules (part, part_title, category, subcategory, rule_text, explanation, sort_order)
+        VALUES (99, 'Custom Rules', %s, %s, %s, %s, 999)
+        RETURNING *
+        """,
+        (
+            category,
+            data.get("subcategory"),
+            rule_text,
+            data.get("explanation"),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/voice-rules/<int:rule_id>", methods=["DELETE"])
+def delete_voice_rule(rule_id):
+    """Remove a voice rule (hard delete)."""
+    row = db.execute_returning(
+        """
+        DELETE FROM voice_rules
+        WHERE id = %s
+        RETURNING id, category, rule_text
+        """,
+        (rule_id,),
+    )
+    if not row:
+        return jsonify({"error": "Voice rule not found"}), 404
+    return jsonify({"deleted": True, "rule": row}), 200
+
+
 @bp.route("/api/voice-rules/check", methods=["POST"])
 def check_text_against_rules():
     """Check a piece of text against banned words and constructions.

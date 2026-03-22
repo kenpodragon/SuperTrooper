@@ -109,6 +109,7 @@ export default function FreshJobs() {
       qc.invalidateQueries({ queryKey: ['fresh-jobs-stats'] });
       setSelected([]);
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Triage failed'),
   });
 
   const batchTriage = useMutation({
@@ -119,6 +120,7 @@ export default function FreshJobs() {
       qc.invalidateQueries({ queryKey: ['fresh-jobs-stats'] });
       setSelected([]);
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Batch triage failed'),
   });
 
   let jobs = data ?? [];

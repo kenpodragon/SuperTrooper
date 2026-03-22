@@ -168,6 +168,7 @@ export default function SavedJobs() {
       qc.invalidateQueries({ queryKey: ['saved-jobs'] });
       qc.invalidateQueries({ queryKey: ['applications'] });
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Apply failed'),
   });
 
   const convertJob = useMutation({
@@ -176,11 +177,13 @@ export default function SavedJobs() {
       qc.invalidateQueries({ queryKey: ['saved-jobs'] });
       qc.invalidateQueries({ queryKey: ['applications'] });
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Convert failed'),
   });
 
   const deleteJob = useMutation({
     mutationFn: (id: number) => savedJobs.del(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['saved-jobs'] }),
+    onError: (err: any) => alert(err?.response?.data?.error || 'Delete failed'),
   });
 
   const batchConvert = useMutation({
@@ -190,6 +193,7 @@ export default function SavedJobs() {
       qc.invalidateQueries({ queryKey: ['applications'] });
       setSelected([]);
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Batch convert failed'),
   });
 
   const batchArchive = useMutation({
@@ -198,6 +202,7 @@ export default function SavedJobs() {
       qc.invalidateQueries({ queryKey: ['saved-jobs'] });
       setSelected([]);
     },
+    onError: (err: any) => alert(err?.response?.data?.error || 'Batch archive failed'),
   });
 
   const jobs = data ?? [];
