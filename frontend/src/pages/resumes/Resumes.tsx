@@ -84,9 +84,36 @@ export default function Resumes() {
   });
 
   const generateResume = useMutation({
-    mutationFn: (id: number) => api.post<GenerateResult>(`/resume/recipes/${id}/generate`, {}),
+    mutationFn: async (id: number) => {
+      const BASE = import.meta.env.VITE_API_URL || '/api';
+      const res = await fetch(`${BASE}/resume/recipes/${id}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || 'Generation failed');
+      }
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        return res.json() as Promise<GenerateResult>;
+      }
+      // File download response
+      const blob = await res.blob();
+      const disposition = res.headers.get('content-disposition') || '';
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match?.[1] || `resume_${id}.docx`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      return { status: 'ok', output_path: filename, message: 'Resume downloaded' } as GenerateResult;
+    },
     onSuccess: (data) => setGenResult(data),
-    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to generate resume'),
+    onError: (err: any) => alert(err?.message || 'Failed to generate resume'),
   });
 
   const runAtsScore = useMutation({

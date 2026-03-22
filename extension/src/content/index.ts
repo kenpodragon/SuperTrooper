@@ -1,7 +1,7 @@
 import { detectPage } from "./detector";
 import { MSG, sendToBackground } from "@shared/messages";
 import type { PageContext } from "@shared/types";
-import { processJobPage, resetProcessedUrl } from "./jobCapture";
+import { processJobPage, resetProcessedUrl, getCurrentJobData } from "./jobCapture";
 
 let currentContext: PageContext | null = null;
 
@@ -22,6 +22,13 @@ function init() {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   console.log(`[SuperTroopers] Content received: ${message.type}`);
+
+  if (message.type === "GET_JOB_DATA") {
+    const jobData = getCurrentJobData();
+    sendResponse({ job: jobData });
+    return true;
+  }
+
   sendResponse({ ok: true });
   return true;
 });

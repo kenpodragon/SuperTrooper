@@ -76,6 +76,24 @@ def create_contact():
     return jsonify(row), 201
 
 
+@bp.route("/api/contacts/<int:contact_id>", methods=["GET"])
+def get_contact(contact_id):
+    """Get a single contact with touchpoint history."""
+    row = db.query_one("SELECT * FROM contacts WHERE id = %s", (contact_id,))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    # Attach touchpoints if table exists
+    try:
+        touchpoints = db.query(
+            "SELECT * FROM touchpoints WHERE contact_id = %s ORDER BY created_at DESC LIMIT 50",
+            (contact_id,),
+        )
+        row["touchpoints"] = touchpoints
+    except Exception:
+        row["touchpoints"] = []
+    return jsonify(row)
+
+
 @bp.route("/api/contacts/<int:contact_id>", methods=["PATCH"])
 def update_contact(contact_id):
     """Update contact fields."""

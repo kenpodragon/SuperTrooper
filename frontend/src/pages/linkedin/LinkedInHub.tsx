@@ -37,10 +37,16 @@ interface LinkedInPost {
 }
 
 interface ContentAnalytics {
-  total_posts: number;
-  avg_engagement_rate: number;
-  best_post_type: string;
-  posts_by_status: Record<string, number>;
+  days: number;
+  overall: {
+    total_posts: number;
+    published: number;
+    drafts: number;
+    avg_char_count: number | null;
+  };
+  by_type: { post_type: string; count: number }[];
+  by_theme: { theme: string; count: number }[];
+  top_posts: unknown[];
 }
 
 interface SkillsAudit {
@@ -64,14 +70,13 @@ interface VoiceRule {
 // ── Tab definitions ────────────────────────────────────────────────────────
 
 interface EndorsementStrategy {
-  id: number;
+  skill_id: number;
   skill_name: string;
-  current_endorsements: number;
-  target_endorsements: number;
-  strategy: string;
+  endorsement_count: number;
   priority: string;
-  contacts_to_ask: { name: string; reason: string }[];
-  created_at: string;
+  category: string | null;
+  proficiency: string | null;
+  suggested_endorsers: { name: string; title: string; company: string; relationship_strength: string }[];
 }
 
 interface ScheduledPost {
@@ -299,9 +304,9 @@ function ContentDashboard() {
       {stats && (
         <div className="grid grid-cols-3 gap-4">
           {[
-            { label: 'Total Posts', value: stats.total_posts },
-            { label: 'Avg Engagement', value: `${(stats.avg_engagement_rate * 100).toFixed(1)}%` },
-            { label: 'Best Type', value: stats.best_post_type?.replace(/_/g, ' ') ?? 'N/A' },
+            { label: 'Total Posts', value: stats.overall?.total_posts ?? 0 },
+            { label: 'Published', value: stats.overall?.published ?? 0 },
+            { label: 'Drafts', value: stats.overall?.drafts ?? 0 },
           ].map((s) => (
             <div key={s.label} className="bg-gray-800 rounded-lg p-4 border border-gray-700 text-center">
               <p className="text-2xl font-bold text-white">{s.value}</p>
@@ -473,8 +478,18 @@ function SkillsManager() {
 
   const { data: audit, isLoading, error } = useQuery({
     queryKey: ['linkedin-skills-audit'],
-    queryFn: () => api.get<SkillsAudit>('/linkedin/skills-audits/latest'),
+    queryFn: () => api.get<Record<string, unknown>>('/linkedin/skills-audits/latest'),
     retry: false,
+    select: (d): SkillsAudit => ({
+      id: d.id as number,
+      keep: (d.skills_keep ?? d.keep ?? []) as SkillsAudit['keep'],
+      add: (d.skills_add ?? d.add ?? []) as SkillsAudit['add'],
+      remove: (d.skills_remove ?? d.remove ?? []) as SkillsAudit['remove'],
+      reprioritize: (d.skills_reprioritize ?? d.reprioritize ?? []) as SkillsAudit['reprioritize'],
+      top_50: (d.top_50 ?? []) as string[],
+      endorsement_gaps: (d.endorsement_gaps ?? []) as SkillsAudit['endorsement_gaps'],
+      created_at: d.created_at as string,
+    }),
   });
 
   const runAudit = useMutation({
@@ -840,14 +855,16 @@ function EndorsementStrategy() {
 
   const { data: strategies, isLoading, error } = useQuery({
     queryKey: ['linkedin-endorsement-strategy'],
-    queryFn: () => api.get<EndorsementStrategy[]>('/linkedin/endorsement-strategy'),
+    queryFn: () => api.get<{ skills: EndorsementStrategy[]; low_endorsement_count: number }>('/linkedin/endorsement-strategy'),
+    select: (d) => d.skills ?? [],
     retry: false,
   });
 
-  const generate = useMutation({
-    mutationFn: () => api.post<EndorsementStrategy[]>('/linkedin/endorsement-strategy', {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['linkedin-endorsement-strategy'] }),
-  });
+  // No POST generate endpoint — data comes from skills table via GET
+  const generate = {
+    mutate: () => qc.invalidateQueries({ queryKey: ['linkedin-endorsement-strategy'] }),
+    isPending: false,
+  };
 
   if (isLoading) return <Spinner />;
   if ((error || !strategies || strategies.length === 0) && !isLoading) {
@@ -894,7 +911,7 @@ function EndorsementStrategy() {
 
       {/* Strategy cards */}
       {items.map((strategy) => (
-        <div key={strategy.id} className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+        <div key={strategy.skill_id} className="bg-gray-800 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-sm font-semibold text-white">{strategy.skill_name}</h4>
             <div className="flex items-center gap-2">
@@ -902,31 +919,20 @@ function EndorsementStrategy() {
                 {strategy.priority}
               </span>
               <span className="text-xs text-gray-400">
-                {strategy.current_endorsements}/{strategy.target_endorsements} endorsements
+                {strategy.endorsement_count} endorsements
               </span>
+              {strategy.category && (
+                <span className="text-xs text-gray-500">{strategy.category}</span>
+              )}
             </div>
           </div>
 
-          {/* Progress bar */}
-          <div className="w-full bg-gray-700 rounded-full h-2 mb-3">
-            <div
-              className={`h-2 rounded-full transition-all ${
-                strategy.current_endorsements >= strategy.target_endorsements ? 'bg-green-500' : 'bg-blue-500'
-              }`}
-              style={{
-                width: `${Math.min(100, Math.round((strategy.current_endorsements / Math.max(1, strategy.target_endorsements)) * 100))}%`,
-              }}
-            />
-          </div>
-
-          <p className="text-sm text-gray-300 mb-2">{strategy.strategy}</p>
-
-          {strategy.contacts_to_ask && strategy.contacts_to_ask.length > 0 && (
+          {strategy.suggested_endorsers && strategy.suggested_endorsers.length > 0 && (
             <div className="mt-2">
-              <p className="text-xs text-gray-500 mb-1">People to ask:</p>
+              <p className="text-xs text-gray-500 mb-1">Suggested endorsers:</p>
               <div className="flex flex-wrap gap-2">
-                {strategy.contacts_to_ask.map((c, i) => (
-                  <span key={i} className="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded-full" title={c.reason}>
+                {strategy.suggested_endorsers.map((c, i) => (
+                  <span key={i} className="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded-full" title={`${c.title} at ${c.company} (${c.relationship_strength})`}>
                     {c.name}
                   </span>
                 ))}

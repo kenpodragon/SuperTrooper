@@ -44,7 +44,7 @@ def get_recipe(recipe_id):
         return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
 
     if request.args.get("resolve", "").lower() == "true":
-        from mcp_server import _resolve_recipe_db
+        from mcp_tools_resume_gen import _resolve_recipe_db
         recipe_json = row["recipe"]
         if isinstance(recipe_json, str):
             recipe_json = json.loads(recipe_json)
@@ -206,7 +206,7 @@ def clone_recipe(recipe_id):
 @bp.route("/api/resume/recipes/<int:recipe_id>/generate", methods=["POST"])
 def generate_from_recipe(recipe_id):
     """Generate a .docx resume from a recipe. Returns file download."""
-    from mcp_server import _resolve_recipe_db
+    from mcp_tools_resume_gen import _resolve_recipe_db
 
     recipe_row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
     if not recipe_row:
@@ -306,6 +306,17 @@ def generate_from_recipe(recipe_id):
     output.seek(0)
 
     filename = f"resume_recipe_{recipe_id}.docx"
+
+    # If ?format=json, save to disk and return JSON metadata instead of file download
+    if request.args.get("format") == "json":
+        import os
+        output_dir = os.path.join(os.getcwd(), "generated")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, filename)
+        with open(output_path, "wb") as f:
+            f.write(output.read())
+        return jsonify({"status": "ok", "output_path": output_path, "filename": filename})
+
     return send_file(
         output,
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

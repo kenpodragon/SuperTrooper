@@ -15,7 +15,7 @@ interface TestResult {
   provider?: string;
   message?: string;
   health?: { available: boolean; version: string };
-  providers?: { name: string; cli_command: string; available: boolean }[];
+  providers?: { name: string; cli_command?: string; available: boolean; model?: string; version?: string }[];
 }
 
 interface OnboardStatus {
@@ -82,7 +82,8 @@ export default function Settings() {
 
   const voiceRules = useQuery({
     queryKey: ['voice-rules'],
-    queryFn: () => api.get<VoiceRule[]>('/voice-rules'),
+    queryFn: () => api.get<{ rules: VoiceRule[]; count: number } | VoiceRule[]>('/voice-rules'),
+    select: (d) => (Array.isArray(d) ? d : d.rules ?? []),
   });
 
   const mutation = useMutation({
@@ -143,6 +144,13 @@ export default function Settings() {
       setImportStatus(`Import failed: ${String(e)}`);
     }
   };
+
+  // Auto-detect AI providers on load
+  const aiProviders = useQuery({
+    queryKey: ['ai-providers'],
+    queryFn: () => api.post<TestResult>('/settings/test-ai', {}),
+    staleTime: 60_000,
+  });
 
   const testAi = async (provider?: string) => {
     setTestResult(null);
@@ -295,46 +303,17 @@ export default function Settings() {
         )}
       </div>
 
-      {/* Quick Setup */}
+      {/* Profile Link */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">Quick Setup</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-2xl">
+        <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Name</label>
-            <input
-              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-              value={quickSetup.name}
-              onChange={e => setQuickSetup(p => ({ ...p, name: e.target.value }))}
-              placeholder="Full name"
-            />
+            <h2 className="text-lg font-semibold text-gray-900">Profile</h2>
+            <p className="text-sm text-gray-500 mt-1">Manage your name, contact info, target roles, and salary preferences.</p>
           </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Email</label>
-            <input
-              type="email"
-              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-              value={quickSetup.email}
-              onChange={e => setQuickSetup(p => ({ ...p, email: e.target.value }))}
-              placeholder="you@example.com"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Target Roles</label>
-            <input
-              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-              value={quickSetup.target_roles}
-              onChange={e => setQuickSetup(p => ({ ...p, target_roles: e.target.value }))}
-              placeholder="e.g., VP Engineering, CTO"
-            />
-          </div>
+          <a href="/profile" className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700">
+            Go to Profile
+          </a>
         </div>
-        <button
-          onClick={() => saveQuickSetup.mutate(quickSetup)}
-          disabled={saveQuickSetup.isPending || !quickSetup.name}
-          className="mt-3 px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
-        >
-          {saveQuickSetup.isPending ? 'Saving...' : 'Save Setup'}
-        </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -344,8 +323,8 @@ export default function Settings() {
           <div className="space-y-2">
             <div className="flex justify-between">
               <span className="text-sm text-gray-500">API</span>
-              <span className={`text-sm font-medium ${health.data?.status === 'healthy' ? 'text-green-600' : 'text-red-600'}`}>
-                {health.data?.status ?? 'checking...'}
+              <span className={`text-sm font-medium ${health.data?.status === 'ok' || health.data?.status === 'healthy' ? 'text-green-600' : 'text-red-600'}`}>
+                {health.data?.status === 'ok' ? 'healthy' : health.data?.status ?? 'checking...'}
               </span>
             </div>
             <div className="flex justify-between">
@@ -447,6 +426,19 @@ export default function Settings() {
                 <option value="openai">OpenAI</option>
               </select>
             </div>
+
+            {/* Auto-detected provider status */}
+            {aiProviders.data?.providers && (
+              <div className="flex flex-wrap gap-2">
+                {aiProviders.data.providers.map((p) => (
+                  <div key={p.name} className="flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-gray-50 border border-gray-200">
+                    <span className={`inline-block w-2 h-2 rounded-full ${p.available ? 'bg-green-500' : 'bg-gray-300'}`} />
+                    <span className="capitalize">{p.name}</span>
+                    {p.available && p.model && <span className="text-gray-400">({p.model})</span>}
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="flex items-center gap-3">
               <label className="text-sm font-medium text-gray-700">Enable AI Parsing</label>

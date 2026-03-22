@@ -7,6 +7,11 @@ import type { GapAnalysisResponse, McpStatusResponse } from "@shared/messages";
 import siteConfig from "@config/siteConfig.json";
 
 let lastProcessedUrl: string | null = null;
+let currentJobData: JobExtraction | null = null;
+
+export function getCurrentJobData(): JobExtraction | null {
+  return currentJobData;
+}
 
 export async function processJobPage(): Promise<void> {
   const context = detectPage();
@@ -38,6 +43,9 @@ export async function processJobPage(): Promise<void> {
     url: rawData.url || window.location.href,
     source: rawData.source || context.board,
   };
+
+  // Store for popup GET_JOB_DATA requests
+  currentJobData = job;
 
   console.log(`[SuperTroopers] Job detected: ${job.title} at ${job.company}`);
 
@@ -148,4 +156,5 @@ function findInjectionAnchor(board: string): Element | null {
 
 export function resetProcessedUrl(): void {
   lastProcessedUrl = null;
+  currentJobData = null;
 }

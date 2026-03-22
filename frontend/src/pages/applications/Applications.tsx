@@ -4,7 +4,7 @@ import { applications, emails, api, gapAnalyses } from '../../api/client';
 import type { Application, EmailIntelStatus, GapAnalysis } from '../../api/client';
 
 const KANBAN_STATUSES = ['Applied', 'Phone Screen', 'Interview', 'Technical', 'Final', 'Offer', 'Accepted', 'Rejected', 'Ghosted', 'Withdrawn'] as const;
-const ALL_STATUSES = ['All', ...KANBAN_STATUSES];
+const ALL_STATUSES = ['All', 'Stale', ...KANBAN_STATUSES];
 
 const statusColor: Record<string, string> = {
   Applied: 'bg-blue-100 text-blue-700 border-blue-200',
@@ -139,9 +139,9 @@ export default function Applications() {
   const [quickView, setQuickView] = useState<QuickViewData | null>(null);
   const qc = useQueryClient();
 
-  const params = filter === 'All' ? '?limit=100' : `?status=${encodeURIComponent(filter)}&limit=100`;
+  const params = filter === 'All' || filter === 'Stale' ? '?limit=100' : `?status=${encodeURIComponent(filter)}&limit=100`;
   const { data, isLoading } = useQuery({
-    queryKey: ['applications', filter],
+    queryKey: ['applications', filter === 'Stale' ? 'All' : filter],
     queryFn: () => applications.list(params),
   });
 
@@ -184,7 +184,8 @@ export default function Applications() {
   });
 
   const staleIds = new Set((staleApps ?? []).map((a: Application) => a.id));
-  const appList = data ?? [];
+  const allApps = data ?? [];
+  const appList = filter === 'Stale' ? allApps.filter((a: Application) => staleIds.has(a.id)) : allApps;
 
   // Group by status for kanban
   const byStatus: Record<string, Application[]> = {};
@@ -245,9 +246,13 @@ export default function Applications() {
 
       {/* Stale apps summary */}
       {(staleApps ?? []).length > 0 && (
-        <div className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+        <div
+          className="mb-4 p-3 bg-orange-50 border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-100 transition-colors"
+          onClick={() => { setFilter('Stale'); setViewMode('table'); }}
+        >
           <div className="text-sm text-orange-800">
             <span className="font-medium">{(staleApps ?? []).length} stale applications</span> need follow-up (14+ days without status change).
+            <span className="ml-2 text-xs underline">View all &rarr;</span>
           </div>
         </div>
       )}

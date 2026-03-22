@@ -52,14 +52,14 @@ export default function ResumeSelector() {
     setGenerating(true);
     setGenResult(null);
     try {
-      const result = await apiFetch<{ file_path?: string; message?: string }>(
-        "/api/resume/generate",
+      const result = await apiFetch<{ status?: string; output_path?: string; filename?: string; message?: string }>(
+        `/api/resume/recipes/${selected}/generate?format=json`,
         {
           method: "POST",
-          body: JSON.stringify({ recipe_id: selected }),
+          body: JSON.stringify({}),
         }
       );
-      setGenResult(result.file_path || result.message || "Resume generated");
+      setGenResult(result.filename || result.output_path || result.message || "Resume generated");
     } catch (err) {
       setGenResult(err instanceof Error ? err.message : "Generation failed");
     } finally {

@@ -59,7 +59,7 @@ export default function Interviews() {
     setPrepLoading(interviewId);
     setPrepResult(null);
     try {
-      const result = await api.post<PrepResult>('/interviews/prep', { interview_id: interviewId });
+      const result = await api.post<PrepResult>(`/interviews/${interviewId}/prep`, {});
       setPrepResult(result);
     } catch (e) {
       setPrepResult({ message: String(e) });
@@ -70,8 +70,7 @@ export default function Interviews() {
 
   const submitDebrief = useMutation({
     mutationFn: (data: DebriefForm) =>
-      api.post<{ status: string }>('/interviews/debrief', {
-        interview_id: data.interview_id,
+      api.post<{ status: string }>(`/interviews/${data.interview_id}/debrief`, {
         rating: data.rating,
         went_well: data.went_well,
         went_poorly: data.went_poorly,
