@@ -27,6 +27,7 @@ from routes.linkedin import bp as linkedin_bp
 from routes.materials import bp as materials_bp
 from routes.resume_tailoring import bp as resume_tailoring_bp
 from routes.offers import bp as offers_bp
+from routes.search_intelligence import bp as search_intelligence_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -56,4 +57,5 @@ ALL_BLUEPRINTS = [
     materials_bp,
     resume_tailoring_bp,
     offers_bp,
+    search_intelligence_bp,
 ]

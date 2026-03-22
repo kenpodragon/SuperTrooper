@@ -3216,6 +3216,47 @@ def benchmark_offer(offer_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Search Intelligence & Email Intelligence (S4.4, S4.6, S6.3)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def quick_fit_score(
+    jd_text: str | None = None,
+    fresh_job_id: int | None = None,
+) -> dict:
+    """Quick fit score matching JD keywords against candidate skills.
+
+    Args:
+        jd_text: job description text to score
+        fresh_job_id: optional fresh job ID to pull JD from
+    """
+    from mcp_tools_search_intel import quick_fit_score as _impl
+    return _impl(jd_text, fresh_job_id)
+
+
+@mcp.tool()
+def analyze_skill_demand() -> dict:
+    """Analyze skill demand across saved JDs. Returns ranked skills by frequency with have/missing flags."""
+    from mcp_tools_search_intel import analyze_skill_demand as _impl
+    return _impl()
+
+
+@mcp.tool()
+def scan_emails_for_status() -> dict:
+    """Scan unscanned emails for application status signals (confirmation, rejection, interview, offer)."""
+    from mcp_tools_search_intel import scan_emails_for_status as _impl
+    return _impl()
+
+
+@mcp.tool()
+def detect_recruiter_emails() -> dict:
+    """Detect recruiter emails and auto-create fresh jobs + contacts."""
+    from mcp_tools_search_intel import detect_recruiter_emails as _impl
+    return _impl()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
