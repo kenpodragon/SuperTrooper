@@ -7,6 +7,7 @@ The orchestrator will integrate them into mcp_server.py.
 import json
 import re
 import db
+from ai_providers.router import route_inference
 
 # Common English stopwords for keyword extraction
 _STOPWORDS = frozenset(
@@ -307,10 +308,30 @@ def run_gap_analysis(
         "gap_pct": round(len(gaps) / total * 100) if total else 0,
     }
 
-    recommendation = "Strong fit" if overall_score >= 70 else (
-        "Moderate fit — address gaps in cover letter" if overall_score >= 45 else
-        "Weak fit — significant skill gaps"
+    def _python_gap_recommendation(ctx):
+        score = ctx["overall_score"]
+        return {
+            "recommendation": (
+                "Strong fit" if score >= 70 else
+                "Moderate fit — address gaps in cover letter" if score >= 45 else
+                "Weak fit — significant skill gaps"
+            )
+        }
+
+    gap_ctx = {
+        "overall_score": overall_score,
+        "strong_matches": strong_matches,
+        "partial_matches": partial_matches,
+        "gaps": gaps,
+        "fit_scores": fit_scores,
+        "jd_text_snippet": jd_text[:2000],
+    }
+    rec_result = route_inference(
+        task="run_gap_analysis_recommendation",
+        context=gap_ctx,
+        python_fallback=_python_gap_recommendation,
     )
+    recommendation = rec_result.get("recommendation", "")
 
     row = db.execute_returning(
         """

@@ -7,6 +7,7 @@ All DB access via `import db`.
 import random
 from typing import Optional
 import db
+from ai_providers.router import route_inference
 
 # ---------------------------------------------------------------------------
 # Question banks
@@ -323,17 +324,35 @@ def evaluate_mock_interview(interview_id: int, answers: dict) -> dict:
     else:
         overall_score = None
 
-    if overall_score is not None:
-        if overall_score >= 80:
-            overall_feedback = "Strong performance. You demonstrated clear command of the subject with structured, metric-driven responses. Focus on tightening any remaining vague answers."
-        elif overall_score >= 60:
-            overall_feedback = "Solid performance with room to grow. Your answers showed good instincts but lacked consistent specificity. Add more quantified outcomes and tighten your STAR structure."
-        elif overall_score >= 40:
-            overall_feedback = "Developing performance. Several answers need more depth and concrete examples. Practice the STAR framework and prepare 2-3 strong stories per competency."
+    def _python_interview_feedback(ctx):
+        score = ctx["overall_score"]
+        if score is None:
+            return {"overall_feedback": "No answers were submitted for evaluation."}
+        if score >= 80:
+            fb = "Strong performance. You demonstrated clear command of the subject with structured, metric-driven responses. Focus on tightening any remaining vague answers."
+        elif score >= 60:
+            fb = "Solid performance with room to grow. Your answers showed good instincts but lacked consistent specificity. Add more quantified outcomes and tighten your STAR structure."
+        elif score >= 40:
+            fb = "Developing performance. Several answers need more depth and concrete examples. Practice the STAR framework and prepare 2-3 strong stories per competency."
         else:
-            overall_feedback = "Needs significant preparation. Focus on building a library of specific, metric-backed stories. Review the suggested answers and practice delivering structured responses."
-    else:
-        overall_feedback = "No answers were submitted for evaluation."
+            fb = "Needs significant preparation. Focus on building a library of specific, metric-backed stories. Review the suggested answers and practice delivering structured responses."
+        return {"overall_feedback": fb}
+
+    feedback_ctx = {
+        "overall_score": overall_score,
+        "evaluated_questions": [
+            {"question": q.get("question_text", ""), "score": q.get("score"), "answer": q.get("user_answer", "")}
+            for q in evaluated
+        ],
+        "interview_type": interview.get("interview_type"),
+        "role": interview.get("role"),
+    }
+    fb_result = route_inference(
+        task="evaluate_mock_interview_feedback",
+        context=feedback_ctx,
+        python_fallback=_python_interview_feedback,
+    )
+    overall_feedback = fb_result.get("overall_feedback", "")
 
     db.execute(
         """

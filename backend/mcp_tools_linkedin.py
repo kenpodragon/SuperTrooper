@@ -6,6 +6,7 @@ The orchestrator will integrate them into mcp_server.py.
 
 import json
 import db
+from ai_providers.router import route_inference
 
 
 def run_profile_audit(audit_type: str = "full", target_jd_ids: list | None = None) -> dict:
@@ -18,29 +19,45 @@ def run_profile_audit(audit_type: str = "full", target_jd_ids: list | None = Non
         audit_type: full, headline, about, experience, skills, featured
         target_jd_ids: optional list of saved_job IDs for match scoring
     """
-    # Placeholder section scores — AI scoring to be added later
-    section_scores = {
-        "headline": 65,
-        "about": 60,
-        "experience": 75,
-        "skills": 55,
-        "featured": 40,
-    }
-    overall_score = sum(section_scores.values()) / len(section_scores)
+    def _python_profile_audit(ctx):
+        _scores = {
+            "headline": 65,
+            "about": 60,
+            "experience": 75,
+            "skills": 55,
+            "featured": 40,
+        }
+        _overall = sum(_scores.values()) / len(_scores)
+        _recs = [
+            {"section": "headline", "priority": "high", "suggestion": "Add target role title and key differentiator."},
+            {"section": "about", "priority": "high", "suggestion": "Lead with your value proposition, not your history."},
+            {"section": "skills", "priority": "medium", "suggestion": "Reorder skills to match target role requirements."},
+            {"section": "featured", "priority": "medium", "suggestion": "Add 3-5 featured items showcasing recent work."},
+        ]
+        _match_scores = {}
+        if ctx.get("target_jd_ids"):
+            for jd_id in ctx["target_jd_ids"]:
+                _match_scores[f"jd_{jd_id}"] = round(55 + (hash(str(jd_id)) % 30), 1)
+        return {
+            "section_scores": _scores,
+            "overall_score": _overall,
+            "recommendations": _recs,
+            "match_scores": _match_scores,
+            "keyword_gaps": {"missing": [], "section_suggestions": {}},
+        }
 
-    recommendations = [
-        {"section": "headline", "priority": "high", "suggestion": "Add target role title and key differentiator."},
-        {"section": "about", "priority": "high", "suggestion": "Lead with your value proposition, not your history."},
-        {"section": "skills", "priority": "medium", "suggestion": "Reorder skills to match target role requirements."},
-        {"section": "featured", "priority": "medium", "suggestion": "Add 3-5 featured items showcasing recent work."},
-    ]
+    audit_ctx = {"audit_type": audit_type, "target_jd_ids": target_jd_ids}
+    audit_result = route_inference(
+        task="run_profile_audit",
+        context=audit_ctx,
+        python_fallback=_python_profile_audit,
+    )
 
-    # If target JDs provided, compute placeholder match scores
-    match_scores = {}
-    keyword_gaps = {"missing": [], "section_suggestions": {}}
-    if target_jd_ids:
-        for jd_id in target_jd_ids:
-            match_scores[f"jd_{jd_id}"] = round(55 + (hash(str(jd_id)) % 30), 1)
+    section_scores = audit_result.get("section_scores", {})
+    overall_score = audit_result.get("overall_score", 0)
+    recommendations = audit_result.get("recommendations", [])
+    match_scores = audit_result.get("match_scores", {})
+    keyword_gaps = audit_result.get("keyword_gaps", {"missing": [], "section_suggestions": {}})
 
     row = db.execute_returning(
         """
@@ -86,26 +103,44 @@ def generate_headline_variants(target_role: str | None = None, count: int = 3) -
     name = profile["full_name"] if profile else "Professional"
     current_title = profile.get("current_title", "Technology Leader") if profile else "Technology Leader"
 
-    variants = []
-    templates = [
-        "{title} | {skill1} & {skill2} | Building High-Performance Teams",
-        "{title} | Driving {skill1} Innovation | {skill2} Enthusiast",
-        "{title} who turns {skill1} into business outcomes | {skill2}",
-        "Former {title} | Now helping teams scale with {skill1} & {skill2}",
-        "{title} | {skill1} | {skill2} | Measurable Results > Buzzwords",
-    ]
-
     role = target_role or current_title
-    for i in range(min(count, len(templates))):
-        s1 = top_skills[i % len(top_skills)] if top_skills else "Technology"
-        s2 = top_skills[(i + 1) % len(top_skills)] if top_skills else "Leadership"
-        variant = templates[i].format(title=role, skill1=s1, skill2=s2)
-        variants.append({"variant": i + 1, "headline": variant, "char_count": len(variant)})
+
+    def _python_headline_variants(ctx):
+        _templates = [
+            "{title} | {skill1} & {skill2} | Building High-Performance Teams",
+            "{title} | Driving {skill1} Innovation | {skill2} Enthusiast",
+            "{title} who turns {skill1} into business outcomes | {skill2}",
+            "Former {title} | Now helping teams scale with {skill1} & {skill2}",
+            "{title} | {skill1} | {skill2} | Measurable Results > Buzzwords",
+        ]
+        _role = ctx["role"]
+        _skills = ctx["top_skills"]
+        _count = ctx["count"]
+        _variants = []
+        for i in range(min(_count, len(_templates))):
+            s1 = _skills[i % len(_skills)] if _skills else "Technology"
+            s2 = _skills[(i + 1) % len(_skills)] if _skills else "Leadership"
+            v = _templates[i].format(title=_role, skill1=s1, skill2=s2)
+            _variants.append({"variant": i + 1, "headline": v, "char_count": len(v)})
+        return {"variants": _variants}
+
+    hl_ctx = {
+        "role": role,
+        "top_skills": top_skills,
+        "count": count,
+        "current_title": current_title,
+    }
+    hl_result = route_inference(
+        task="generate_headline_variants",
+        context=hl_ctx,
+        python_fallback=_python_headline_variants,
+    )
+    variants = hl_result.get("variants", [])
 
     return {
         "target_role": role,
         "variants": variants,
-        "note": "These are template-based suggestions. AI-powered variants will be added later.",
+        "analysis_mode": hl_result.get("analysis_mode", "rule_based"),
     }
 
 
@@ -117,8 +152,17 @@ def generate_linkedin_post(topic: str, theme_pillar_id: int | None = None, style
         theme_pillar_id: optional theme pillar ID
         style: post_type — text, article, poll, carousel, video, document
     """
-    # Create a placeholder draft with the topic as content
-    content = f"[DRAFT] Topic: {topic}\n\nThis is a draft post. Use the AI content generation to expand this into a full post."
+    def _python_linkedin_post(ctx):
+        _content = f"[DRAFT] Topic: {ctx['topic']}\n\nThis is a draft post. Use the AI content generation to expand this into a full post."
+        return {"content": _content}
+
+    post_ctx = {"topic": topic, "theme_pillar_id": theme_pillar_id, "style": style}
+    post_result = route_inference(
+        task="generate_linkedin_post",
+        context=post_ctx,
+        python_fallback=_python_linkedin_post,
+    )
+    content = post_result.get("content", f"[DRAFT] Topic: {topic}")
     hook_text = content[:210]
 
     row = db.execute_returning(

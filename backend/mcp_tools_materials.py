@@ -6,6 +6,7 @@ The orchestrator will integrate them into mcp_server.py.
 
 import json
 import db
+from ai_providers.router import route_inference
 
 
 def generate_cover_letter(
@@ -81,17 +82,37 @@ def generate_cover_letter(
     top_bullets = [b["text"] for b in bullets] if bullets else []
     generation_context["bullet_count"] = len(top_bullets)
 
-    # Build placeholder cover letter with real data
+    # Build cover letter — AI if available, placeholder fallback
     bullet_text = "\n".join(f"- {b}" for b in top_bullets[:3]) if top_bullets else "- [Key achievement from career history]"
-    content = (
-        f"Dear Hiring Manager,\n\n"
-        f"I am writing to express my interest in the {role_title or '[Role]'} position "
-        f"at {company_name or '[Company]'}.\n\n"
-        f"{candidate_name} brings the following key achievements:\n{bullet_text}\n\n"
-        f"[AI will expand with gap analysis alignment, company-specific value proposition, "
-        f"and voice-checked closing paragraph.]\n\n"
-        f"Sincerely,\n{candidate_name}"
+
+    def _python_cover_letter(ctx):
+        _bt = "\n".join(f"- {b}" for b in ctx["bullets"][:3]) if ctx["bullets"] else "- [Key achievement from career history]"
+        return {
+            "content": (
+                f"Dear Hiring Manager,\n\n"
+                f"I am writing to express my interest in the {ctx['role_title'] or '[Role]'} position "
+                f"at {ctx['company_name'] or '[Company]'}.\n\n"
+                f"{ctx['candidate_name']} brings the following key achievements:\n{_bt}\n\n"
+                f"[AI will expand with gap analysis alignment, company-specific value proposition, "
+                f"and voice-checked closing paragraph.]\n\n"
+                f"Sincerely,\n{ctx['candidate_name']}"
+            )
+        }
+
+    ai_ctx = {
+        "role_title": role_title,
+        "company_name": company_name,
+        "candidate_name": candidate_name,
+        "bullets": top_bullets,
+        "generation_context": generation_context,
+    }
+
+    gen_result = route_inference(
+        task="generate_cover_letter",
+        context=ai_ctx,
+        python_fallback=_python_cover_letter,
     )
+    content = gen_result.get("content", "")
 
     row = db.execute_returning(
         """
@@ -171,15 +192,37 @@ def generate_thank_you(
     elif debrief_notes:
         notes_ref = f" I especially valued our conversation about {debrief_notes[:80]}..."
 
-    content = (
-        f"Hi {interviewer},\n\n"
-        f"Thank you for taking the time to meet with me about the "
-        f"{role_title or '[Role]'} position at {company_name or '[Company]'}."
-        f"{notes_ref}\n\n"
-        f"[AI will personalize with specific discussion points, reiterate fit, "
-        f"and close with next-step enthusiasm.]\n\n"
-        f"Best regards,\n{candidate_name}"
+    def _python_thank_you(ctx):
+        _notes = ctx["notes_ref"]
+        return {
+            "content": (
+                f"Hi {ctx['interviewer']},\n\n"
+                f"Thank you for taking the time to meet with me about the "
+                f"{ctx['role_title'] or '[Role]'} position at {ctx['company_name'] or '[Company]'}."
+                f"{_notes}\n\n"
+                f"[AI will personalize with specific discussion points, reiterate fit, "
+                f"and close with next-step enthusiasm.]\n\n"
+                f"Best regards,\n{ctx['candidate_name']}"
+            )
+        }
+
+    ai_ctx = {
+        "interviewer": interviewer,
+        "role_title": role_title,
+        "company_name": company_name,
+        "candidate_name": candidate_name,
+        "notes_ref": notes_ref,
+        "interview_notes": interview_notes,
+        "debrief_notes": debrief_notes,
+        "generation_context": generation_context,
+    }
+
+    gen_result = route_inference(
+        task="generate_thank_you",
+        context=ai_ctx,
+        python_fallback=_python_thank_you,
     )
+    content = gen_result.get("content", "")
 
     row = db.execute_returning(
         """
@@ -267,14 +310,36 @@ def generate_outreach(
     company_ref = f" at {contact_company}" if contact_company else ""
     subject = f"Connecting{role_context}" if channel == "email" else None
 
-    body = (
-        f"Hi {contact_name},\n\n"
-        f"My name is {candidate_name}{role_context}. "
-        f"I'd love to connect{company_ref}.\n\n"
-        f"[AI will personalize with shared connections, mutual interests, "
-        f"and a clear ask.]\n\n"
-        f"Best,\n{candidate_name}"
+    def _python_outreach(ctx):
+        return {
+            "body": (
+                f"Hi {ctx['contact_name']},\n\n"
+                f"My name is {ctx['candidate_name']}{ctx['role_context']}. "
+                f"I'd love to connect{ctx['company_ref']}.\n\n"
+                f"[AI will personalize with shared connections, mutual interests, "
+                f"and a clear ask.]\n\n"
+                f"Best,\n{ctx['candidate_name']}"
+            )
+        }
+
+    ai_ctx = {
+        "contact_name": contact_name,
+        "contact_company": contact_company,
+        "contact_title": contact_title,
+        "candidate_name": candidate_name,
+        "role_context": role_context,
+        "company_ref": company_ref,
+        "message_type": message_type,
+        "channel": channel,
+        "personalization_context": personalization_context,
+    }
+
+    gen_result = route_inference(
+        task="generate_outreach",
+        context=ai_ctx,
+        python_fallback=_python_outreach,
     )
+    body = gen_result.get("body", "")
 
     row = db.execute_returning(
         """
@@ -357,13 +422,32 @@ def batch_outreach(
             personalization_context["application_id"] = application_id
 
         subject = f"Connecting{role_context}" if message_type != "cold_outreach" else f"Quick question{company_ref}"
-        body = (
-            f"Hi {contact_name},\n\n"
-            f"My name is {candidate_name}{role_context}. "
-            f"I'd love to connect{company_ref}.\n\n"
-            f"[AI will personalize per contact.]\n\n"
-            f"Best,\n{candidate_name}"
+
+        def _python_batch_outreach(ctx):
+            return {
+                "body": (
+                    f"Hi {ctx['contact_name']},\n\n"
+                    f"My name is {ctx['candidate_name']}{ctx['role_context']}. "
+                    f"I'd love to connect{ctx['company_ref']}.\n\n"
+                    f"[AI will personalize per contact.]\n\n"
+                    f"Best,\n{ctx['candidate_name']}"
+                )
+            }
+
+        _batch_ctx = {
+            "contact_name": contact_name,
+            "candidate_name": candidate_name,
+            "role_context": role_context,
+            "company_ref": company_ref,
+            "message_type": message_type,
+            "personalization_context": personalization_context,
+        }
+        _gen = route_inference(
+            task="generate_outreach_batch",
+            context=_batch_ctx,
+            python_fallback=_python_batch_outreach,
         )
+        body = _gen.get("body", "")
 
         row = db.execute_returning(
             """
