@@ -34,6 +34,94 @@ def register_resume_gen_tools(mcp):
         rows = db.query(sql, params)
         return {"recipes": rows, "count": len(rows)}
 
+    # ------------------------------------------------------------------
+    # Template Management
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    def list_templates(active_only: bool = True) -> dict:
+        """List available resume templates.
+
+        Args:
+            active_only: If True, only return active templates (default True).
+        """
+        if active_only:
+            rows = db.query(
+                "SELECT id, name, filename, description, is_active, template_type, created_at "
+                "FROM resume_templates WHERE is_active = TRUE ORDER BY id"
+            )
+        else:
+            rows = db.query(
+                "SELECT id, name, filename, description, is_active, template_type, created_at "
+                "FROM resume_templates ORDER BY id"
+            )
+        return {"templates": rows, "count": len(rows)}
+
+    @mcp.tool()
+    def upload_template(name: str = "", file_path: str = "", description: str = "",
+                        template_type: str = "full") -> dict:
+        """Register a new resume template from a .docx file path.
+
+        Args:
+            name: Template name (required).
+            file_path: Path to the .docx template file (required).
+            description: Optional description.
+            template_type: Template type (full, section, header). Default 'full'.
+        """
+        if not name or not file_path:
+            return {"error": "name and file_path are required"}
+
+        from pathlib import Path as _Path
+        p = _Path(file_path)
+        if not p.exists():
+            return {"error": f"File not found: {file_path}"}
+
+        with open(file_path, "rb") as f:
+            blob = f.read()
+
+        row = db.execute_returning(
+            """INSERT INTO resume_templates (name, filename, template_blob, description, template_type)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id, name, filename, description, is_active, template_type, created_at""",
+            (name, p.name, blob, description or None, template_type),
+        )
+        return row or {"error": "Failed to upload template"}
+
+    @mcp.tool()
+    def activate_template(template_id: int = 0) -> dict:
+        """Activate a resume template, making it available for use.
+
+        Args:
+            template_id: Template ID to activate.
+        """
+        if template_id <= 0:
+            return {"error": "template_id is required"}
+        row = db.execute_returning(
+            "UPDATE resume_templates SET is_active = TRUE, updated_at = NOW() WHERE id = %s "
+            "RETURNING id, name, is_active",
+            (template_id,),
+        )
+        if not row:
+            return {"error": f"Template id={template_id} not found"}
+        return row
+
+    @mcp.tool()
+    def deactivate_template(template_id: int = 0) -> dict:
+        """Deactivate a resume template, hiding it from active use.
+
+        Args:
+            template_id: Template ID to deactivate.
+        """
+        if template_id <= 0:
+            return {"error": "template_id is required"}
+        row = db.execute_returning(
+            "UPDATE resume_templates SET is_active = FALSE, updated_at = NOW() WHERE id = %s "
+            "RETURNING id, name, is_active",
+            (template_id,),
+        )
+        if not row:
+            return {"error": f"Template id={template_id} not found"}
+        return row
+
     @mcp.tool()
     def get_recipe(recipe_id: int = 0) -> dict:
         """Get a single resume recipe with full JSON.

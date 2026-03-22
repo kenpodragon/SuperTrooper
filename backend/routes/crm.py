@@ -1,5 +1,6 @@
-"""CRM routes for relationship tracking, touchpoints, and networking tasks."""
+"""CRM routes for relationship tracking, touchpoints, networking tasks, and drip sequences."""
 
+import json
 from datetime import date, timedelta
 
 from flask import Blueprint, request, jsonify
@@ -344,4 +345,189 @@ def recalculate_health(contact_id):
         """,
         (score, contact_id),
     )
+    return jsonify(row), 200
+
+
+# ---------------------------------------------------------------------------
+# Drip Sequences
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/crm/drip-sequences", methods=["POST"])
+def create_drip_sequence():
+    """Create a multi-touch outreach sequence.
+
+    Body (JSON):
+        sequence_name (required): name for this drip sequence
+        contact_id (required): contact to run the sequence for
+        steps (required): array of step objects:
+            [{day_offset: int, message_type: str, channel: str, subject: str, body: str}]
+    """
+    data = request.get_json(force=True)
+    name = data.get("sequence_name")
+    contact_id = data.get("contact_id")
+    steps = data.get("steps")
+
+    if not name:
+        return jsonify({"error": "sequence_name is required"}), 400
+    if not contact_id:
+        return jsonify({"error": "contact_id is required"}), 400
+    if not steps or not isinstance(steps, list):
+        return jsonify({"error": "steps array is required"}), 400
+
+    # Verify contact exists
+    contact = db.query_one("SELECT id, name FROM contacts WHERE id = %s", (contact_id,))
+    if not contact:
+        return jsonify({"error": "Contact not found"}), 404
+
+    row = db.execute_returning(
+        """INSERT INTO drip_sequences (sequence_name, contact_id, steps, current_step, status)
+           VALUES (%s, %s, %s, 0, 'active')
+           RETURNING *""",
+        (name, contact_id, json.dumps(steps)),
+    )
+
+    return jsonify(row), 201
+
+
+@bp.route("/api/crm/drip-sequences", methods=["GET"])
+def list_drip_sequences():
+    """List all drip sequences with optional filters.
+
+    Query params:
+        contact_id (optional): filter by contact
+        status (optional): filter by status (active, paused, completed)
+    """
+    contact_id = request.args.get("contact_id")
+    status = request.args.get("status")
+
+    clauses, params = [], []
+    if contact_id:
+        clauses.append("ds.contact_id = %s")
+        params.append(int(contact_id))
+    if status:
+        clauses.append("ds.status = %s")
+        params.append(status)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    rows = db.query(
+        f"""SELECT ds.*, c.name AS contact_name, c.company AS contact_company
+            FROM drip_sequences ds
+            JOIN contacts c ON c.id = ds.contact_id
+            {where}
+            ORDER BY ds.created_at DESC""",
+        params,
+    )
+
+    return jsonify(rows), 200
+
+
+@bp.route("/api/crm/drip-sequences/<int:seq_id>/advance", methods=["POST"])
+def advance_drip_sequence(seq_id):
+    """Advance a drip sequence to its next step.
+
+    Increments current_step, returns the next step details.
+    If all steps completed, marks sequence as 'completed'.
+    """
+    seq = db.query_one("SELECT * FROM drip_sequences WHERE id = %s", (seq_id,))
+    if not seq:
+        return jsonify({"error": "Drip sequence not found"}), 404
+
+    if seq["status"] != "active":
+        return jsonify({"error": f"Sequence is {seq['status']}, cannot advance"}), 400
+
+    steps = seq["steps"]
+    if isinstance(steps, str):
+        steps = json.loads(steps)
+
+    current = seq["current_step"]
+    next_step = current + 1
+
+    if next_step >= len(steps):
+        # All steps completed
+        row = db.execute_returning(
+            """UPDATE drip_sequences
+               SET status = 'completed', current_step = %s,
+                   completed_at = NOW(), updated_at = NOW()
+               WHERE id = %s RETURNING *""",
+            (next_step, seq_id),
+        )
+        return jsonify({
+            "sequence": row,
+            "message": "Sequence completed - all steps done",
+            "completed": True,
+        }), 200
+
+    # Advance to next step
+    row = db.execute_returning(
+        """UPDATE drip_sequences
+           SET current_step = %s, updated_at = NOW()
+           WHERE id = %s RETURNING *""",
+        (next_step, seq_id),
+    )
+
+    next_step_detail = steps[next_step] if next_step < len(steps) else None
+
+    return jsonify({
+        "sequence": row,
+        "current_step_index": next_step,
+        "current_step_detail": next_step_detail,
+        "steps_remaining": len(steps) - next_step - 1,
+        "completed": False,
+    }), 200
+
+
+@bp.route("/api/crm/drip-sequences/<int:seq_id>", methods=["GET"])
+def get_drip_sequence(seq_id):
+    """Get a single drip sequence with full details."""
+    row = db.query_one(
+        """SELECT ds.*, c.name AS contact_name, c.company AS contact_company
+           FROM drip_sequences ds
+           JOIN contacts c ON c.id = ds.contact_id
+           WHERE ds.id = %s""",
+        (seq_id,),
+    )
+    if not row:
+        return jsonify({"error": "Drip sequence not found"}), 404
+
+    steps = row.get("steps", [])
+    if isinstance(steps, str):
+        steps = json.loads(steps)
+
+    current = row.get("current_step", 0)
+    return jsonify({
+        **row,
+        "total_steps": len(steps),
+        "current_step_detail": steps[current] if current < len(steps) else None,
+        "steps_remaining": max(0, len(steps) - current - 1),
+    }), 200
+
+
+@bp.route("/api/crm/drip-sequences/<int:seq_id>/pause", methods=["POST"])
+def pause_drip_sequence(seq_id):
+    """Pause an active drip sequence."""
+    row = db.execute_returning(
+        """UPDATE drip_sequences
+           SET status = 'paused', updated_at = NOW()
+           WHERE id = %s AND status = 'active'
+           RETURNING *""",
+        (seq_id,),
+    )
+    if not row:
+        return jsonify({"error": "Sequence not found or not active"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/crm/drip-sequences/<int:seq_id>/resume", methods=["POST"])
+def resume_drip_sequence(seq_id):
+    """Resume a paused drip sequence."""
+    row = db.execute_returning(
+        """UPDATE drip_sequences
+           SET status = 'active', updated_at = NOW()
+           WHERE id = %s AND status = 'paused'
+           RETURNING *""",
+        (seq_id,),
+    )
+    if not row:
+        return jsonify({"error": "Sequence not found or not paused"}), 404
     return jsonify(row), 200

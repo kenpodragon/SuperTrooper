@@ -592,6 +592,176 @@ def dedup_scan():
 
 
 # ---------------------------------------------------------------------------
+# Title Variations
+# ---------------------------------------------------------------------------
+
+_TITLE_VARIATIONS = {
+    "cto": ["Chief Technology Officer", "CTO", "VP Engineering", "Head of Engineering",
+            "Technical Director", "Chief Technical Officer"],
+    "chief technology officer": ["CTO", "VP Engineering", "Head of Engineering",
+                                  "Technical Director", "Chief Technical Officer"],
+    "vp engineering": ["VP of Engineering", "Vice President Engineering",
+                       "Head of Engineering", "Director of Engineering", "CTO",
+                       "SVP Engineering", "Engineering VP"],
+    "director of engineering": ["Engineering Director", "Director, Engineering",
+                                 "Senior Director of Engineering", "VP Engineering",
+                                 "Head of Engineering", "Engineering Manager"],
+    "engineering manager": ["Software Engineering Manager", "Dev Manager",
+                             "Development Manager", "Technical Manager",
+                             "Director of Engineering", "Engineering Lead"],
+    "software engineer": ["Software Developer", "SDE", "Backend Engineer",
+                           "Full Stack Developer", "Application Developer",
+                           "Programmer", "Developer"],
+    "data scientist": ["Data Analyst", "ML Engineer", "Machine Learning Engineer",
+                        "Research Scientist", "Applied Scientist", "AI Engineer"],
+    "product manager": ["Product Owner", "Program Manager", "Technical Product Manager",
+                         "Senior Product Manager", "Group Product Manager"],
+    "devops engineer": ["Site Reliability Engineer", "SRE", "Platform Engineer",
+                         "Infrastructure Engineer", "Cloud Engineer",
+                         "DevOps Specialist", "Release Engineer"],
+    "ai architect": ["AI Engineer", "ML Architect", "Machine Learning Architect",
+                      "AI/ML Lead", "Chief AI Officer", "Head of AI"],
+    "data engineer": ["Data Platform Engineer", "ETL Developer",
+                       "Analytics Engineer", "Data Infrastructure Engineer",
+                       "Big Data Engineer"],
+    "solutions architect": ["Cloud Architect", "Enterprise Architect",
+                             "Technical Architect", "Infrastructure Architect",
+                             "AWS Solutions Architect"],
+    "project manager": ["Program Manager", "Delivery Manager",
+                         "Technical Project Manager", "Scrum Master", "Agile Coach"],
+    "head of engineering": ["VP Engineering", "Director of Engineering", "CTO",
+                             "Engineering Lead", "Chief Engineering Officer"],
+}
+
+
+@bp.route("/api/search/title-variations", methods=["GET"])
+def title_variations():
+    """Given a job title, return related title variations.
+
+    Query params:
+        title (required): job title to find variations for
+    """
+    title = request.args.get("title", "").strip()
+    if not title:
+        return jsonify({"error": "title query parameter is required"}), 400
+
+    title_lower = title.lower()
+
+    # Direct match
+    if title_lower in _TITLE_VARIATIONS:
+        return jsonify({
+            "title": title,
+            "variations": _TITLE_VARIATIONS[title_lower],
+        }), 200
+
+    # Partial match: find keys that contain the search term
+    matches = []
+    for key, variations in _TITLE_VARIATIONS.items():
+        if title_lower in key or key in title_lower:
+            matches.extend(variations)
+        else:
+            # Check if any variation matches
+            for v in variations:
+                if title_lower in v.lower() or v.lower() in title_lower:
+                    matches.extend(variations)
+                    break
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for m in matches:
+        if m.lower() not in seen and m.lower() != title_lower:
+            seen.add(m.lower())
+            unique.append(m)
+
+    return jsonify({
+        "title": title,
+        "variations": unique[:20],
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Saved Search Diffing
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/search/saved/<int:search_id>/diff", methods=["GET"])
+def diff_saved_search(search_id):
+    """Compare current search results with last run to show new/removed jobs.
+
+    Returns new jobs discovered since last run and jobs no longer appearing.
+    """
+    search = db.query_one(
+        "SELECT * FROM saved_searches WHERE id = %s",
+        (search_id,),
+    )
+    if not search:
+        return jsonify({"error": "Saved search not found"}), 404
+
+    last_run_at = search.get("last_run_at")
+
+    if not last_run_at:
+        # Never run before, all jobs are "new"
+        all_jobs = db.query(
+            """SELECT id, title, company, location, salary_range, auto_score,
+                      status, source_type, discovered_at
+               FROM fresh_jobs
+               WHERE saved_search_id = %s
+               ORDER BY discovered_at DESC""",
+            (search_id,),
+        )
+        return jsonify({
+            "search_id": search_id,
+            "search_name": search.get("name"),
+            "last_run_at": None,
+            "new_jobs": all_jobs,
+            "removed_jobs": [],
+            "unchanged_count": 0,
+        }), 200
+
+    # New jobs: discovered after last run
+    new_jobs = db.query(
+        """SELECT id, title, company, location, salary_range, auto_score,
+                  status, source_type, discovered_at
+           FROM fresh_jobs
+           WHERE saved_search_id = %s AND discovered_at > %s
+           ORDER BY auto_score DESC NULLS LAST""",
+        (search_id, last_run_at),
+    )
+
+    # Removed/expired: jobs from before last run that are now passed/expired
+    removed_jobs = db.query(
+        """SELECT id, title, company, location, status, discovered_at
+           FROM fresh_jobs
+           WHERE saved_search_id = %s
+             AND discovered_at <= %s
+             AND status IN ('passed', 'expired')
+           ORDER BY discovered_at DESC""",
+        (search_id, last_run_at),
+    )
+
+    # Unchanged: jobs from before that are still active
+    unchanged = db.query_one(
+        """SELECT COUNT(*)::int AS count
+           FROM fresh_jobs
+           WHERE saved_search_id = %s
+             AND discovered_at <= %s
+             AND status NOT IN ('passed', 'expired')""",
+        (search_id, last_run_at),
+    )
+
+    return jsonify({
+        "search_id": search_id,
+        "search_name": search.get("name"),
+        "last_run_at": last_run_at.isoformat() if hasattr(last_run_at, "isoformat") else str(last_run_at),
+        "new_jobs": new_jobs,
+        "new_count": len(new_jobs),
+        "removed_jobs": removed_jobs,
+        "removed_count": len(removed_jobs),
+        "unchanged_count": unchanged["count"] if unchanged else 0,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
 # Email Intelligence
 # ---------------------------------------------------------------------------
 

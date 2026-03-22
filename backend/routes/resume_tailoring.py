@@ -872,3 +872,176 @@ def keyword_adjust():
         ai_handler=_ai_keyword_adjust,
     )
     return jsonify(result), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/resume/auto-recipe — create recipe from gap analysis
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/resume/auto-recipe", methods=["POST"])
+def auto_recipe():
+    """Create a resume recipe automatically from a gap analysis.
+
+    Takes a gap_analysis_id, selects bullets matching the JD's required skills,
+    orders sections by relevance, sets the summary variant matching the role type,
+    and returns the new recipe_id.
+
+    Body (JSON):
+        gap_analysis_id (required): ID of the gap analysis to base the recipe on
+        template_id (optional): template to use (default: first active template)
+        name (optional): recipe name
+    """
+    data = request.get_json(force=True)
+    gap_id = data.get("gap_analysis_id")
+    if not gap_id:
+        return jsonify({"error": "gap_analysis_id is required"}), 400
+
+    # Fetch the gap analysis
+    gap = db.query_one(
+        "SELECT * FROM gap_analyses WHERE id = %s", (gap_id,)
+    )
+    if not gap:
+        return jsonify({"error": f"Gap analysis {gap_id} not found"}), 404
+
+    # Parse strong/partial matches to extract matched keywords
+    strong = gap.get("strong_matches") or []
+    partial = gap.get("partial_matches") or []
+    if isinstance(strong, str):
+        strong = json.loads(strong)
+    if isinstance(partial, str):
+        partial = json.loads(partial)
+
+    matched_keywords = set()
+    for m in strong + partial:
+        kw = m.get("keyword", "").lower()
+        if kw:
+            matched_keywords.add(kw)
+
+    # Also extract keywords from JD text for broader matching
+    jd_text = gap.get("jd_text", "")
+    jd_keywords = {kw["keyword"] for kw in _extract_keywords(jd_text)[:30]} if jd_text else set()
+    all_keywords = matched_keywords | jd_keywords
+
+    # Find bullets that match these keywords (by text content + tags)
+    all_bullets = db.query(
+        "SELECT id, text, type, tags, career_history_id FROM bullets ORDER BY id DESC"
+    )
+    scored_bullets = []
+    for b in all_bullets:
+        text_lower = b["text"].lower()
+        tag_text = " ".join(b.get("tags") or []).lower()
+        score = sum(1 for kw in all_keywords if kw in text_lower or kw in tag_text)
+        if score > 0:
+            scored_bullets.append((score, b))
+
+    scored_bullets.sort(key=lambda x: -x[0])
+    top_bullets = [b for _, b in scored_bullets[:20]]
+
+    # Group bullets by career_history_id for experience sections
+    experience_slots = {}
+    for b in top_bullets:
+        ch_id = b.get("career_history_id")
+        if ch_id not in experience_slots:
+            experience_slots[ch_id] = []
+        experience_slots[ch_id].append(b["id"])
+
+    # Select top 5 bullets as highlights
+    highlight_ids = [b["id"] for b in top_bullets[:5]]
+
+    # Determine role type from JD keywords or gap analysis context
+    role_type = None
+    role_indicators = {
+        "cto": "CTO", "chief technology": "CTO",
+        "vp eng": "VP Engineering", "vice president": "VP Engineering",
+        "director": "Director of Engineering",
+        "architect": "AI Architect", "ai architect": "AI Architect",
+        "head of engineering": "VP Engineering",
+        "technical director": "Director of Engineering",
+    }
+    jd_lower = jd_text.lower() if jd_text else ""
+    for indicator, rtype in role_indicators.items():
+        if indicator in jd_lower:
+            role_type = rtype
+            break
+
+    # Get matching summary variant
+    summary_ref = {}
+    if role_type:
+        sv = db.query_one(
+            "SELECT id FROM summary_variants WHERE role_type ILIKE %s LIMIT 1",
+            (role_type,),
+        )
+        if sv:
+            summary_ref = {"table": "summary_variants", "id": sv["id"], "column": "text"}
+
+    if not summary_ref:
+        sv = db.query_one("SELECT id FROM summary_variants ORDER BY id LIMIT 1")
+        if sv:
+            summary_ref = {"table": "summary_variants", "id": sv["id"], "column": "text"}
+
+    # Build recipe JSON
+    recipe = {}
+
+    # Header
+    recipe["HEADER_NAME"] = {"table": "resume_header", "id": 1, "column": "name"}
+    recipe["HEADER_CONTACT"] = {"table": "resume_header", "id": 1, "column": "contact"}
+
+    # Summary
+    if summary_ref:
+        recipe["SUMMARY"] = summary_ref
+
+    # Highlights
+    if highlight_ids:
+        recipe["HIGHLIGHTS"] = {"table": "bullets", "ids": highlight_ids, "column": "text"}
+
+    # Experience bullets grouped by employer
+    job_n = 1
+    for ch_id, bullet_ids in experience_slots.items():
+        if ch_id is not None:
+            recipe[f"JOB_{job_n}_BULLETS"] = {"table": "bullets", "ids": bullet_ids, "column": "text"}
+            job_n += 1
+
+    # Get template
+    template_id = data.get("template_id")
+    if not template_id:
+        tmpl = db.query_one(
+            "SELECT id FROM resume_templates WHERE is_active = TRUE ORDER BY id LIMIT 1"
+        )
+        template_id = tmpl["id"] if tmpl else 1
+
+    # Build recipe name
+    recipe_name = data.get("name")
+    if not recipe_name:
+        job_info = ""
+        if gap.get("saved_job_id"):
+            sj = db.query_one(
+                "SELECT title, company FROM saved_jobs WHERE id = %s",
+                (gap["saved_job_id"],),
+            )
+            if sj:
+                job_info = f" - {sj.get('company', '')} {sj.get('title', '')}"
+        recipe_name = f"Auto-Recipe from Gap #{gap_id}{job_info}".strip()
+
+    # Create the recipe
+    row = db.execute_returning(
+        """INSERT INTO resume_recipes (name, description, template_id, recipe, application_id, is_active)
+           VALUES (%s, %s, %s, %s, %s, TRUE) RETURNING *""",
+        (
+            recipe_name[:200],
+            f"Auto-generated from gap analysis #{gap_id}. "
+            f"Matched {len(top_bullets)} bullets against {len(all_keywords)} JD keywords.",
+            template_id,
+            json.dumps(recipe),
+            gap.get("application_id"),
+        ),
+    )
+
+    return jsonify({
+        "recipe": row,
+        "stats": {
+            "bullets_matched": len(top_bullets),
+            "keywords_used": len(all_keywords),
+            "experience_sections": len(experience_slots),
+            "role_type_detected": role_type,
+        },
+    }), 201
