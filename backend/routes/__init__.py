@@ -29,6 +29,7 @@ from routes.resume_tailoring import bp as resume_tailoring_bp
 from routes.offers import bp as offers_bp
 from routes.search_intelligence import bp as search_intelligence_bp
 from routes.references import bp as references_bp
+from routes.skills_development import bp as skills_development_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -60,4 +61,5 @@ ALL_BLUEPRINTS = [
     offers_bp,
     search_intelligence_bp,
     references_bp,
+    skills_development_bp,
 ]

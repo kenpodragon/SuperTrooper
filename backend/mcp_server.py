@@ -3299,6 +3299,43 @@ def log_reference_use(contact_id: int, application_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Skills Development & Certification Planning (S16)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_skill_gaps() -> dict:
+    """Analyze skill gaps against stored JDs and gap analyses. Categorizes as not_showcased, adjacent, or deep_gap."""
+    from mcp_tools_skills_dev import get_skill_gaps as _impl
+    return _impl()
+
+
+@mcp.tool()
+def get_skill_trends() -> dict:
+    """Analyze skill demand trends across saved JDs. Returns trending skills ranked by frequency."""
+    from mcp_tools_skills_dev import get_skill_trends as _impl
+    return _impl()
+
+
+@mcp.tool()
+def certification_roi(role_type: str | None = None) -> dict:
+    """Analyze certification ROI — which certs unlock the most JD matches.
+
+    Args:
+        role_type: optional role type filter (CTO, VP Eng, etc.)
+    """
+    from mcp_tools_skills_dev import certification_roi as _impl
+    return _impl(role_type)
+
+
+@mcp.tool()
+def get_differentiator_analysis() -> dict:
+    """Analyze unique skill combinations that differentiate the candidate from typical applicants."""
+    from mcp_tools_skills_dev import get_differentiator_analysis as _impl
+    return _impl()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
