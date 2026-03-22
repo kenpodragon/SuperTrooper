@@ -3409,6 +3409,39 @@ def import_linkedin_profile(positions: list, skills: list | None = None) -> dict
 
 
 # ---------------------------------------------------------------------------
+# Analytics & Reporting (S6.5, S12, S15.3)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_pipeline_report() -> dict:
+    """Get pipeline funnel report with conversion rates and time-in-stage analysis."""
+    from mcp_tools_reporting import get_pipeline_report as _impl
+    return _impl()
+
+
+@mcp.tool()
+def get_campaign_report() -> dict:
+    """Get full campaign performance dashboard: stats, best companies, weekly heatmap."""
+    from mcp_tools_reporting import get_campaign_report as _impl
+    return _impl()
+
+
+@mcp.tool()
+def get_interview_analytics() -> dict:
+    """Get interview analytics: win rates by type, common questions, feeling distribution."""
+    from mcp_tools_reporting import get_interview_analytics as _impl
+    return _impl()
+
+
+@mcp.tool()
+def get_weekly_rollup() -> dict:
+    """Get weekly rollup: this week vs last week with deltas for all key metrics."""
+    from mcp_tools_reporting import get_weekly_rollup as _impl
+    return _impl()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
