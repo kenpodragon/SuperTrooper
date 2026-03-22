@@ -34,6 +34,7 @@ from routes.campaign import bp as campaign_bp
 from routes.path_finding import bp as path_finding_bp
 from routes.linkedin_import import bp as linkedin_import_bp
 from routes.reporting import bp as reporting_bp
+from routes.market_intelligence_fetch import bp as market_intelligence_fetch_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -70,4 +71,5 @@ ALL_BLUEPRINTS = [
     path_finding_bp,
     linkedin_import_bp,
     reporting_bp,
+    market_intelligence_fetch_bp,
 ]

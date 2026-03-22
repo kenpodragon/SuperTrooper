@@ -9,9 +9,9 @@ Public API (no key): 25 requests/day limit.
 
 import json
 import logging
+import urllib.request
+import urllib.error
 from datetime import datetime
-
-import requests
 
 import db
 
@@ -127,13 +127,19 @@ def fetch_jolts(start_year: int | None = None, end_year: int | None = None) -> d
     logger.info("Fetching JOLTS data from BLS: years %s-%s", start_year, end_year)
 
     try:
-        resp = requests.post(BLS_API_URL, json=payload, timeout=30)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
+        req = urllib.request.Request(
+            BLS_API_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
         logger.error("BLS API request failed: %s", exc)
         return {"inserted": 0, "skipped": 0, "error": str(exc)}
 
-    result = resp.json()
+    result = json.loads(raw)
 
     if result.get("status") != "REQUEST_SUCCEEDED":
         error_msg = "; ".join(result.get("message", ["Unknown error"]))
