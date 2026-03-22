@@ -2996,6 +2996,83 @@ def get_linkedin_profile_scorecard() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Application Materials Generation (S5.5, S8.2, S8.5, S15.2)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def generate_cover_letter(
+    application_id: int | None = None,
+    saved_job_id: int | None = None,
+    company_name: str | None = None,
+    role_title: str | None = None,
+) -> dict:
+    """Generate a cover letter using gap analysis, company dossier, and career bullets.
+
+    Args:
+        application_id: optional application ID (pulls gap analysis + company)
+        saved_job_id: optional saved job ID
+        company_name: target company name
+        role_title: target role title
+    """
+    from mcp_tools_materials import generate_cover_letter as _impl
+    return _impl(application_id, saved_job_id, company_name, role_title)
+
+
+@mcp.tool()
+def generate_thank_you(
+    application_id: int,
+    interviewer_name: str | None = None,
+    interview_notes: str | None = None,
+) -> dict:
+    """Generate a post-interview thank-you note. Under 200 words, references debrief data.
+
+    Args:
+        application_id: the application ID (pulls interview/debrief context)
+        interviewer_name: optional interviewer name to personalize
+        interview_notes: optional notes about the interview discussion
+    """
+    from mcp_tools_materials import generate_thank_you as _impl
+    return _impl(application_id, interviewer_name, interview_notes)
+
+
+@mcp.tool()
+def generate_outreach(
+    contact_id: int,
+    message_type: str = "networking",
+    channel: str = "email",
+    application_id: int | None = None,
+) -> dict:
+    """Generate a personalized outreach message to a contact. Under 150 words.
+
+    Args:
+        contact_id: the contact to reach out to
+        message_type: cold_outreach, warm_intro_request, follow_up, thank_you, networking, recruiter
+        channel: email, linkedin, phone
+        application_id: optional application for context
+    """
+    from mcp_tools_materials import generate_outreach as _impl
+    return _impl(contact_id, message_type, channel, application_id)
+
+
+@mcp.tool()
+def batch_outreach(
+    contact_ids: list,
+    message_type: str = "networking",
+    application_id: int | None = None,
+) -> dict:
+    """Generate personalized outreach for multiple contacts. Each message is individually personalized.
+
+    Args:
+        contact_ids: list of contact IDs
+        message_type: message type for all messages
+        application_id: optional application for context
+    """
+    from mcp_tools_materials import batch_outreach as _impl
+    return _impl(contact_ids, message_type, application_id)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
