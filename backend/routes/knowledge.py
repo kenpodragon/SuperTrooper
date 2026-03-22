@@ -3,6 +3,8 @@
 Supports both individual section queries AND full document reconstruction.
 """
 
+import os
+import glob as globmod
 from flask import Blueprint, request, jsonify
 import db
 
@@ -275,3 +277,84 @@ def get_cola_markets():
     """Get COLA market reference data."""
     rows = db.query("SELECT * FROM cola_markets ORDER BY cola_factor")
     return jsonify({"markets": rows, "count": len(rows)})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/knowledge/reindex — Scan output directories for generated documents
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/reindex", methods=["POST"])
+def reindex_documents():
+    """Scan output directories for generated documents.
+
+    Finds .docx and .pdf files in Output/ directories, checks if they're tracked
+    in the DB, updates paths if files moved, and reports counts.
+
+    Body (JSON, optional):
+        scan_paths: list of directories to scan (default: common output dirs)
+    """
+    data = request.get_json(force=True) if request.data else {}
+
+    # Default scan paths relative to project root
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    project_root = os.path.dirname(base_dir)
+    default_paths = [
+        os.path.join(project_root, "Output"),
+        os.path.join(project_root, "Originals"),
+        os.path.join(base_dir, "output"),
+    ]
+    scan_paths = data.get("scan_paths", default_paths)
+
+    found_files = []
+    for scan_dir in scan_paths:
+        if not os.path.isdir(scan_dir):
+            continue
+        for ext in ("*.docx", "*.pdf", "*.DOCX", "*.PDF"):
+            pattern = os.path.join(scan_dir, "**", ext)
+            found_files.extend(globmod.glob(pattern, recursive=True))
+
+    # Normalize paths
+    found_files = [os.path.normpath(f) for f in found_files]
+
+    # Check existing document records in generated_documents table (if it exists)
+    updated = 0
+    missing = 0
+    new_found = 0
+    tracked_paths = set()
+
+    try:
+        existing = db.query("SELECT id, file_path FROM generated_documents") or []
+        for doc in existing:
+            old_path = doc.get("file_path", "")
+            if old_path:
+                tracked_paths.add(os.path.normpath(old_path))
+                if not os.path.exists(old_path):
+                    # Check if file exists under a different path
+                    basename = os.path.basename(old_path)
+                    matches = [f for f in found_files if os.path.basename(f) == basename]
+                    if matches:
+                        new_path = matches[0]
+                        db.execute(
+                            "UPDATE generated_documents SET file_path = %s, updated_at = NOW() WHERE id = %s",
+                            (new_path, doc["id"]),
+                        )
+                        updated += 1
+                    else:
+                        missing += 1
+
+        # Count newly discovered files not in DB
+        for f in found_files:
+            if f not in tracked_paths:
+                new_found += 1
+    except Exception:
+        # Table might not exist; just report file counts
+        new_found = len(found_files)
+
+    return jsonify({
+        "scanned_directories": [p for p in scan_paths if os.path.isdir(p)],
+        "total_files_found": len(found_files),
+        "paths_updated": updated,
+        "files_missing": missing,
+        "new_untracked": new_found,
+        "files": [{"path": f, "size_kb": round(os.path.getsize(f) / 1024, 1)} for f in found_files[:100]],
+    }), 200

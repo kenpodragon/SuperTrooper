@@ -1045,3 +1045,319 @@ def auto_recipe():
             "role_type_detected": role_type,
         },
     }), 201
+
+
+# ---------------------------------------------------------------------------
+# POST /api/resume/ats-section-order — ATS-optimized section ordering
+# ---------------------------------------------------------------------------
+
+_ATS_SECTION_ORDERS = {
+    "workday": {
+        "sections": ["summary", "experience", "education", "skills", "certifications"],
+        "explanation": "Workday parses top-down linearly. Lead with summary and experience for best field mapping.",
+    },
+    "greenhouse": {
+        "sections": ["summary", "skills", "experience", "education", "certifications"],
+        "explanation": "Greenhouse weights skills extraction heavily. Front-loading skills improves keyword match rate.",
+    },
+    "lever": {
+        "sections": ["summary", "experience", "skills", "education", "projects"],
+        "explanation": "Lever uses a hybrid parser. Experience first with skills nearby maximizes extraction accuracy.",
+    },
+    "taleo": {
+        "sections": ["summary", "experience", "education", "skills"],
+        "explanation": "Taleo is strict and linear. Keep it simple with standard chronological order.",
+    },
+    "icims": {
+        "sections": ["summary", "experience", "skills", "education", "certifications"],
+        "explanation": "iCIMS parses well with experience-first layouts. Skills after experience for context.",
+    },
+    "jobvite": {
+        "sections": ["summary", "skills", "experience", "education"],
+        "explanation": "Jobvite has strong skills extraction. Place skills early for best keyword capture.",
+    },
+    "smartrecruiters": {
+        "sections": ["summary", "experience", "skills", "education", "certifications"],
+        "explanation": "SmartRecruiters uses AI parsing. Standard experience-first layout works best.",
+    },
+    "bamboohr": {
+        "sections": ["summary", "experience", "education", "skills"],
+        "explanation": "BambooHR uses a basic parser. Standard chronological ordering is safest.",
+    },
+    "successfactors": {
+        "sections": ["summary", "experience", "skills", "education", "certifications"],
+        "explanation": "SAP SuccessFactors prefers structured data. Experience before skills for role context.",
+    },
+    "default": {
+        "sections": ["summary", "experience", "skills", "education", "certifications"],
+        "explanation": "Generic ATS-safe ordering. Experience-first is the safest default for unknown systems.",
+    },
+}
+
+
+@bp.route("/api/resume/ats-section-order", methods=["POST"])
+def ats_section_order():
+    """Return recommended section ordering for a given ATS platform.
+
+    Body (JSON):
+        ats_platform (required): name of ATS (workday, greenhouse, lever, etc.)
+    """
+    data = request.get_json(force=True)
+    platform = (data.get("ats_platform") or "").strip().lower()
+    if not platform:
+        return jsonify({"error": "ats_platform is required"}), 400
+
+    order = _ATS_SECTION_ORDERS.get(platform, _ATS_SECTION_ORDERS["default"])
+    return jsonify({
+        "ats_platform": platform,
+        "sections": order["sections"],
+        "explanation": order["explanation"],
+        "known_platform": platform in _ATS_SECTION_ORDERS,
+        "supported_platforms": sorted(k for k in _ATS_SECTION_ORDERS if k != "default"),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/resume/ats-templates — ATS-optimized template configurations
+# ---------------------------------------------------------------------------
+
+_ATS_TEMPLATES = [
+    {
+        "id": "ats_workday",
+        "name": "Workday Optimized",
+        "ats_platform": "workday",
+        "formatting": {
+            "font": "Calibri",
+            "font_size": 11,
+            "margins": {"top": 0.75, "bottom": 0.75, "left": 0.75, "right": 0.75},
+            "section_headers": "ALL_CAPS_BOLD",
+            "bullet_style": "simple_dash",
+            "date_format": "MM/YYYY",
+            "avoid": ["tables", "columns", "headers_footers", "images"],
+        },
+        "notes": "Workday strips complex formatting. Keep it flat and simple.",
+    },
+    {
+        "id": "ats_greenhouse",
+        "name": "Greenhouse Optimized",
+        "ats_platform": "greenhouse",
+        "formatting": {
+            "font": "Arial",
+            "font_size": 11,
+            "margins": {"top": 0.5, "bottom": 0.5, "left": 0.6, "right": 0.6},
+            "section_headers": "Bold_Title_Case",
+            "bullet_style": "round_bullet",
+            "date_format": "Mon YYYY",
+            "avoid": ["tables", "text_boxes", "graphics"],
+        },
+        "notes": "Greenhouse handles basic formatting well. Avoid multi-column layouts.",
+    },
+    {
+        "id": "ats_lever",
+        "name": "Lever Optimized",
+        "ats_platform": "lever",
+        "formatting": {
+            "font": "Calibri",
+            "font_size": 10.5,
+            "margins": {"top": 0.5, "bottom": 0.5, "left": 0.5, "right": 0.5},
+            "section_headers": "Bold_Title_Case",
+            "bullet_style": "round_bullet",
+            "date_format": "Mon YYYY",
+            "avoid": ["tables", "columns", "images", "fancy_bullets"],
+        },
+        "notes": "Lever has solid parsing. Standard single-column layout is ideal.",
+    },
+    {
+        "id": "ats_taleo",
+        "name": "Taleo Optimized",
+        "ats_platform": "taleo",
+        "formatting": {
+            "font": "Times New Roman",
+            "font_size": 12,
+            "margins": {"top": 1.0, "bottom": 1.0, "left": 1.0, "right": 1.0},
+            "section_headers": "ALL_CAPS_BOLD",
+            "bullet_style": "simple_dash",
+            "date_format": "MM/YYYY",
+            "avoid": ["tables", "columns", "headers_footers", "images", "special_characters"],
+        },
+        "notes": "Taleo is the strictest ATS. Ultra-simple formatting only.",
+    },
+    {
+        "id": "ats_generic",
+        "name": "Universal ATS Safe",
+        "ats_platform": "generic",
+        "formatting": {
+            "font": "Calibri",
+            "font_size": 11,
+            "margins": {"top": 0.75, "bottom": 0.75, "left": 0.75, "right": 0.75},
+            "section_headers": "Bold_Title_Case",
+            "bullet_style": "round_bullet",
+            "date_format": "Mon YYYY",
+            "avoid": ["tables", "columns", "headers_footers", "images", "text_boxes"],
+        },
+        "notes": "Safe for any ATS. When in doubt, use this template.",
+    },
+]
+
+
+@bp.route("/api/resume/ats-templates", methods=["GET"])
+def ats_templates():
+    """List ATS-optimized template configurations with formatting rules per ATS."""
+    platform = request.args.get("platform", "").lower()
+    if platform:
+        filtered = [t for t in _ATS_TEMPLATES if t["ats_platform"] == platform]
+        return jsonify({"templates": filtered, "count": len(filtered)}), 200
+    return jsonify({"templates": _ATS_TEMPLATES, "count": len(_ATS_TEMPLATES)}), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/resume/quality-score — Resume quality scoring
+# ---------------------------------------------------------------------------
+
+def _score_bullet_specificity(text: str) -> dict:
+    """Score bullet specificity: does it have metrics, numbers, concrete outcomes?"""
+    lines = [l.strip() for l in text.split("\n") if l.strip() and not l.strip().startswith("#")]
+    if not lines:
+        return {"score": 0, "detail": "No bullets found", "bullets_checked": 0}
+
+    has_number = re.compile(r'\d+')
+    has_percent = re.compile(r'\d+%')
+    has_dollar = re.compile(r'\$[\d,.]+[KkMmBb]?')
+    has_metric_word = re.compile(r'\b(reduced|increased|improved|grew|saved|cut|boosted|achieved|delivered|generated|drove|accelerated)\b', re.I)
+
+    total = 0
+    scored = 0
+    details = []
+    for line in lines:
+        total += 1
+        line_score = 0
+        if has_number.search(line):
+            line_score += 30
+        if has_percent.search(line):
+            line_score += 25
+        if has_dollar.search(line):
+            line_score += 25
+        if has_metric_word.search(line):
+            line_score += 20
+        if line_score == 0:
+            line_score = 10  # base for having content
+        scored += min(line_score, 100)
+
+    avg = round(scored / total) if total > 0 else 0
+    return {"score": avg, "bullets_checked": total, "detail": f"{total} bullets analyzed, avg specificity {avg}/100"}
+
+
+def _score_voice_compliance(text: str) -> dict:
+    """Check text against voice rules for compliance."""
+    text_lower = text.lower()
+    violations = 0
+
+    banned_words = db.query(
+        "SELECT rule_text FROM voice_rules WHERE category = 'banned_word'"
+    ) or []
+    for bw in banned_words:
+        if bw["rule_text"].lower() in text_lower:
+            violations += 1
+
+    banned_constructions = db.query(
+        "SELECT rule_text FROM voice_rules WHERE category = 'banned_construction'"
+    ) or []
+    for bc in banned_constructions:
+        if bc["rule_text"].lower() in text_lower:
+            violations += 1
+
+    total_rules = len(banned_words) + len(banned_constructions)
+    score = max(0, 100 - (violations * 15))  # lose 15 points per violation
+    return {
+        "score": min(score, 100),
+        "violations": violations,
+        "rules_checked": total_rules,
+        "detail": f"{violations} voice rule violations out of {total_rules} rules checked",
+    }
+
+
+def _score_length(text: str) -> dict:
+    """Score resume length appropriateness (1-2 pages ideal)."""
+    word_count = len(text.split())
+    # Ideal: 400-800 words (1-2 pages)
+    if 400 <= word_count <= 800:
+        score = 100
+    elif 300 <= word_count < 400 or 800 < word_count <= 1000:
+        score = 80
+    elif 200 <= word_count < 300 or 1000 < word_count <= 1200:
+        score = 60
+    else:
+        score = 40
+    return {
+        "score": score,
+        "word_count": word_count,
+        "detail": f"{word_count} words — {'ideal length' if score >= 80 else 'consider adjusting length'}",
+    }
+
+
+def _score_keyword_density(resume_text: str, jd_text: str) -> dict:
+    """Score keyword overlap between resume and JD."""
+    if not jd_text:
+        return {"score": 50, "detail": "No JD provided for keyword comparison", "overlap_pct": 0}
+
+    jd_keywords = {kw["keyword"] for kw in _extract_keywords(jd_text)[:30]}
+    resume_keywords = {kw["keyword"] for kw in _extract_keywords(resume_text)[:50]}
+
+    if not jd_keywords:
+        return {"score": 50, "detail": "No extractable keywords in JD", "overlap_pct": 0}
+
+    overlap = jd_keywords & resume_keywords
+    overlap_pct = round(len(overlap) / len(jd_keywords) * 100)
+
+    if overlap_pct >= 70:
+        score = 100
+    elif overlap_pct >= 50:
+        score = 80
+    elif overlap_pct >= 30:
+        score = 60
+    else:
+        score = 40
+
+    return {
+        "score": score,
+        "jd_keywords": len(jd_keywords),
+        "matched": len(overlap),
+        "overlap_pct": overlap_pct,
+        "missing_keywords": sorted(jd_keywords - resume_keywords)[:15],
+        "detail": f"{len(overlap)}/{len(jd_keywords)} JD keywords matched ({overlap_pct}%)",
+    }
+
+
+@bp.route("/api/resume/quality-score", methods=["POST"])
+def quality_score():
+    """Score a resume for overall quality.
+
+    Body (JSON):
+        resume_text (required): the resume text to score
+        jd_text (optional): job description for keyword density scoring
+    """
+    data = request.get_json(force=True)
+    resume_text = data.get("resume_text")
+    if not resume_text:
+        return jsonify({"error": "resume_text is required"}), 400
+
+    jd_text = data.get("jd_text", "")
+
+    categories = {
+        "bullet_specificity": _score_bullet_specificity(resume_text),
+        "voice_compliance": _score_voice_compliance(resume_text),
+        "length": _score_length(resume_text),
+        "keyword_density": _score_keyword_density(resume_text, jd_text),
+    }
+
+    weights = {"bullet_specificity": 0.35, "voice_compliance": 0.25, "length": 0.15, "keyword_density": 0.25}
+    overall = round(sum(categories[k]["score"] * weights[k] for k in categories))
+
+    grade = "A" if overall >= 90 else "B" if overall >= 75 else "C" if overall >= 60 else "D" if overall >= 40 else "F"
+
+    return jsonify({
+        "overall_score": overall,
+        "grade": grade,
+        "categories": categories,
+        "weights": weights,
+    }), 200

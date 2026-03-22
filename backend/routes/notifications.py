@@ -155,6 +155,81 @@ def mark_all_read():
     return jsonify({"updated": count}), 200
 
 
+# ---------------------------------------------------------------------------
+# GET /api/notifications/by-severity — Group by severity level
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/notifications/by-severity", methods=["GET"])
+def by_severity():
+    """Group notifications by severity level (info, action_needed, urgent)."""
+    dismissed_param = request.args.get("dismissed", "false")
+    dismissed_clause = ""
+    if dismissed_param.lower() == "false":
+        dismissed_clause = "AND dismissed = FALSE"
+
+    rows = db.query(
+        f"""
+        SELECT severity,
+               COUNT(*) AS total,
+               SUM(CASE WHEN read = FALSE THEN 1 ELSE 0 END) AS unread
+        FROM notifications
+        WHERE 1=1 {dismissed_clause}
+        GROUP BY severity
+        ORDER BY CASE severity
+            WHEN 'urgent' THEN 1
+            WHEN 'action_needed' THEN 2
+            WHEN 'info' THEN 3
+            ELSE 4 END
+        """
+    )
+
+    # Also fetch the actual notifications grouped
+    grouped = {}
+    for sev in ["urgent", "action_needed", "info"]:
+        items = db.query(
+            f"""
+            SELECT * FROM notifications
+            WHERE severity = %s {dismissed_clause}
+            ORDER BY created_at DESC
+            LIMIT 25
+            """,
+            (sev,),
+        )
+        grouped[sev] = items or []
+
+    return jsonify({
+        "summary": rows,
+        "grouped": grouped,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/notifications/urgent — Urgent and action-needed only
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/notifications/urgent", methods=["GET"])
+def urgent_notifications():
+    """Return only urgent and action-needed notifications (non-dismissed, unread first)."""
+    limit = int(request.args.get("limit", 50))
+    rows = db.query(
+        """
+        SELECT * FROM notifications
+        WHERE severity IN ('urgent', 'action_needed')
+          AND dismissed = FALSE
+        ORDER BY
+            CASE severity WHEN 'urgent' THEN 1 WHEN 'action_needed' THEN 2 END,
+            read ASC,
+            created_at DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    return jsonify({
+        "notifications": rows,
+        "count": len(rows),
+    }), 200
+
+
 @bp.route("/api/notifications/preferences", methods=["GET"])
 def list_preferences():
     """List all notification preferences."""

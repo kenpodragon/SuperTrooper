@@ -610,6 +610,77 @@ def detect_ghosted():
     }), 200
 
 
+# ---------------------------------------------------------------------------
+# GET /api/pipeline/by-source — Applications grouped by source
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/pipeline/by-source", methods=["GET"])
+def applications_by_source():
+    """Applications grouped by source (Indeed, LinkedIn, Referral, etc.)."""
+    rows = db.query(
+        """
+        SELECT COALESCE(source, 'Unknown') AS source,
+               COUNT(*) AS total,
+               SUM(CASE WHEN status = 'Applied' THEN 1 ELSE 0 END) AS applied,
+               SUM(CASE WHEN status IN ('Phone Screen','Interview','Technical','Final') THEN 1 ELSE 0 END) AS interviewing,
+               SUM(CASE WHEN status = 'Offer' THEN 1 ELSE 0 END) AS offers,
+               SUM(CASE WHEN status = 'Accepted' THEN 1 ELSE 0 END) AS accepted,
+               SUM(CASE WHEN status = 'Rejected' THEN 1 ELSE 0 END) AS rejected,
+               SUM(CASE WHEN status = 'Ghosted' THEN 1 ELSE 0 END) AS ghosted
+        FROM applications
+        GROUP BY COALESCE(source, 'Unknown')
+        ORDER BY total DESC
+        """
+    )
+    return jsonify({"sources": rows, "count": len(rows)}), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/pipeline/source-conversion — Conversion rates by source
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/pipeline/source-conversion", methods=["GET"])
+def source_conversion():
+    """Conversion rates by source: apply -> interview -> offer."""
+    rows = db.query(
+        """
+        SELECT
+            COALESCE(a.source, 'Unknown') AS source,
+            COUNT(*) AS total_applied,
+            SUM(CASE WHEN EXISTS (
+                SELECT 1 FROM interviews i WHERE i.application_id = a.id
+            ) THEN 1 ELSE 0 END) AS got_interview,
+            SUM(CASE WHEN a.status = 'Offer' OR a.status = 'Accepted' THEN 1 ELSE 0 END) AS got_offer,
+            ROUND(
+                CASE WHEN COUNT(*) > 0
+                THEN SUM(CASE WHEN EXISTS (
+                    SELECT 1 FROM interviews i WHERE i.application_id = a.id
+                ) THEN 1 ELSE 0 END)::numeric / COUNT(*) * 100
+                ELSE 0 END, 1
+            ) AS apply_to_interview_pct,
+            ROUND(
+                CASE WHEN SUM(CASE WHEN EXISTS (
+                    SELECT 1 FROM interviews i WHERE i.application_id = a.id
+                ) THEN 1 ELSE 0 END) > 0
+                THEN SUM(CASE WHEN a.status IN ('Offer','Accepted') THEN 1 ELSE 0 END)::numeric /
+                     SUM(CASE WHEN EXISTS (
+                        SELECT 1 FROM interviews i WHERE i.application_id = a.id
+                     ) THEN 1 ELSE 0 END) * 100
+                ELSE 0 END, 1
+            ) AS interview_to_offer_pct,
+            ROUND(
+                CASE WHEN COUNT(*) > 0
+                THEN SUM(CASE WHEN a.status IN ('Offer','Accepted') THEN 1 ELSE 0 END)::numeric / COUNT(*) * 100
+                ELSE 0 END, 1
+            ) AS apply_to_offer_pct
+        FROM applications a
+        GROUP BY COALESCE(a.source, 'Unknown')
+        ORDER BY total_applied DESC
+        """
+    )
+    return jsonify({"conversion_rates": rows, "count": len(rows)}), 200
+
+
 @bp.route("/api/applications/stale", methods=["GET"])
 def stale_applications():
     """Find applications with no activity for N days."""

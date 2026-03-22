@@ -412,3 +412,125 @@ def generate_interview_prep_package(interview_id):
         "recent_email_threads": recent_emails,
     }
     return jsonify(package), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/interviews/upcoming — Upcoming interviews
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/interviews/upcoming", methods=["GET"])
+def upcoming_interviews():
+    """Return upcoming interviews (future date or today).
+
+    Query params:
+        days: how many days ahead to look (default: 30)
+        include_past_today: if 'true', include today's interviews (default: true)
+    """
+    days = int(request.args.get("days", 30))
+    include_today = request.args.get("include_past_today", "true").lower() != "false"
+
+    date_start = "CURRENT_DATE" if include_today else "CURRENT_DATE + INTERVAL '1 day'"
+    rows = db.query(
+        f"""
+        SELECT i.id, i.application_id, i.date, i.type,
+               i.interviewers, i.outcome, i.notes, i.calendar_event_id,
+               i.thank_you_sent,
+               a.company_name, a.role, a.status AS application_status
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        WHERE i.date >= {date_start}
+          AND i.date <= CURRENT_DATE + INTERVAL '%s days'
+        ORDER BY i.date ASC, i.id ASC
+        """,
+        (days,),
+    )
+    return jsonify({
+        "interviews": rows,
+        "count": len(rows),
+        "window_days": days,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/interviews/schedule — Create an interview record
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/interviews/schedule", methods=["POST"])
+def schedule_interview():
+    """Create an interview record with date, time, company, type, contacts.
+
+    Body (JSON):
+        application_id (required): ID of the application
+        date (required): interview date (ISO format)
+        type (required): phone_screen, technical, behavioral, panel, final, etc.
+        interviewers: list of interviewer names
+        calendar_event_id: optional calendar event ID
+        notes: additional notes
+    """
+    data = request.get_json(force=True)
+
+    if not data.get("application_id"):
+        return jsonify({"error": "application_id is required"}), 400
+    if not data.get("date"):
+        return jsonify({"error": "date is required"}), 400
+    if not data.get("type"):
+        return jsonify({"error": "type is required"}), 400
+
+    # Verify application exists
+    app = db.query_one(
+        "SELECT id, company_name, role FROM applications WHERE id = %s",
+        (data["application_id"],),
+    )
+    if not app:
+        return jsonify({"error": "Application not found"}), 404
+
+    # Build interviewers as PostgreSQL text array
+    interviewers = data.get("interviewers")
+    if isinstance(interviewers, list):
+        interviewers = interviewers  # psycopg2 handles list -> text[]
+    else:
+        interviewers = None
+
+    row = db.execute_returning(
+        """
+        INSERT INTO interviews (application_id, date, type, interviewers,
+            calendar_event_id, notes, outcome)
+        VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+        RETURNING *
+        """,
+        (
+            data["application_id"],
+            data["date"],
+            data["type"],
+            interviewers,
+            data.get("calendar_event_id"),
+            data.get("notes"),
+        ),
+    )
+
+    # Update application status if it's still at Applied
+    if app:
+        current = db.query_one(
+            "SELECT status FROM applications WHERE id = %s", (data["application_id"],)
+        )
+        if current and current["status"] == "Applied":
+            db.execute(
+                """
+                UPDATE applications SET status = 'Interview', last_status_change = NOW()
+                WHERE id = %s
+                """,
+                (data["application_id"],),
+            )
+            db.execute(
+                """
+                INSERT INTO application_status_history (application_id, old_status, new_status, notes)
+                VALUES (%s, 'Applied', 'Interview', 'Auto-updated: interview scheduled')
+                """,
+                (data["application_id"],),
+            )
+
+    return jsonify({
+        "interview": row,
+        "company": app.get("company_name"),
+        "role": app.get("role"),
+    }), 201
