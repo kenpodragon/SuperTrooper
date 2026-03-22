@@ -3073,6 +3073,66 @@ def batch_outreach(
 
 
 # ---------------------------------------------------------------------------
+# Advanced Resume & Gap Analysis (S3.8, S5.1, S5.4)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def generate_resume_variant(
+    role_type: str,
+    application_id: int | None = None,
+    saved_job_id: int | None = None,
+) -> dict:
+    """Generate a role-tailored resume variant (CTO, VP Eng, Director, etc.).
+
+    Selects matching summary, filters bullets by role_suitability, groups by employer.
+
+    Args:
+        role_type: target role type (CTO, VP Eng, Director, AI Architect, SW Architect, PM, Sr SWE)
+        application_id: optional application for context
+        saved_job_id: optional saved job for context
+    """
+    from mcp_tools_resume_tailoring import generate_resume_variant as _impl
+    return _impl(role_type, application_id, saved_job_id)
+
+
+@mcp.tool()
+def run_ats_score(
+    jd_text: str,
+    resume_text: str | None = None,
+    application_id: int | None = None,
+) -> dict:
+    """Score a resume against a JD for ATS compatibility.
+
+    Calculates keyword match percentage and formatting flags.
+
+    Args:
+        jd_text: job description text to score against
+        resume_text: optional resume text (if omitted, pulls latest generated material)
+        application_id: optional application ID to pull resume from
+    """
+    from mcp_tools_resume_tailoring import run_ats_score as _impl
+    return _impl(jd_text, resume_text, application_id)
+
+
+@mcp.tool()
+def run_gap_analysis(
+    jd_text: str | None = None,
+    saved_job_id: int | None = None,
+    application_id: int | None = None,
+) -> dict:
+    """Run a simplified gap analysis matching JD keywords against skills and bullets.
+
+    Args:
+        jd_text: job description text (or pulled from saved_job)
+        saved_job_id: optional saved job to pull JD from
+        application_id: optional application to link results to
+    """
+    from mcp_tools_resume_tailoring import run_gap_analysis as _impl
+    return _impl(jd_text, saved_job_id, application_id)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

@@ -25,6 +25,7 @@ from routes.mock_interviews import bp as mock_interviews_bp
 from routes.integrations import bp as integrations_bp
 from routes.linkedin import bp as linkedin_bp
 from routes.materials import bp as materials_bp
+from routes.resume_tailoring import bp as resume_tailoring_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -52,4 +53,5 @@ ALL_BLUEPRINTS = [
     integrations_bp,
     linkedin_bp,
     materials_bp,
+    resume_tailoring_bp,
 ]
