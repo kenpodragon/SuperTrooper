@@ -384,7 +384,7 @@ def content_analytics():
             COUNT(*) FILTER (WHERE status = 'draft') AS drafts,
             AVG(char_count) AS avg_char_count
         FROM linkedin_posts
-        WHERE created_at >= NOW() - INTERVAL '%s days'
+        WHERE created_at >= NOW() - INTERVAL '1 day' * %s
         """,
         (days,),
     )
@@ -398,7 +398,7 @@ def content_analytics():
                SUM(e.impressions) AS total_impressions
         FROM linkedin_posts p
         LEFT JOIN linkedin_post_engagement e ON e.post_id = p.id
-        WHERE p.created_at >= NOW() - INTERVAL '%s days'
+        WHERE p.created_at >= NOW() - INTERVAL '1 day' * %s
         GROUP BY p.post_type
         ORDER BY avg_engagement_rate DESC NULLS LAST
         """,
@@ -415,7 +415,7 @@ def content_analytics():
         FROM linkedin_posts p
         JOIN linkedin_theme_pillars tp ON tp.id = p.theme_pillar_id
         LEFT JOIN linkedin_post_engagement e ON e.post_id = p.id
-        WHERE p.created_at >= NOW() - INTERVAL '%s days'
+        WHERE p.created_at >= NOW() - INTERVAL '1 day' * %s
         GROUP BY tp.id, tp.name
         ORDER BY avg_engagement_rate DESC NULLS LAST
         """,
@@ -429,7 +429,7 @@ def content_analytics():
                e.impressions, e.reactions, e.comments, e.reposts, e.engagement_rate
         FROM linkedin_posts p
         JOIN linkedin_post_engagement e ON e.post_id = p.id AND e.snapshot_day = 7
-        WHERE p.created_at >= NOW() - INTERVAL '%s days'
+        WHERE p.created_at >= NOW() - INTERVAL '1 day' * %s
         ORDER BY e.engagement_rate DESC NULLS LAST
         LIMIT 5
         """,

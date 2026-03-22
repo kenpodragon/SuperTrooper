@@ -94,8 +94,8 @@ def generate_cover_letter():
             (application_id,),
         )
         if app:
-            company_name = company_name or app.get("company")
-            role_title = role_title or app.get("role_title") or app.get("title")
+            company_name = company_name or app.get("company_name")
+            role_title = role_title or app.get("role")
             saved_job_id = saved_job_id or app.get("saved_job_id")
             generation_context["application_id"] = application_id
 
@@ -201,8 +201,8 @@ def generate_thank_you():
         "SELECT * FROM applications WHERE id = %s",
         (application_id,),
     )
-    company_name = app.get("company") if app else None
-    role_title = app.get("role_title") or (app.get("title") if app else None)
+    company_name = app.get("company_name") if app else None
+    role_title = app.get("role") if app else None
 
     # Pull debrief data if available (join through interviews table)
     debrief = db.query_one(
@@ -449,7 +449,7 @@ def generate_personalized_outreach():
             (application_id,),
         )
         if app:
-            role_context = f" regarding the {app.get('role_title') or app.get('title', 'open')} role"
+            role_context = f" regarding the {app.get('role', 'open')} role"
             personalization_context["application_id"] = application_id
 
     # Generate subject and body
@@ -479,7 +479,7 @@ def generate_personalized_outreach():
             application_id,
             message_type,
             channel,
-            "sent",
+            "outbound",
             subject,
             body,
             json.dumps(personalization_context),
@@ -557,7 +557,7 @@ def generate_cold_outreach():
             contact_id,
             "cold_outreach",
             "email",
-            "sent",
+            "outbound",
             subject,
             body,
             json.dumps(personalization_context),
@@ -625,7 +625,7 @@ def generate_warm_intro():
             contact_id,
             "warm_intro_request",
             "email",
-            "sent",
+            "outbound",
             subject,
             body,
             json.dumps(personalization_context),
@@ -665,7 +665,7 @@ def batch_outreach():
             (application_id,),
         )
         if app:
-            role_context = f" regarding the {app.get('role_title') or app.get('title', 'open')} role"
+            role_context = f" regarding the {app.get('role', 'open')} role"
 
     created = []
     for cid in contact_ids:
@@ -711,7 +711,7 @@ def batch_outreach():
                 application_id,
                 message_type,
                 "email",
-                "sent",
+                "outbound",
                 subject,
                 body,
                 json.dumps(personalization_context),

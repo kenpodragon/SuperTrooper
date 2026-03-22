@@ -424,7 +424,7 @@ def batch_checkin():
         msg = db.execute_returning(
             """
             INSERT INTO outreach_messages (contact_id, channel, direction, subject, body, sent_at, created_at)
-            VALUES (%s, 'email', 'sent', %s, %s, NULL, NOW())
+            VALUES (%s, 'email', 'outbound', %s, %s, NULL, NOW())
             RETURNING *
             """,
             [

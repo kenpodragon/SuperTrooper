@@ -31,11 +31,11 @@ def quick_score():
     # Pull JD from fresh_jobs if needed
     if not jd_text and fresh_job_id:
         job = db.query_one(
-            "SELECT jd_text FROM fresh_jobs WHERE id = %s", (fresh_job_id,)
+            "SELECT jd_full FROM fresh_jobs WHERE id = %s", (fresh_job_id,)
         )
         if not job:
             return jsonify({"error": "Fresh job not found"}), 404
-        jd_text = job.get("jd_text") or ""
+        jd_text = job.get("jd_full") or ""
 
     if not jd_text:
         return jsonify({"error": "No JD text available"}), 400
@@ -470,7 +470,7 @@ def detect_recruiters():
         SELECT id, from_address, from_name, subject, snippet, body, date
         FROM emails
         WHERE (scan_status = 'unscanned' OR scan_status = 'scanned' OR scan_status IS NULL)
-          AND auto_categorized = FALSE OR auto_categorized IS NULL
+          AND (auto_categorized = FALSE OR auto_categorized IS NULL)
         ORDER BY date DESC
         LIMIT 200
         """
