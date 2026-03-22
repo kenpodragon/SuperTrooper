@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../../api/client';
+import { api, emails } from '../../api/client';
+import type { EmailIntelStatus } from '../../api/client';
 
 interface FunnelStage {
   status: string;
@@ -57,6 +58,12 @@ export default function Analytics() {
     queryKey: ['analytics-sources'],
     queryFn: () => api.get<SourceEntry[]>('/analytics/sources'),
   });
+
+  const emailStatus = useQuery({
+    queryKey: ['email-intel-status'],
+    queryFn: () => emails.intelligenceStatus(),
+  });
+  const emailData: EmailIntelStatus | undefined = emailStatus.data;
 
   const funnelData = funnel.data ?? [];
   const velData: VelocityData = velocity.data ?? {};
@@ -163,6 +170,45 @@ export default function Analytics() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Email Intelligence */}
+        <div className="bg-white rounded-lg border border-gray-200 p-4 md:col-span-2">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Email Intelligence</h2>
+          {emailStatus.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+          {emailData && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center">
+                <p className="text-2xl font-semibold text-gray-900">{emailData.total_emails.toLocaleString()}</p>
+                <p className="text-xs text-gray-500 mt-1">Total Emails</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-semibold text-gray-900">{emailData.scanned}</p>
+                <p className="text-xs text-gray-500 mt-1">Scanned</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-semibold text-amber-600">{emailData.unlinked_categorized}</p>
+                <p className="text-xs text-gray-500 mt-1">Unlinked Categorized</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-semibold text-gray-900">
+                  {emailData.total_emails > 0 ? Math.round((emailData.scanned / emailData.total_emails) * 100) : 0}%
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Scan Coverage</p>
+              </div>
+              {Object.entries(emailData.breakdown)
+                .filter(([k]) => k !== 'scanned')
+                .map(([cat, count]) => (
+                  <div key={cat} className="text-center">
+                    <p className="text-xl font-semibold text-gray-900">{count}</p>
+                    <p className="text-xs text-gray-500 mt-1 capitalize">{cat}</p>
+                  </div>
+                ))}
+            </div>
+          )}
+          {!emailStatus.isLoading && !emailData && (
+            <p className="text-sm text-gray-400">No email intelligence data yet.</p>
+          )}
         </div>
       </div>
     </div>

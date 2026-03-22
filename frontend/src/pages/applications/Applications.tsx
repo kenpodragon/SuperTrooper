@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { applications } from '../../api/client';
-import type { Application } from '../../api/client';
+import { applications, emails } from '../../api/client';
+import type { Application, EmailIntelStatus } from '../../api/client';
 
 const STATUSES = ['All', 'Applied', 'Phone Screen', 'Interview', 'Technical', 'Final', 'Offer', 'Accepted', 'Rejected', 'Ghosted', 'Withdrawn', 'Rescinded'];
 
@@ -29,6 +29,12 @@ export default function Applications() {
     queryFn: () => applications.list(params),
   });
 
+  const emailStatus = useQuery({
+    queryKey: ['email-intel-status'],
+    queryFn: () => emails.intelligenceStatus(),
+  });
+  const emailData: EmailIntelStatus | undefined = emailStatus.data;
+
   const updateStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
       applications.update(id, { status }),
@@ -41,6 +47,16 @@ export default function Applications() {
         <h1 className="text-2xl font-bold text-gray-900">Applications</h1>
         <span className="text-sm text-gray-500">{data?.length ?? 0} results</span>
       </div>
+
+      {emailData && emailData.unlinked_categorized > 0 && (
+        <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between">
+          <div className="text-sm text-amber-800">
+            <span className="font-medium">{emailData.unlinked_categorized} categorized emails</span> not yet linked to applications.
+            {' '}{emailData.scanned} of {emailData.total_emails.toLocaleString()} emails scanned
+            {emailData.breakdown.interview ? ` (${emailData.breakdown.interview} interview-related)` : ''}.
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2 mb-4 flex-wrap">
         {STATUSES.map((s) => (

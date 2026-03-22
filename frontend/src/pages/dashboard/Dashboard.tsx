@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { applications, interviews, savedJobs, staleApps, activity } from '../../api/client';
-import type { Application, Interview, SavedJob, ActivityItem } from '../../api/client';
+import { applications, interviews, savedJobs, staleApps, activity, emails } from '../../api/client';
+import type { Application, Interview, SavedJob, ActivityItem, EmailIntelStatus } from '../../api/client';
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return (
@@ -18,8 +18,10 @@ export default function Dashboard() {
   const jobs = useQuery({ queryKey: ['saved-jobs'], queryFn: () => savedJobs.list('?status=saved&limit=5') });
   const stale = useQuery({ queryKey: ['stale-apps'], queryFn: () => staleApps.list(14) });
   const recent = useQuery({ queryKey: ['activity-recent'], queryFn: () => activity.list('?limit=10&days=7') });
+  const emailStatus = useQuery({ queryKey: ['email-intel-status'], queryFn: () => emails.intelligenceStatus() });
 
   const appData = apps.data ?? [];
+  const emailData: EmailIntelStatus | undefined = emailStatus.data;
   const byStatus: Record<string, number> = {};
   appData.forEach((a: Application) => {
     const s = a.status || 'Unknown';
@@ -88,6 +90,37 @@ export default function Dashboard() {
             </div>
           ))}
           {stale.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+        </div>
+
+        {/* Email Intelligence */}
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Email Intelligence</h2>
+          {emailStatus.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+          {emailData && (
+            <>
+              <div className="flex justify-between py-1.5 border-b border-gray-100">
+                <span className="text-sm text-gray-700">Total Emails</span>
+                <span className="text-sm font-medium text-gray-900">{emailData.total_emails.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-gray-100">
+                <span className="text-sm text-gray-700">Scanned</span>
+                <span className="text-sm font-medium text-gray-900">{emailData.scanned}</span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-gray-100">
+                <span className="text-sm text-gray-700">Unlinked</span>
+                <span className="text-sm font-medium text-amber-600">{emailData.unlinked_categorized}</span>
+              </div>
+              {Object.entries(emailData.breakdown)
+                .filter(([k]) => k !== 'scanned')
+                .map(([cat, count]) => (
+                  <div key={cat} className="flex justify-between py-1.5 border-b border-gray-100 last:border-0">
+                    <span className="text-sm text-gray-500 capitalize pl-3">{cat}</span>
+                    <span className="text-sm text-gray-700">{count}</span>
+                  </div>
+                ))}
+            </>
+          )}
+          {!emailStatus.isLoading && !emailData && <p className="text-sm text-gray-400">No email data available</p>}
         </div>
 
         {/* Recent Activity */}

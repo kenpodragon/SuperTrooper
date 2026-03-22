@@ -245,3 +245,33 @@ export const marketIntel = {
   list: (params = '') => api.get<any[]>(`/market-intelligence${params}`),
   summary: () => api.get<any>('/market-intelligence/summary'),
 };
+
+// --- Emails ---
+
+export interface Email {
+  id: number;
+  gmail_id?: string;
+  thread_id?: string;
+  from_name?: string;
+  from_address?: string;
+  to_address?: string;
+  subject?: string;
+  snippet?: string;
+  date?: string;
+  labels?: string[];
+  category?: string;
+  application_id?: number | null;
+  created_at?: string;
+}
+
+export interface EmailIntelStatus {
+  total_emails: number;
+  scanned: number;
+  unlinked_categorized: number;
+  breakdown: Record<string, number>;
+}
+
+export const emails = {
+  list: (params = '') => api.get<Email[]>(`/emails${params}`),
+  intelligenceStatus: () => api.get<EmailIntelStatus>('/email-intelligence/status'),
+};
