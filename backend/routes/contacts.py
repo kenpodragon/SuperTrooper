@@ -1,5 +1,9 @@
 """Routes for contacts, outreach messages, referrals."""
 
+import csv
+import io
+import re
+
 from flask import Blueprint, request, jsonify
 import db
 
@@ -488,3 +492,316 @@ def pending_followups():
     params = date_params + [limit]
     rows = db.query(sql, params)
     return jsonify({"pending_followups": rows, "count": len(rows)}), 200
+
+
+# ---------------------------------------------------------------------------
+# Contact Auto-Discovery
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/contacts/auto-discover", methods=["POST"])
+def auto_discover_contacts():
+    """Given a company name, search DB for mentions of people at that company.
+
+    Searches emails, interview notes, application notes, and outreach messages
+    for any references to people at the specified company and suggests them
+    as potential contacts.
+
+    Body JSON: {"company": str}
+    """
+    data = request.get_json(force=True)
+    company = data.get("company")
+    if not company:
+        return jsonify({"error": "company is required"}), 400
+
+    pattern = f"%{company}%"
+    suggestions = []
+
+    # 1. Check existing contacts at this company
+    existing = db.query(
+        """
+        SELECT id, name, company, title, email, linkedin_url, relationship_stage
+        FROM contacts
+        WHERE company ILIKE %s AND merged_into_id IS NULL
+        ORDER BY last_touchpoint_at DESC NULLS LAST
+        """,
+        (pattern,),
+    )
+
+    # 2. Search emails for mentions of this company
+    email_mentions = db.query(
+        """
+        SELECT DISTINCT ON (sender_email)
+            sender_name, sender_email, subject,
+            'email' AS source, sent_at
+        FROM emails
+        WHERE (subject ILIKE %s OR body ILIKE %s OR sender_name ILIKE %s)
+          AND sender_email NOT ILIKE '%%noreply%%'
+          AND sender_email NOT ILIKE '%%no-reply%%'
+        ORDER BY sender_email, sent_at DESC
+        LIMIT 20
+        """,
+        (pattern, pattern, pattern),
+    )
+
+    # 3. Search application notes for contact names
+    app_mentions = db.query(
+        """
+        SELECT DISTINCT company_name, contact_name, contact_email, role,
+               'application' AS source
+        FROM applications
+        WHERE company_name ILIKE %s
+          AND contact_name IS NOT NULL
+          AND contact_name != ''
+        ORDER BY company_name
+        LIMIT 20
+        """,
+        (pattern,),
+    )
+
+    # 4. Search outreach messages for this company
+    outreach_mentions = db.query(
+        """
+        SELECT DISTINCT c.name, c.email, c.company, c.title,
+               'outreach' AS source
+        FROM outreach_messages om
+        JOIN contacts c ON c.id = om.contact_id
+        WHERE c.company ILIKE %s AND c.merged_into_id IS NULL
+        ORDER BY c.name
+        LIMIT 20
+        """,
+        (pattern,),
+    )
+
+    # 5. Search interview notes
+    interview_mentions = db.query(
+        """
+        SELECT DISTINCT a.contact_name, a.contact_email, a.company_name,
+               i.interviewer_name, i.interviewer_title,
+               'interview' AS source
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        WHERE a.company_name ILIKE %s
+          AND (i.interviewer_name IS NOT NULL AND i.interviewer_name != '')
+        ORDER BY i.interviewer_name
+        LIMIT 20
+        """,
+        (pattern,),
+    )
+
+    # Deduplicate by email where possible
+    seen_emails = set()
+    for c in existing:
+        if c.get("email"):
+            seen_emails.add(c["email"].lower())
+
+    # Build suggestions from email mentions
+    for em in email_mentions:
+        email = em.get("sender_email", "")
+        if email.lower() not in seen_emails:
+            seen_emails.add(email.lower())
+            suggestions.append({
+                "name": em.get("sender_name") or email.split("@")[0],
+                "email": email,
+                "company": company,
+                "source": "email",
+                "context": f"Found in email: {em.get('subject', '')}",
+            })
+
+    # Build suggestions from application contacts
+    for am in app_mentions:
+        email = am.get("contact_email", "")
+        name = am.get("contact_name", "")
+        key = email.lower() if email else name.lower()
+        if key and key not in seen_emails:
+            seen_emails.add(key)
+            suggestions.append({
+                "name": name,
+                "email": email,
+                "company": company,
+                "source": "application",
+                "context": f"Contact for role: {am.get('role', '')}",
+            })
+
+    # Build suggestions from interview mentions
+    for im in interview_mentions:
+        name = im.get("interviewer_name", "")
+        email = im.get("contact_email", "")
+        key = email.lower() if email else name.lower()
+        if key and key not in seen_emails:
+            seen_emails.add(key)
+            suggestions.append({
+                "name": name,
+                "email": email,
+                "company": company,
+                "title": im.get("interviewer_title"),
+                "source": "interview",
+                "context": f"Interviewer at {im.get('company_name', company)}",
+            })
+
+    return jsonify({
+        "company": company,
+        "existing_contacts": existing,
+        "suggestions": suggestions,
+        "existing_count": len(existing),
+        "suggestion_count": len(suggestions),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Contact Import from CSV
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/contacts/import/csv", methods=["POST"])
+def import_contacts_csv():
+    """Import contacts from CSV text. Expects columns: name, email, company, title, source.
+
+    Body JSON: {"csv_text": str, "skip_duplicates": bool (default true)}
+    """
+    data = request.get_json(force=True)
+    csv_text = data.get("csv_text")
+    if not csv_text:
+        return jsonify({"error": "csv_text is required"}), 400
+
+    skip_duplicates = data.get("skip_duplicates", True)
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    imported = []
+    skipped = []
+    errors = []
+
+    for i, row in enumerate(reader):
+        name = (row.get("name") or row.get("Name") or "").strip()
+        if not name:
+            errors.append({"row": i + 1, "error": "Missing name"})
+            continue
+
+        email = (row.get("email") or row.get("Email") or "").strip()
+        company = (row.get("company") or row.get("Company") or "").strip()
+        title = (row.get("title") or row.get("Title") or "").strip()
+        source = (row.get("source") or row.get("Source") or "csv_import").strip()
+
+        # Check for duplicate by email
+        if skip_duplicates and email:
+            existing = db.query_one(
+                "SELECT id FROM contacts WHERE email ILIKE %s AND merged_into_id IS NULL",
+                (email,),
+            )
+            if existing:
+                skipped.append({"name": name, "email": email, "reason": "duplicate email"})
+                continue
+
+        contact = db.execute_returning(
+            """
+            INSERT INTO contacts (name, email, company, title, source)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, name, email, company, title, source
+            """,
+            (name, email or None, company or None, title or None, source),
+        )
+        imported.append(contact)
+
+    return jsonify({
+        "imported": imported,
+        "imported_count": len(imported),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+        "errors": errors,
+        "error_count": len(errors),
+    }), 201
+
+
+# ---------------------------------------------------------------------------
+# Contact Import from LinkedIn Messages
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/contacts/import/linkedin-messages", methods=["POST"])
+def import_linkedin_messages():
+    """Parse LinkedIn message export CSV text, extract contact info + conversation context.
+
+    LinkedIn exports typically have columns: From, To, Date, Subject, Content.
+
+    Body JSON: {"csv_text": str, "skip_duplicates": bool (default true)}
+    """
+    data = request.get_json(force=True)
+    csv_text = data.get("csv_text")
+    if not csv_text:
+        return jsonify({"error": "csv_text is required"}), 400
+
+    skip_duplicates = data.get("skip_duplicates", True)
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    contacts_map = {}  # name -> {info}
+
+    for row in reader:
+        # LinkedIn exports use various column names
+        from_name = (
+            row.get("From") or row.get("FROM") or row.get("Sender") or ""
+        ).strip()
+        content = (
+            row.get("Content") or row.get("CONTENT") or row.get("Body") or row.get("Message") or ""
+        ).strip()
+        date_str = (
+            row.get("Date") or row.get("DATE") or row.get("Sent") or ""
+        ).strip()
+        subject = (
+            row.get("Subject") or row.get("SUBJECT") or ""
+        ).strip()
+
+        if not from_name:
+            continue
+
+        if from_name not in contacts_map:
+            contacts_map[from_name] = {
+                "name": from_name,
+                "source": "linkedin_messages",
+                "message_count": 0,
+                "last_message_date": date_str,
+                "conversation_snippets": [],
+            }
+
+        contacts_map[from_name]["message_count"] += 1
+        if date_str > contacts_map[from_name].get("last_message_date", ""):
+            contacts_map[from_name]["last_message_date"] = date_str
+        if content and len(contacts_map[from_name]["conversation_snippets"]) < 3:
+            snippet = content[:200] + ("..." if len(content) > 200 else "")
+            contacts_map[from_name]["conversation_snippets"].append(snippet)
+
+    imported = []
+    skipped = []
+
+    for name, info in contacts_map.items():
+        # Check for duplicate by name
+        if skip_duplicates:
+            existing = db.query_one(
+                "SELECT id FROM contacts WHERE name ILIKE %s AND merged_into_id IS NULL",
+                (name,),
+            )
+            if existing:
+                skipped.append({"name": name, "reason": "duplicate name"})
+                continue
+
+        notes = f"LinkedIn messages ({info['message_count']} messages)"
+        if info["conversation_snippets"]:
+            notes += "\n\nRecent messages:\n" + "\n---\n".join(info["conversation_snippets"])
+
+        contact = db.execute_returning(
+            """
+            INSERT INTO contacts (name, source, notes, linkedin_url)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, name, source, notes
+            """,
+            (name, "linkedin_messages", notes, None),
+        )
+        imported.append({
+            **contact,
+            "message_count": info["message_count"],
+            "last_message_date": info.get("last_message_date"),
+        })
+
+    return jsonify({
+        "imported": imported,
+        "imported_count": len(imported),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+        "unique_contacts_found": len(contacts_map),
+    }), 201

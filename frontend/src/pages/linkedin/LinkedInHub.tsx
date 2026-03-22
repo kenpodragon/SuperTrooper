@@ -63,12 +63,35 @@ interface VoiceRule {
 
 // ── Tab definitions ────────────────────────────────────────────────────────
 
-type Tab = 'scorecard' | 'content' | 'skills' | 'voice';
+interface EndorsementStrategy {
+  id: number;
+  skill_name: string;
+  current_endorsements: number;
+  target_endorsements: number;
+  strategy: string;
+  priority: string;
+  contacts_to_ask: { name: string; reason: string }[];
+  created_at: string;
+}
+
+interface ScheduledPost {
+  id: number;
+  post_id?: number;
+  hook_text?: string;
+  scheduled_for: string;
+  status: string;
+  post_type?: string;
+  theme_pillar_name?: string;
+}
+
+type Tab = 'scorecard' | 'content' | 'skills' | 'endorsements' | 'schedule' | 'voice';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'scorecard', label: 'Profile Scorecard' },
   { key: 'content', label: 'Content Dashboard' },
   { key: 'skills', label: 'Skills Manager' },
+  { key: 'endorsements', label: 'Endorsements' },
+  { key: 'schedule', label: 'Schedule' },
   { key: 'voice', label: 'Voice Guide' },
 ];
 
@@ -813,6 +836,258 @@ function VoiceGuide() {
   );
 }
 
+// ── Endorsement Strategy Tab ──────────────────────────────────────────────
+
+function EndorsementStrategy() {
+  const qc = useQueryClient();
+
+  const { data: strategies, isLoading, error } = useQuery({
+    queryKey: ['linkedin-endorsement-strategy'],
+    queryFn: () => api.get<EndorsementStrategy[]>('/linkedin/endorsement-strategy'),
+    retry: false,
+  });
+
+  const generate = useMutation({
+    mutationFn: () => api.post<EndorsementStrategy[]>('/linkedin/endorsement-strategy', {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['linkedin-endorsement-strategy'] }),
+  });
+
+  if (isLoading) return <Spinner />;
+  if ((error || !strategies || strategies.length === 0) && !isLoading) {
+    return (
+      <EmptyState
+        message="No endorsement strategy yet. Generate one to identify which skills need endorsements and who to ask."
+        cta="Generate Endorsement Strategy"
+        onClick={() => generate.mutate()}
+      />
+    );
+  }
+
+  const items = strategies ?? [];
+  const highPriority = items.filter((s) => s.priority === 'high');
+  const medPriority = items.filter((s) => s.priority === 'medium');
+  const lowPriority = items.filter((s) => s.priority === 'low');
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-400">{items.length} skills with endorsement strategies</p>
+        <button
+          onClick={() => generate.mutate()}
+          disabled={generate.isPending}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
+        >
+          {generate.isPending ? 'Generating...' : 'Regenerate Strategy'}
+        </button>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-3 gap-4">
+        {[
+          { label: 'High Priority', count: highPriority.length, color: 'text-red-400' },
+          { label: 'Medium Priority', count: medPriority.length, color: 'text-yellow-400' },
+          { label: 'Low Priority', count: lowPriority.length, color: 'text-green-400' },
+        ].map((s) => (
+          <div key={s.label} className="bg-gray-800 rounded-lg p-4 border border-gray-700 text-center">
+            <p className={`text-2xl font-bold ${s.color}`}>{s.count}</p>
+            <p className="text-xs text-gray-400 mt-1">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Strategy cards */}
+      {items.map((strategy) => (
+        <div key={strategy.id} className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-sm font-semibold text-white">{strategy.skill_name}</h4>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs px-2 py-0.5 rounded-full border ${PRIORITY_COLORS[strategy.priority] ?? 'bg-gray-600 text-gray-300'}`}>
+                {strategy.priority}
+              </span>
+              <span className="text-xs text-gray-400">
+                {strategy.current_endorsements}/{strategy.target_endorsements} endorsements
+              </span>
+            </div>
+          </div>
+
+          {/* Progress bar */}
+          <div className="w-full bg-gray-700 rounded-full h-2 mb-3">
+            <div
+              className={`h-2 rounded-full transition-all ${
+                strategy.current_endorsements >= strategy.target_endorsements ? 'bg-green-500' : 'bg-blue-500'
+              }`}
+              style={{
+                width: `${Math.min(100, Math.round((strategy.current_endorsements / Math.max(1, strategy.target_endorsements)) * 100))}%`,
+              }}
+            />
+          </div>
+
+          <p className="text-sm text-gray-300 mb-2">{strategy.strategy}</p>
+
+          {strategy.contacts_to_ask && strategy.contacts_to_ask.length > 0 && (
+            <div className="mt-2">
+              <p className="text-xs text-gray-500 mb-1">People to ask:</p>
+              <div className="flex flex-wrap gap-2">
+                {strategy.contacts_to_ask.map((c, i) => (
+                  <span key={i} className="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded-full" title={c.reason}>
+                    {c.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Post Schedule Tab ────────────────────────────────────────────────────────
+
+function PostSchedule() {
+  const qc = useQueryClient();
+  const [scheduleForm, setScheduleForm] = useState({ post_id: '', scheduled_for: '' });
+
+  const { data: scheduled, isLoading } = useQuery({
+    queryKey: ['linkedin-scheduled-posts'],
+    queryFn: () => api.get<ScheduledPost[]>('/linkedin/posts?status=scheduled'),
+    retry: false,
+  });
+
+  const drafts = useQuery({
+    queryKey: ['linkedin-draft-posts'],
+    queryFn: () => api.get<LinkedInPost[]>('/linkedin/posts?status=draft'),
+  });
+
+  const schedulePost = useMutation({
+    mutationFn: (data: { post_id: number; scheduled_for: string }) =>
+      api.patch<LinkedInPost>(`/linkedin/posts/${data.post_id}`, {
+        status: 'scheduled',
+        scheduled_for: data.scheduled_for,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['linkedin-scheduled-posts'] });
+      qc.invalidateQueries({ queryKey: ['linkedin-draft-posts'] });
+      qc.invalidateQueries({ queryKey: ['linkedin-posts'] });
+      setScheduleForm({ post_id: '', scheduled_for: '' });
+    },
+  });
+
+  const unschedule = useMutation({
+    mutationFn: (postId: number) =>
+      api.patch<LinkedInPost>(`/linkedin/posts/${postId}`, { status: 'draft', scheduled_for: null }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['linkedin-scheduled-posts'] });
+      qc.invalidateQueries({ queryKey: ['linkedin-draft-posts'] });
+    },
+  });
+
+  const scheduledList = scheduled ?? [];
+  const draftList = drafts.data ?? [];
+
+  // Group scheduled posts by date
+  const byDate: Record<string, ScheduledPost[]> = {};
+  scheduledList.forEach((p) => {
+    const dateKey = p.scheduled_for ? new Date(p.scheduled_for).toLocaleDateString() : 'Unscheduled';
+    if (!byDate[dateKey]) byDate[dateKey] = [];
+    byDate[dateKey].push(p);
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Schedule a draft */}
+      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+        <h3 className="text-sm font-semibold text-white mb-3">Schedule a Draft Post</h3>
+        <div className="flex gap-3">
+          <select
+            className="bg-gray-700 border border-gray-600 text-white rounded px-3 py-2 text-sm flex-1"
+            value={scheduleForm.post_id}
+            onChange={(e) => setScheduleForm((p) => ({ ...p, post_id: e.target.value }))}
+          >
+            <option value="">Select a draft post...</option>
+            {draftList.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.hook_text?.substring(0, 60) || `Post #${d.id}`}
+                {d.post_type ? ` (${d.post_type.replace(/_/g, ' ')})` : ''}
+              </option>
+            ))}
+          </select>
+          <input
+            type="datetime-local"
+            className="bg-gray-700 border border-gray-600 text-white rounded px-3 py-2 text-sm"
+            value={scheduleForm.scheduled_for}
+            onChange={(e) => setScheduleForm((p) => ({ ...p, scheduled_for: e.target.value }))}
+          />
+          <button
+            onClick={() => {
+              if (scheduleForm.post_id && scheduleForm.scheduled_for) {
+                schedulePost.mutate({
+                  post_id: Number(scheduleForm.post_id),
+                  scheduled_for: new Date(scheduleForm.scheduled_for).toISOString(),
+                });
+              }
+            }}
+            disabled={!scheduleForm.post_id || !scheduleForm.scheduled_for || schedulePost.isPending}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 whitespace-nowrap"
+          >
+            {schedulePost.isPending ? 'Scheduling...' : 'Schedule'}
+          </button>
+        </div>
+      </div>
+
+      {/* Calendar view of scheduled posts */}
+      {isLoading && <Spinner />}
+      {!isLoading && scheduledList.length === 0 && (
+        <div className="text-center py-8">
+          <p className="text-gray-500">No posts scheduled. Select a draft post above to schedule it.</p>
+        </div>
+      )}
+
+      {Object.entries(byDate)
+        .sort(([a], [b]) => new Date(a).getTime() - new Date(b).getTime())
+        .map(([dateStr, posts]) => (
+          <div key={dateStr} className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+            <div className="px-4 py-2 bg-gray-750 border-b border-gray-700">
+              <h3 className="text-sm font-medium text-gray-300">{dateStr}</h3>
+            </div>
+            <div className="divide-y divide-gray-700">
+              {posts.map((post) => (
+                <div key={post.id} className="px-4 py-3 flex items-center justify-between">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-gray-200 truncate">
+                      {post.hook_text || `Post #${post.post_id || post.id}`}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-xs text-blue-400">
+                        {post.scheduled_for
+                          ? new Date(post.scheduled_for).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                          : 'Time TBD'}
+                      </span>
+                      {post.post_type && (
+                        <span className="text-xs text-gray-500">{post.post_type.replace(/_/g, ' ')}</span>
+                      )}
+                      {post.theme_pillar_name && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-purple-600/20 text-purple-400">
+                          {post.theme_pillar_name}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => unschedule.mutate(post.post_id || post.id)}
+                    className="text-xs text-red-400 hover:text-red-300 ml-3"
+                  >
+                    Unschedule
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+    </div>
+  );
+}
+
 // ── Main Hub Component ─────────────────────────────────────────────────────
 
 export default function LinkedInHub() {
@@ -843,6 +1118,8 @@ export default function LinkedInHub() {
       {activeTab === 'scorecard' && <ProfileScorecard />}
       {activeTab === 'content' && <ContentDashboard />}
       {activeTab === 'skills' && <SkillsManager />}
+      {activeTab === 'endorsements' && <EndorsementStrategy />}
+      {activeTab === 'schedule' && <PostSchedule />}
       {activeTab === 'voice' && <VoiceGuide />}
     </div>
   );

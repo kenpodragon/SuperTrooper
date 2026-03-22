@@ -1,6 +1,7 @@
 """CRM routes for relationship tracking, touchpoints, networking tasks, and drip sequences."""
 
 import json
+import math
 from datetime import date, timedelta
 
 from flask import Blueprint, request, jsonify
@@ -789,3 +790,272 @@ def outreach_history(contact_id):
         "total": len(rows),
         "responses": sum(1 for r in rows if r.get("response_received")),
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# Relationship Scoring Algorithm (Batch Recalculate)
+# ---------------------------------------------------------------------------
+
+STAGE_WEIGHTS = {
+    "close": 1.2,
+    "active": 1.0,
+    "warm": 0.8,
+    "cold": 0.5,
+    "dormant": 0.3,
+}
+
+
+@bp.route("/api/crm/recalculate-scores", methods=["POST"])
+def recalculate_all_scores():
+    """Recalculate health scores for ALL contacts using a multi-factor algorithm.
+
+    Factors:
+        1. Recency of last touchpoint (exponential decay, half-life = 30 days)
+        2. Touchpoint frequency (monthly average over last 90 days)
+        3. Relationship stage weight
+        4. Response rate to outbound outreach
+    """
+    contacts = db.query(
+        """
+        SELECT c.id, c.relationship_stage
+        FROM contacts c
+        WHERE c.merged_into_id IS NULL
+        """
+    )
+
+    if not contacts:
+        return jsonify({"updated": 0, "message": "No contacts to score"}), 200
+
+    contact_ids = [c["id"] for c in contacts]
+    stage_map = {c["id"]: c.get("relationship_stage", "cold") for c in contacts}
+
+    # Gather touchpoint stats for all contacts in one query
+    tp_stats = db.query(
+        """
+        SELECT
+            contact_id,
+            EXTRACT(EPOCH FROM (NOW() - MAX(logged_at))) / 86400 AS days_since_last,
+            COUNT(*) FILTER (WHERE logged_at >= NOW() - INTERVAL '90 days') AS count_90d,
+            COUNT(*) AS total_touchpoints
+        FROM touchpoints
+        WHERE contact_id = ANY(%s)
+        GROUP BY contact_id
+        """,
+        (contact_ids,),
+    )
+    tp_map = {r["contact_id"]: r for r in tp_stats}
+
+    # Gather outreach response rates
+    outreach_stats = db.query(
+        """
+        SELECT
+            contact_id,
+            COUNT(*) AS outbound_count,
+            COUNT(*) FILTER (WHERE response_received = TRUE) AS response_count
+        FROM outreach_messages
+        WHERE contact_id = ANY(%s) AND direction = 'outbound'
+        GROUP BY contact_id
+        """,
+        (contact_ids,),
+    )
+    outreach_map = {r["contact_id"]: r for r in outreach_stats}
+
+    updated = []
+    half_life = 30.0  # days
+
+    for cid in contact_ids:
+        tp = tp_map.get(cid, {})
+        om = outreach_map.get(cid, {})
+        stage = stage_map.get(cid, "cold")
+
+        days_since = tp.get("days_since_last")
+        count_90d = tp.get("count_90d", 0) or 0
+        outbound = om.get("outbound_count", 0) or 0
+        responses = om.get("response_count", 0) or 0
+
+        # Factor 1: Recency (exponential decay, 0-40 points)
+        if days_since is not None:
+            recency_score = 40.0 * math.exp(-0.693 * float(days_since) / half_life)
+        else:
+            recency_score = 0.0
+
+        # Factor 2: Frequency (monthly average over 90 days, 0-25 points)
+        monthly_avg = float(count_90d) / 3.0
+        frequency_score = min(25.0, monthly_avg * 8.0)
+
+        # Factor 3: Stage weight (0-20 points)
+        stage_weight = STAGE_WEIGHTS.get(stage, 0.5)
+        stage_score = 20.0 * stage_weight
+
+        # Factor 4: Response rate (0-15 points)
+        if outbound > 0:
+            response_rate = float(responses) / float(outbound)
+            response_score = 15.0 * response_rate
+        else:
+            response_score = 7.5  # neutral if no outreach
+
+        # Combine and clamp
+        total = recency_score + frequency_score + stage_score + response_score
+        total = max(0.0, min(100.0, round(total, 1)))
+
+        db.execute(
+            "UPDATE contacts SET health_score = %s, updated_at = NOW() WHERE id = %s",
+            (total, cid),
+        )
+        updated.append({"id": cid, "health_score": total})
+
+    return jsonify({
+        "updated": len(updated),
+        "scores": updated[:50],  # return first 50 for review
+        "message": f"Recalculated health scores for {len(updated)} contacts",
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Networking Event Tracking
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/crm/events", methods=["POST"])
+def create_networking_event():
+    """Log a networking event (conference, meetup, coffee chat, etc.).
+
+    Body JSON:
+        event_name (required): name of the event
+        event_type: conference | meetup | coffee_chat | webinar | career_fair | other
+        event_date: date of event (YYYY-MM-DD)
+        location: where it happened
+        notes: any notes about the event
+        contact_ids: optional array of contact IDs to attach as attendees
+    """
+    data = request.get_json(force=True)
+    name = data.get("event_name")
+    if not name:
+        return jsonify({"error": "event_name is required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO networking_events (event_name, event_type, event_date, location, notes)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            name,
+            data.get("event_type", "other"),
+            data.get("event_date"),
+            data.get("location"),
+            data.get("notes"),
+        ),
+    )
+
+    # Optionally attach contacts as attendees
+    contact_ids = data.get("contact_ids", [])
+    attendees_added = 0
+    if contact_ids and isinstance(contact_ids, list):
+        for cid in contact_ids:
+            try:
+                db.execute(
+                    """INSERT INTO networking_event_attendees (event_id, contact_id)
+                       VALUES (%s, %s) ON CONFLICT DO NOTHING""",
+                    (row["id"], cid),
+                )
+                attendees_added += 1
+            except Exception:
+                pass
+
+    return jsonify({**row, "attendees_added": attendees_added}), 201
+
+
+@bp.route("/api/crm/events", methods=["GET"])
+def list_networking_events():
+    """List networking events with attendee contacts.
+
+    Query params:
+        event_type (optional): filter by type
+        limit (int, default 50): max results
+    """
+    event_type = request.args.get("event_type")
+    limit = int(request.args.get("limit", 50))
+
+    clauses, params = [], []
+    if event_type:
+        clauses.append("e.event_type = %s")
+        params.append(event_type)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+
+    events = db.query(
+        f"""
+        SELECT e.*,
+               COALESCE(
+                   json_agg(
+                       json_build_object(
+                           'contact_id', c.id,
+                           'name', c.name,
+                           'company', c.company,
+                           'title', c.title
+                       )
+                   ) FILTER (WHERE c.id IS NOT NULL),
+                   '[]'::json
+               ) AS attendees,
+               COUNT(c.id) AS attendee_count
+        FROM networking_events e
+        LEFT JOIN networking_event_attendees nea ON nea.event_id = e.id
+        LEFT JOIN contacts c ON c.id = nea.contact_id
+        {where}
+        GROUP BY e.id
+        ORDER BY e.event_date DESC NULLS LAST, e.created_at DESC
+        LIMIT %s
+        """,
+        params,
+    )
+
+    return jsonify({"events": events, "count": len(events)}), 200
+
+
+@bp.route("/api/crm/events/<int:event_id>/attendees", methods=["POST"])
+def add_event_attendees(event_id):
+    """Add contacts as attendees to a networking event.
+
+    Body JSON: {"contact_ids": [int, ...]}
+    """
+    event = db.query_one("SELECT id FROM networking_events WHERE id = %s", (event_id,))
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+
+    data = request.get_json(force=True)
+    contact_ids = data.get("contact_ids", [])
+    if not contact_ids or not isinstance(contact_ids, list):
+        return jsonify({"error": "contact_ids array is required"}), 400
+
+    added = []
+    already_exists = []
+    not_found = []
+
+    for cid in contact_ids:
+        contact = db.query_one("SELECT id, name FROM contacts WHERE id = %s", (cid,))
+        if not contact:
+            not_found.append(cid)
+            continue
+
+        existing = db.query_one(
+            "SELECT id FROM networking_event_attendees WHERE event_id = %s AND contact_id = %s",
+            (event_id, cid),
+        )
+        if existing:
+            already_exists.append(cid)
+            continue
+
+        db.execute(
+            "INSERT INTO networking_event_attendees (event_id, contact_id) VALUES (%s, %s)",
+            (event_id, cid),
+        )
+        added.append({"contact_id": cid, "name": contact["name"]})
+
+    return jsonify({
+        "event_id": event_id,
+        "added": added,
+        "added_count": len(added),
+        "already_existed": already_exists,
+        "not_found": not_found,
+    }), 201
