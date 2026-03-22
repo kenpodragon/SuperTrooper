@@ -1005,7 +1005,7 @@ Chrome extension (Manifest V3) that connects to the local SuperTroopers backend 
 - [ ] 14.14.2 Inline triage from popup: save / pass / snooze without opening frontend
 
 ### Phase 6: Intelligent Batch Apply (14.15)
-Unlike spray-and-pray auto-apply bots (LazyApply, Sonara) that submit generic resumes at volume, SuperTroopers batch apply is an AI agent with full access to the candidate's career data, voice rules, and gap analysis. Every application is individually tailored — the automation is in the orchestration, not in cutting corners.
+Unlike spray-and-pray auto-apply bots that submit generic resumes at volume, SuperTroopers batch apply is an AI agent with full access to the candidate's career data, voice rules, and gap analysis. Every application is individually tailored — the automation is in the orchestration, not in cutting corners.
 
 **Per-application pipeline (fully automated, human-reviewed):**
 1. Run gap analysis against JD → fit score + match/gap breakdown

@@ -23,6 +23,17 @@ from routes.market_intelligence import bp as market_intelligence_bp
 from routes.batch import bp as batch_bp
 from routes.mock_interviews import bp as mock_interviews_bp
 from routes.integrations import bp as integrations_bp
+from routes.linkedin import bp as linkedin_bp
+from routes.materials import bp as materials_bp
+from routes.resume_tailoring import bp as resume_tailoring_bp
+from routes.offers import bp as offers_bp
+from routes.search_intelligence import bp as search_intelligence_bp
+from routes.references import bp as references_bp
+from routes.skills_development import bp as skills_development_bp
+from routes.campaign import bp as campaign_bp
+from routes.path_finding import bp as path_finding_bp
+from routes.linkedin_import import bp as linkedin_import_bp
+from routes.reporting import bp as reporting_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -48,4 +59,15 @@ ALL_BLUEPRINTS = [
     batch_bp,
     mock_interviews_bp,
     integrations_bp,
+    linkedin_bp,
+    materials_bp,
+    resume_tailoring_bp,
+    offers_bp,
+    search_intelligence_bp,
+    references_bp,
+    skills_development_bp,
+    campaign_bp,
+    path_finding_bp,
+    linkedin_import_bp,
+    reporting_bp,
 ]

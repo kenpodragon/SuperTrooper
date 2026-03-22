@@ -15,6 +15,7 @@ import Analytics from './pages/analytics/Analytics';
 import MockInterviews from './pages/mock-interviews/MockInterviews';
 import Networking from './pages/networking/Networking';
 import MarketIntel from './pages/market/MarketIntel';
+import LinkedInHub from './pages/linkedin/LinkedInHub';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="mock-interviews" element={<MockInterviews />} />
             <Route path="networking" element={<Networking />} />
             <Route path="market" element={<MarketIntel />} />
+            <Route path="linkedin" element={<LinkedInHub />} />
           </Route>
         </Routes>
       </BrowserRouter>
