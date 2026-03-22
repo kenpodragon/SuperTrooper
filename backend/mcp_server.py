@@ -3257,6 +3257,48 @@ def detect_recruiter_emails() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Reference Management (S17)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_reference_roster() -> dict:
+    """List all references with warmth status, usage stats, and role type matching."""
+    from mcp_tools_references import get_reference_roster as _impl
+    return _impl()
+
+
+@mcp.tool()
+def match_references_to_role(role_type: str) -> dict:
+    """Match references to a specific role type, ranked by fit and warmth.
+
+    Args:
+        role_type: target role (CTO, VP Eng, Director, AI Architect, etc.)
+    """
+    from mcp_tools_references import match_references_to_role as _impl
+    return _impl(role_type)
+
+
+@mcp.tool()
+def check_reference_warmth() -> dict:
+    """Check which references need a check-in (>90 days since last contact)."""
+    from mcp_tools_references import check_reference_warmth as _impl
+    return _impl()
+
+
+@mcp.tool()
+def log_reference_use(contact_id: int, application_id: int) -> dict:
+    """Log that a reference was used for an application.
+
+    Args:
+        contact_id: the reference contact
+        application_id: the application they were used for
+    """
+    from mcp_tools_references import log_reference_use as _impl
+    return _impl(contact_id, application_id)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
