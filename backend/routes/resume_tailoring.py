@@ -583,3 +583,292 @@ def validate_resume():
             "total_issues": len(issues),
         },
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/resume/reorder-bullets — AI-driven bullet reordering by JD relevance
+# ---------------------------------------------------------------------------
+
+def _python_reorder_bullets(context: dict) -> dict:
+    """Rule-based bullet reordering using keyword overlap scoring."""
+    bullets = context["bullets"]
+    jd_text = context["jd_text"]
+    jd_keywords = {kw["keyword"] for kw in _extract_keywords(jd_text)[:40]}
+
+    scored = []
+    for b in bullets:
+        text_lower = b["text"].lower()
+        overlap = sum(1 for kw in jd_keywords if kw in text_lower)
+        scored.append({**b, "_score": overlap})
+
+    scored.sort(key=lambda x: x["_score"], reverse=True)
+    for item in scored:
+        item.pop("_score", None)
+    return {"reordered_bullets": scored}
+
+
+def _ai_reorder_bullets(context: dict) -> dict:
+    """AI-enhanced bullet reordering via provider."""
+    from ai_providers import get_provider
+    provider = get_provider()
+    bullets_text = "\n".join(f"- {b['text']}" for b in context["bullets"])
+    prompt = (
+        f"Given this job description:\n{context['jd_text'][:3000]}\n\n"
+        f"Reorder these resume bullets from most to least relevant:\n{bullets_text}\n\n"
+        "Return a JSON array of bullet IDs in order of relevance: [id1, id2, ...]"
+    )
+    result = provider._run_cli(prompt, expect_json=True)
+    if isinstance(result, list):
+        id_order = result
+    elif isinstance(result, dict) and "order" in result:
+        id_order = result["order"]
+    else:
+        return _python_reorder_bullets(context)
+
+    bullet_map = {b["id"]: b for b in context["bullets"]}
+    reordered = [bullet_map[bid] for bid in id_order if bid in bullet_map]
+    # Append any bullets not in the AI response
+    seen = set(id_order)
+    for b in context["bullets"]:
+        if b["id"] not in seen:
+            reordered.append(b)
+    return {"reordered_bullets": reordered}
+
+
+@bp.route("/api/resume/reorder-bullets", methods=["POST"])
+def reorder_bullets():
+    """Reorder bullets by JD relevance. Uses AI if available, keyword fallback otherwise.
+
+    Body (JSON):
+        recipe_id (required): recipe to pull bullets from
+        jd_text (required): job description text
+    """
+    data = request.get_json(force=True)
+    recipe_id = data.get("recipe_id")
+    jd_text = data.get("jd_text")
+
+    if not recipe_id or not jd_text:
+        return jsonify({"error": "recipe_id and jd_text are required"}), 400
+
+    # Pull recipe to get bullet IDs
+    recipe_row = db.query_one("SELECT recipe FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not recipe_row:
+        return jsonify({"error": f"Recipe {recipe_id} not found"}), 404
+
+    recipe_json = recipe_row["recipe"]
+    if isinstance(recipe_json, str):
+        recipe_json = json.loads(recipe_json)
+
+    # Collect bullet IDs from recipe slots
+    bullet_ids = []
+    for slot_name, ref in recipe_json.items():
+        if ref.get("table") == "bullets" and "ids" in ref:
+            bullet_ids.extend(ref["ids"])
+
+    if not bullet_ids:
+        # Fall back to all bullets
+        bullets = db.query("SELECT id, text, type, tags FROM bullets ORDER BY id DESC LIMIT 30")
+    else:
+        bullets = db.query(
+            "SELECT id, text, type, tags FROM bullets WHERE id = ANY(%s)",
+            (bullet_ids,),
+        )
+
+    if not bullets:
+        return jsonify({"error": "No bullets found for this recipe"}), 404
+
+    context = {"bullets": bullets, "jd_text": jd_text}
+
+    from ai_providers.router import route_inference
+    result = route_inference(
+        task="reorder_bullets",
+        context=context,
+        python_fallback=_python_reorder_bullets,
+        ai_handler=_ai_reorder_bullets,
+    )
+    return jsonify(result), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/resume/rewrite-summary — AI-driven summary rewrite for target role
+# ---------------------------------------------------------------------------
+
+def _python_rewrite_summary(context: dict) -> dict:
+    """Template-based summary using existing summary_variants."""
+    role_type = context["role_type"]
+    summary_row = db.query_one(
+        "SELECT text FROM summary_variants WHERE role_type ILIKE %s LIMIT 1",
+        (role_type,),
+    )
+    if summary_row:
+        return {"summary": summary_row["text"], "source": "summary_variants"}
+    # Fall back to first available summary
+    fallback = db.query_one("SELECT text, role_type FROM summary_variants ORDER BY id LIMIT 1")
+    if fallback:
+        return {"summary": fallback["text"], "source": f"fallback ({fallback['role_type']})"}
+    return {"summary": "", "source": "none", "error": "No summary variants found"}
+
+
+def _ai_rewrite_summary(context: dict) -> dict:
+    """AI-enhanced summary rewrite."""
+    from ai_providers import get_provider
+    provider = get_provider()
+
+    # Pull base summary for context
+    base = db.query_one(
+        "SELECT text FROM summary_variants WHERE role_type ILIKE %s LIMIT 1",
+        (context["role_type"],),
+    )
+    base_text = base["text"] if base else ""
+
+    # Pull candidate profile for grounding
+    profile = db.query_one("SELECT full_name, credentials FROM resume_header ORDER BY id LIMIT 1")
+    name = profile["full_name"] if profile else "the candidate"
+
+    prompt = (
+        f"Rewrite this professional summary for a {context['role_type']} role.\n\n"
+        f"Candidate: {name}\n"
+        f"Base summary: {base_text}\n\n"
+        f"Job description:\n{context['jd_text'][:3000]}\n\n"
+        "Write a 3-4 sentence professional summary that:\n"
+        "- Opens with years of experience and domain\n"
+        "- Highlights 2-3 relevant achievements with metrics\n"
+        "- Matches the JD's language and priorities\n"
+        "- Uses conversational, direct tone (no buzzwords)\n\n"
+        'Return JSON: {"summary": "..."}'
+    )
+    result = provider._run_cli(prompt, expect_json=True)
+    if isinstance(result, dict) and "summary" in result:
+        return {"summary": result["summary"], "source": "ai"}
+    return _python_rewrite_summary(context)
+
+
+@bp.route("/api/resume/rewrite-summary", methods=["POST"])
+def rewrite_summary():
+    """Rewrite professional summary for a target role type using AI or template fallback.
+
+    Body (JSON):
+        role_type (required): target role type (CTO, VP Eng, etc.)
+        jd_text (optional): job description for contextual rewriting
+    """
+    data = request.get_json(force=True)
+    role_type = data.get("role_type")
+    jd_text = data.get("jd_text", "")
+
+    if not role_type:
+        return jsonify({"error": "role_type is required"}), 400
+
+    context = {"role_type": role_type, "jd_text": jd_text}
+
+    from ai_providers.router import route_inference
+    result = route_inference(
+        task="rewrite_summary",
+        context=context,
+        python_fallback=_python_rewrite_summary,
+        ai_handler=_ai_rewrite_summary if jd_text else None,
+    )
+    return jsonify(result), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/resume/keyword-adjust — AI-driven keyword mirroring
+# ---------------------------------------------------------------------------
+
+# Common synonym mappings for rule-based fallback
+_SYNONYM_MAP = {
+    "managed": ["led", "directed", "oversaw", "supervised"],
+    "developed": ["built", "created", "designed", "engineered"],
+    "improved": ["enhanced", "optimized", "streamlined", "upgraded"],
+    "implemented": ["deployed", "launched", "rolled out", "delivered"],
+    "team": ["group", "squad", "unit", "cross-functional team"],
+    "project": ["initiative", "program", "effort"],
+    "software": ["application", "platform", "system", "solution"],
+    "data": ["analytics", "metrics", "insights"],
+    "cloud": ["AWS", "Azure", "GCP", "cloud infrastructure"],
+    "agile": ["scrum", "kanban", "sprint-based", "iterative"],
+}
+
+
+def _python_keyword_adjust(context: dict) -> dict:
+    """Rule-based keyword adjustment using synonym mappings."""
+    resume_text = context["resume_text"]
+    jd_text = context["jd_text"]
+    jd_keywords = {kw["keyword"] for kw in _extract_keywords(jd_text)[:30]}
+
+    adjustments = []
+    adjusted_text = resume_text
+    for jd_kw in jd_keywords:
+        jd_lower = jd_kw.lower()
+        # Check if any synonym of the JD keyword appears in resume
+        for base_word, synonyms in _SYNONYM_MAP.items():
+            all_forms = [base_word] + synonyms
+            if jd_lower in [s.lower() for s in all_forms]:
+                # Find which synonym is in the resume that could be replaced
+                for syn in all_forms:
+                    if syn.lower() != jd_lower and syn.lower() in resume_text.lower():
+                        # Replace first occurrence (case-insensitive)
+                        pattern = re.compile(re.escape(syn), re.IGNORECASE)
+                        new_text = pattern.sub(jd_kw, adjusted_text, count=1)
+                        if new_text != adjusted_text:
+                            adjustments.append({
+                                "original": syn,
+                                "replacement": jd_kw,
+                                "reason": "JD keyword mirror",
+                            })
+                            adjusted_text = new_text
+                        break
+
+    return {
+        "adjusted_text": adjusted_text,
+        "adjustments": adjustments,
+        "adjustment_count": len(adjustments),
+    }
+
+
+def _ai_keyword_adjust(context: dict) -> dict:
+    """AI-enhanced keyword adjustment."""
+    from ai_providers import get_provider
+    provider = get_provider()
+
+    prompt = (
+        f"Given this job description:\n{context['jd_text'][:3000]}\n\n"
+        f"And this resume text:\n{context['resume_text'][:3000]}\n\n"
+        "Adjust the resume text to mirror the JD's language and keywords. Rules:\n"
+        "- Replace synonyms with the exact terms used in the JD\n"
+        "- Do NOT change meaning or add false claims\n"
+        "- Do NOT change metrics or numbers\n"
+        "- Keep the same sentence structure\n\n"
+        'Return JSON: {"adjusted_text": "...", "adjustments": [{"original": "...", "replacement": "...", "reason": "..."}]}'
+    )
+    result = provider._run_cli(prompt, expect_json=True)
+    if isinstance(result, dict) and "adjusted_text" in result:
+        result["adjustment_count"] = len(result.get("adjustments", []))
+        return result
+    return _python_keyword_adjust(context)
+
+
+@bp.route("/api/resume/keyword-adjust", methods=["POST"])
+def keyword_adjust():
+    """Adjust resume keywords to mirror JD language. AI-driven with rule-based fallback.
+
+    Body (JSON):
+        resume_text (required): resume text to adjust
+        jd_text (required): job description text
+    """
+    data = request.get_json(force=True)
+    resume_text = data.get("resume_text")
+    jd_text = data.get("jd_text")
+
+    if not resume_text or not jd_text:
+        return jsonify({"error": "resume_text and jd_text are required"}), 400
+
+    context = {"resume_text": resume_text, "jd_text": jd_text}
+
+    from ai_providers.router import route_inference
+    result = route_inference(
+        task="keyword_adjust",
+        context=context,
+        python_fallback=_python_keyword_adjust,
+        ai_handler=_ai_keyword_adjust,
+    )
+    return jsonify(result), 200

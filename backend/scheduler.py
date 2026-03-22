@@ -341,6 +341,349 @@ def _make_check_stale():
     return fn
 
 
+def _make_aging_sweep():
+    """Aging sweep — mark applications and saved jobs as stale based on configurable thresholds.
+
+    - Applied > 14 days with no response → stale notification
+    - Saved jobs > 30 days with no activity → stale notification
+    Deduplicates: skips if an unread aging_stale notification already exists
+    for the same entity created in the last 7 days.
+    """
+    def fn():
+        try:
+            import db
+
+            created = 0
+
+            # Rule 1: Applications in 'Applied' status > 14 days, no response
+            stale_apps = db.query(
+                """
+                SELECT id, company_name, role, status,
+                       EXTRACT(DAY FROM NOW() - last_status_change)::int AS days_waiting
+                FROM applications
+                WHERE status = 'Applied'
+                  AND last_status_change < NOW() - INTERVAL '14 days'
+                  AND posting_closed = FALSE
+                """
+            )
+            for app in (stale_apps or []):
+                existing = db.query_one(
+                    """
+                    SELECT id FROM notifications
+                    WHERE type = 'aging_stale'
+                      AND entity_type = 'application'
+                      AND entity_id = %s
+                      AND dismissed = FALSE
+                      AND created_at > NOW() - INTERVAL '7 days'
+                    """,
+                    (app["id"],),
+                )
+                if existing:
+                    continue
+                days = app.get("days_waiting") or 14
+                company = app.get("company_name") or "Unknown"
+                role = app.get("role") or "Unknown Role"
+                db.execute_returning(
+                    """
+                    INSERT INTO notifications
+                        (type, severity, title, body, link, entity_type, entity_id)
+                    VALUES (%s, %s, %s, %s, %s, 'application', %s)
+                    RETURNING id
+                    """,
+                    (
+                        "aging_stale",
+                        "action_needed",
+                        f"Stale application: {company} — {role}",
+                        f"Applied {days} days ago with no response. Consider following up or archiving.",
+                        f"/pipeline/{app['id']}",
+                        app["id"],
+                    ),
+                )
+                created += 1
+
+            # Rule 2: Saved jobs > 30 days with no activity
+            stale_jobs = db.query(
+                """
+                SELECT id, title, company,
+                       EXTRACT(DAY FROM NOW() - updated_at)::int AS days_stale
+                FROM saved_jobs
+                WHERE updated_at < NOW() - INTERVAL '30 days'
+                  AND status NOT IN ('applied', 'archived')
+                  AND posting_closed = FALSE
+                """
+            )
+            for job in (stale_jobs or []):
+                existing = db.query_one(
+                    """
+                    SELECT id FROM notifications
+                    WHERE type = 'aging_stale'
+                      AND entity_type = 'saved_job'
+                      AND entity_id = %s
+                      AND dismissed = FALSE
+                      AND created_at > NOW() - INTERVAL '7 days'
+                    """,
+                    (job["id"],),
+                )
+                if existing:
+                    continue
+                days = job.get("days_stale") or 30
+                company = job.get("company") or "Unknown"
+                title = job.get("title") or "Unknown Role"
+                db.execute_returning(
+                    """
+                    INSERT INTO notifications
+                        (type, severity, title, body, link, entity_type, entity_id)
+                    VALUES (%s, %s, %s, %s, %s, 'saved_job', %s)
+                    RETURNING id
+                    """,
+                    (
+                        "aging_stale",
+                        "info",
+                        f"Stale saved job: {company} — {title}",
+                        f"Saved {days} days ago with no activity. Apply or archive it.",
+                        f"/saved-jobs/{job['id']}",
+                        job["id"],
+                    ),
+                )
+                created += 1
+
+            logger.info(
+                f"aging_sweep: {len(stale_apps or [])} stale apps, "
+                f"{len(stale_jobs or [])} stale jobs, {created} notifications created"
+            )
+        except Exception as e:
+            logger.error(f"aging_sweep error: {e}")
+    return fn
+
+
+def _make_check_job_links():
+    """Check posting URLs for saved jobs and active applications.
+
+    HTTP HEAD request to each URL. If 404/410/redirect-to-homepage,
+    mark posting_closed=true and create a notification.
+    """
+    def fn():
+        try:
+            import db
+            import requests as http_requests
+
+            # Gather URLs to check: saved_jobs with url set and not already closed
+            saved = db.query(
+                """
+                SELECT id, url, title, company
+                FROM saved_jobs
+                WHERE url IS NOT NULL AND url != ''
+                  AND posting_closed = FALSE
+                  AND (last_link_check_at IS NULL
+                       OR last_link_check_at < NOW() - INTERVAL '6 hours')
+                LIMIT 50
+                """
+            )
+            apps = db.query(
+                """
+                SELECT id, jd_url AS url, role AS title, company_name AS company
+                FROM applications
+                WHERE jd_url IS NOT NULL AND jd_url != ''
+                  AND posting_closed = FALSE
+                  AND (last_link_check_at IS NULL
+                       OR last_link_check_at < NOW() - INTERVAL '6 hours')
+                LIMIT 50
+                """
+            )
+
+            closed_count = 0
+            checked_count = 0
+
+            for item_type, items, table in [
+                ("saved_job", saved or [], "saved_jobs"),
+                ("application", apps or [], "applications"),
+            ]:
+                for item in items:
+                    checked_count += 1
+                    url = item["url"]
+                    is_closed = False
+                    link_status = "active"
+
+                    try:
+                        resp = http_requests.head(
+                            url, timeout=15, allow_redirects=True,
+                            headers={"User-Agent": "SuperTroopers-LinkChecker/1.0"}
+                        )
+                        if resp.status_code in (404, 410):
+                            is_closed = True
+                            link_status = "closed"
+                        elif resp.status_code >= 200 and resp.status_code < 400:
+                            # Check for redirect to homepage (path is / or empty)
+                            from urllib.parse import urlparse
+                            final_path = urlparse(str(resp.url)).path.rstrip("/")
+                            if final_path == "" or final_path == "/careers" or final_path == "/jobs":
+                                is_closed = True
+                                link_status = "closed"
+                    except http_requests.RequestException:
+                        link_status = "error"
+
+                    # Update the record
+                    if is_closed:
+                        db.execute(
+                            f"""
+                            UPDATE {table}
+                            SET posting_closed = TRUE,
+                                posting_closed_at = NOW(),
+                                link_status = %s,
+                                last_link_check_at = NOW()
+                            WHERE id = %s
+                            """,
+                            (link_status, item["id"]),
+                        )
+                        closed_count += 1
+                        company = item.get("company") or "Unknown"
+                        title = item.get("title") or "Unknown"
+                        db.execute_returning(
+                            """
+                            INSERT INTO notifications
+                                (type, severity, title, body, link, entity_type, entity_id)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            RETURNING id
+                            """,
+                            (
+                                "posting_closed",
+                                "action_needed",
+                                f"Posting closed: {company} — {title}",
+                                f"The job posting URL returned {link_status}. The listing may have been removed.",
+                                f"/{'saved-jobs' if item_type == 'saved_job' else 'pipeline'}/{item['id']}",
+                                item_type,
+                                item["id"],
+                            ),
+                        )
+                    else:
+                        db.execute(
+                            f"""
+                            UPDATE {table}
+                            SET link_status = %s, last_link_check_at = NOW()
+                            WHERE id = %s
+                            """,
+                            (link_status, item["id"]),
+                        )
+
+            logger.info(
+                f"check_job_links: checked {checked_count} URLs, "
+                f"{closed_count} closed postings detected"
+            )
+        except Exception as e:
+            logger.error(f"check_job_links error: {e}")
+    return fn
+
+
+def _make_refresh_companies():
+    """For each target company, check fresh_jobs for new postings and notify."""
+    def fn():
+        try:
+            import db
+
+            companies = db.query(
+                "SELECT id, name FROM companies WHERE is_target = TRUE"
+            )
+            if not companies:
+                logger.info("refresh_companies: no target companies found")
+                return
+
+            total_new = 0
+            for company in companies:
+                name = company["name"]
+                # Check for fresh_jobs from this company discovered in the last 12 hours
+                new_jobs = db.query(
+                    """
+                    SELECT id, title, url
+                    FROM fresh_jobs
+                    WHERE company ILIKE %s
+                      AND discovered_at > NOW() - INTERVAL '12 hours'
+                    ORDER BY discovered_at DESC
+                    LIMIT 5
+                    """,
+                    (f"%{name}%",),
+                )
+                if not new_jobs:
+                    continue
+
+                total_new += len(new_jobs)
+                job_titles = ", ".join(j["title"] for j in new_jobs[:3])
+                suffix = f" (+{len(new_jobs) - 3} more)" if len(new_jobs) > 3 else ""
+
+                # Deduplicate: skip if notification for this company in last 12 hours
+                existing = db.query_one(
+                    """
+                    SELECT id FROM notifications
+                    WHERE type = 'new_company_postings'
+                      AND entity_type = 'company'
+                      AND entity_id = %s
+                      AND created_at > NOW() - INTERVAL '12 hours'
+                    """,
+                    (company["id"],),
+                )
+                if existing:
+                    continue
+
+                db.execute_returning(
+                    """
+                    INSERT INTO notifications
+                        (type, severity, title, body, link, entity_type, entity_id)
+                    VALUES (%s, %s, %s, %s, %s, 'company', %s)
+                    RETURNING id
+                    """,
+                    (
+                        "new_company_postings",
+                        "info",
+                        f"New postings at {name}",
+                        f"{len(new_jobs)} new posting(s): {job_titles}{suffix}",
+                        f"/companies/{company['id']}",
+                        company["id"],
+                    ),
+                )
+
+            logger.info(f"refresh_companies: checked {len(companies)} companies, {total_new} new postings")
+        except Exception as e:
+            logger.error(f"refresh_companies error: {e}")
+    return fn
+
+
+def _make_social_scan():
+    """Stub: social scan (LinkedIn/HN parsing deferred). Creates a notification."""
+    def fn():
+        try:
+            import db
+            # Deduplicate: only one per day
+            existing = db.query_one(
+                """
+                SELECT id FROM notifications
+                WHERE type = 'social_scan'
+                  AND created_at > NOW() - INTERVAL '23 hours'
+                """
+            )
+            if existing:
+                logger.info("social_scan: already ran today, skipping")
+                return
+
+            db.execute_returning(
+                """
+                INSERT INTO notifications
+                    (type, severity, title, body, link)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    "social_scan",
+                    "info",
+                    "Social scan completed",
+                    "Daily social scan stub ran successfully. LinkedIn/HN parsing is deferred for future implementation.",
+                    "/analytics",
+                ),
+            )
+            logger.info("social_scan: stub notification created")
+        except Exception as e:
+            logger.error(f"social_scan error: {e}")
+    return fn
+
+
 def _make_sync_remotive():
     def fn():
         from integrations.remotive import sync_remotive_to_inbox
@@ -386,7 +729,14 @@ def build_scheduler() -> SimpleScheduler:
     s.add_job("weekly_digest_notification", _make_weekly_digest_notification(), interval_minutes=1440)
     # Legacy 14-day stale warning (kept; cadence engine handles the primary S6.1 logic)
     s.add_job("check_stale_applications", _make_check_stale(), interval_minutes=60)
-    s.add_job("check_posting_status", _noop("check_posting_status"), interval_minutes=720)
+    # Aging sweep — configurable stale thresholds for apps (14d) and saved jobs (30d)
+    s.add_job("aging_sweep", _make_aging_sweep(), interval_minutes=360)
+    # Check job posting URLs for 404/410/redirects
+    s.add_job("check_job_links", _make_check_job_links(), interval_minutes=720)
+    # Refresh target companies — look for new postings in fresh_jobs
+    s.add_job("refresh_companies", _make_refresh_companies(), interval_minutes=360)
+    # Social scan stub (LinkedIn/HN parsing deferred)
+    s.add_job("social_scan", _make_social_scan(), interval_minutes=1440)
     return s
 
 
