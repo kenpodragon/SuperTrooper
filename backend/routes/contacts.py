@@ -305,3 +305,53 @@ def delete_referral(ref_id):
     if count == 0:
         return jsonify({"error": "Not found"}), 404
     return jsonify({"deleted": ref_id}), 200
+
+
+# ---------------------------------------------------------------------------
+# Outreach Follow-up Reminders
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/outreach/pending-followups", methods=["GET"])
+def pending_followups():
+    """Return outreach messages with a follow_up_date on or before today and no response received.
+
+    Query params:
+        limit (int, default 50): max results
+        as_of (date str YYYY-MM-DD, default today): cutoff date
+    """
+    limit = int(request.args.get("limit", 50))
+    as_of = request.args.get("as_of", "CURRENT_DATE")
+    # Validate as_of to prevent injection -- only allow YYYY-MM-DD or the literal default
+    import re
+    if as_of != "CURRENT_DATE" and not re.match(r"^\d{4}-\d{2}-\d{2}$", as_of):
+        return jsonify({"error": "as_of must be YYYY-MM-DD"}), 400
+
+    date_expr = "CURRENT_DATE" if as_of == "CURRENT_DATE" else "%s"
+    date_params = [] if as_of == "CURRENT_DATE" else [as_of]
+
+    sql = f"""
+        SELECT
+            om.id,
+            om.channel,
+            om.message_type,
+            om.subject,
+            om.sent_at,
+            om.follow_up_date,
+            om.status,
+            om.response_received,
+            om.contact_id,
+            c.name   AS contact_name,
+            c.company AS contact_company,
+            om.application_id,
+            EXTRACT(EPOCH FROM (NOW() - om.sent_at)) / 86400 AS days_since_sent
+        FROM outreach_messages om
+        LEFT JOIN contacts c ON c.id = om.contact_id
+        WHERE om.follow_up_date <= {date_expr}
+          AND (om.response_received IS NULL OR om.response_received = FALSE)
+          AND om.status != 'archived'
+        ORDER BY om.follow_up_date ASC, om.sent_at ASC
+        LIMIT %s
+    """
+    params = date_params + [limit]
+    rows = db.query(sql, params)
+    return jsonify({"pending_followups": rows, "count": len(rows)}), 200

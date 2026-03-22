@@ -259,6 +259,48 @@ def health_overview():
     return jsonify(rows), 200
 
 
+@bp.route("/api/crm/stale-contacts", methods=["GET"])
+def stale_contacts():
+    """Return contacts with health_score below threshold with suggested actions.
+
+    Query params:
+        threshold (int, default 30): health score cutoff
+        limit (int, default 50): max results
+    """
+    threshold = float(request.args.get("threshold", 30))
+    limit = int(request.args.get("limit", 50))
+
+    rows = db.query(
+        """
+        SELECT id, name, company, title, relationship_stage, health_score,
+               last_touchpoint_at, last_contact, tags,
+               EXTRACT(EPOCH FROM (NOW() - last_touchpoint_at)) / 86400 AS days_since_touchpoint
+        FROM contacts
+        WHERE health_score < %s OR (health_score IS NULL AND last_touchpoint_at IS NULL)
+        ORDER BY health_score ASC NULLS FIRST
+        LIMIT %s
+        """,
+        (threshold, limit),
+    )
+
+    # Attach a suggested action to each stale contact
+    result = []
+    for r in rows:
+        days = r.get("days_since_touchpoint")
+        score = r.get("health_score")
+        if days is None or days > 180:
+            action = "Re-engage: no contact in 6+ months. Send a check-in message."
+        elif days > 90:
+            action = "Follow up: last touch was 3-6 months ago. Share an update or article."
+        elif score is not None and score < 15:
+            action = "Priority: very low score. Schedule a call or coffee chat."
+        else:
+            action = "Nudge: health score is low. Log a touchpoint to rebuild momentum."
+        result.append({**r, "suggested_action": action})
+
+    return jsonify({"stale_contacts": result, "count": len(result), "threshold": threshold}), 200
+
+
 @bp.route("/api/crm/contacts/<int:contact_id>/health", methods=["PUT"])
 def recalculate_health(contact_id):
     """Recalculate health score for a contact based on touchpoint recency and frequency."""
