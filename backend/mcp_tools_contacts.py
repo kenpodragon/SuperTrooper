@@ -16,35 +16,68 @@ def register_contacts_tools(mcp):
         query: str = "",
         priority: str = "",
         sector: str = "",
+        size: str = "",
+        location: str = "",
+        funding_stage: str = "",
+        sort_by: str = "fit_score",
         limit: int = 50,
     ) -> dict:
-        """Search target companies by name, priority, or sector.
+        """Search target companies by name, priority, sector, size, location, or funding stage.
+        Also returns contact_count (how many contacts you have at each company).
 
         Args:
             query: Company name search (ILIKE).
             priority: Priority tier (A, B, C).
-            sector: Sector filter (ILIKE).
+            sector: Sector/industry filter (ILIKE).
+            size: Company size filter (ILIKE, e.g. '1-50', 'startup', 'enterprise').
+            location: HQ location filter (ILIKE).
+            funding_stage: Funding stage filter (ILIKE, e.g. 'Series B', 'public').
+            sort_by: Sort field — fit_score (default), priority, name, contact_count.
             limit: Max results (default 50).
         """
         clauses, params = [], []
         if query:
-            clauses.append("name ILIKE %s")
+            clauses.append("c.name ILIKE %s")
             params.append(f"%{query}%")
         if priority:
-            clauses.append("priority = %s")
+            clauses.append("c.priority = %s")
             params.append(priority)
         if sector:
-            clauses.append("sector ILIKE %s")
+            clauses.append("c.sector ILIKE %s")
             params.append(f"%{sector}%")
+        if size:
+            clauses.append("c.size ILIKE %s")
+            params.append(f"%{size}%")
+        if location:
+            clauses.append("c.hq_location ILIKE %s")
+            params.append(f"%{location}%")
+        if funding_stage:
+            clauses.append("c.funding_stage ILIKE %s")
+            params.append(f"%{funding_stage}%")
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        order_map = {
+            "fit_score": "fit_score DESC NULLS LAST, c.name",
+            "priority": "c.priority NULLS LAST, fit_score DESC NULLS LAST",
+            "name": "c.name",
+            "contact_count": "contact_count DESC NULLS LAST, c.name",
+        }
+        order_clause = order_map.get(sort_by, "fit_score DESC NULLS LAST, c.name")
+
         rows = db.query(
             f"""
-            SELECT id, name, sector, hq_location, size, stage, fit_score, priority,
-                   target_role, resume_variant, melbourne_relevant, comp_range, notes
-            FROM companies
+            SELECT c.id, c.name, c.sector, c.hq_location, c.size, c.stage,
+                   c.fit_score, c.priority, c.target_role, c.resume_variant,
+                   c.melbourne_relevant, c.comp_range, c.notes,
+                   c.glassdoor_rating, c.employee_count, c.funding_stage,
+                   c.key_competitors,
+                   COUNT(ct.id) AS contact_count
+            FROM companies c
+            LEFT JOIN contacts ct ON ct.company_id = c.id OR ct.company ILIKE '%' || c.name || '%'
             {where}
-            ORDER BY fit_score DESC NULLS LAST, name
+            GROUP BY c.id
+            ORDER BY {order_clause}
             LIMIT %s
             """,
             params + [limit],
@@ -53,13 +86,20 @@ def register_contacts_tools(mcp):
 
     @mcp.tool()
     def get_company_dossier(name: str) -> dict:
-        """Get full company info including applications, contacts, and related emails.
+        """Get full company intelligence dossier: overview, contacts, applications,
+        recent emails, open roles, and interview history.
 
         Args:
             name: Company name (ILIKE match).
         """
         company = db.query_one(
-            "SELECT * FROM companies WHERE name ILIKE %s",
+            """
+            SELECT id, name, sector, hq_location, size, stage, fit_score, priority,
+                   target_role, resume_variant, key_differentiator, melbourne_relevant,
+                   comp_range, notes, glassdoor_rating, employee_count, funding_stage,
+                   key_competitors, created_at, updated_at
+            FROM companies WHERE name ILIKE %s
+            """,
             (f"%{name}%",),
         )
         if not company:
@@ -79,12 +119,14 @@ def register_contacts_tools(mcp):
         contacts = db.query(
             """
             SELECT id, name, title, relationship, email, linkedin_url,
-                   relationship_strength, last_contact
+                   relationship_strength, last_contact, notes
             FROM contacts
-            WHERE company ILIKE %s
-            ORDER BY relationship_strength, name
+            WHERE company ILIKE %s OR company_id = (SELECT id FROM companies WHERE name ILIKE %s LIMIT 1)
+            ORDER BY
+                CASE relationship_strength WHEN 'strong' THEN 1 WHEN 'warm' THEN 2 ELSE 3 END,
+                name
             """,
-            (f"%{name}%",),
+            (f"%{name}%", f"%{name}%"),
         )
 
         emails = db.query(
@@ -98,10 +140,87 @@ def register_contacts_tools(mcp):
             (f"%{name}%", f"%{name}%", f"%{name}%"),
         )
 
+        # Interview history via applications
+        interview_history = db.query(
+            """
+            SELECT i.id, i.date, i.type, i.outcome, i.interviewers, i.feedback,
+                   a.role
+            FROM interviews i
+            JOIN applications a ON a.id = i.application_id
+            WHERE a.company_name ILIKE %s
+            ORDER BY i.date DESC NULLS LAST
+            """,
+            (f"%{name}%",),
+        )
+
+        # Hiring patterns: stage breakdown
+        hiring_patterns = db.query(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM applications
+            WHERE company_name ILIKE %s
+            GROUP BY status
+            ORDER BY count DESC
+            """,
+            (f"%{name}%",),
+        )
+
         company["applications"] = applications
         company["contacts"] = contacts
         company["emails"] = emails
+        company["interview_history"] = interview_history
+        company["hiring_patterns"] = hiring_patterns
+        company["contact_count"] = len(contacts)
+        company["has_warm_contact"] = any(
+            c.get("relationship_strength") in ("strong", "warm") for c in contacts
+        )
         return company
+
+    @mcp.tool()
+    def batch_company_research(company_names: str) -> dict:
+        """Get dossier summaries for multiple companies in one call.
+
+        Args:
+            company_names: Comma-separated list of company names (e.g. "Google,Meta,Apple").
+        """
+        names = [n.strip() for n in company_names.split(",") if n.strip()]
+        results = []
+        not_found = []
+        for name in names:
+            company = db.query_one(
+                """
+                SELECT id, name, sector, hq_location, size, priority, fit_score,
+                       target_role, glassdoor_rating, employee_count, funding_stage,
+                       notes
+                FROM companies WHERE name ILIKE %s
+                """,
+                (f"%{name}%",),
+            )
+            if not company:
+                not_found.append(name)
+                continue
+            company["contact_count"] = db.query_one(
+                "SELECT COUNT(*) AS c FROM contacts WHERE company ILIKE %s",
+                (f"%{name}%",),
+            )["c"]
+            company["application_count"] = db.query_one(
+                "SELECT COUNT(*) AS c FROM applications WHERE company_name ILIKE %s",
+                (f"%{name}%",),
+            )["c"]
+            company["interview_count"] = db.query_one(
+                """
+                SELECT COUNT(*) AS c FROM interviews i
+                JOIN applications a ON a.id = i.application_id
+                WHERE a.company_name ILIKE %s
+                """,
+                (f"%{name}%",),
+            )["c"]
+            results.append(company)
+        return {
+            "count": len(results),
+            "companies": results,
+            "not_found": not_found,
+        }
 
     @mcp.tool()
     def search_contacts(company: str = "", name: str = "") -> dict:

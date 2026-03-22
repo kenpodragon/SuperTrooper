@@ -265,10 +265,13 @@ def get_campaign_report() -> dict:
 
 
 def get_interview_analytics() -> dict:
-    """Interview win rates, common questions, feeling distribution.
+    """Comprehensive interview analytics: win rates, question patterns, STAR category
+    performance, prep effectiveness, and cross-interview trend analysis.
 
     Returns:
-        Dict with by_type, feeling_distribution, common_questions, lessons_learned.
+        Dict with by_type, feeling_distribution, common_questions, lessons_learned,
+        star_category_analysis, prep_effectiveness, improvement_themes,
+        win_rate_by_company_size, recent_trend.
     """
     by_type = db.query(
         """
@@ -319,11 +322,99 @@ def get_interview_analytics() -> dict:
     )
     lessons = [r["lessons_learned"] for r in lessons_raw]
 
+    # --- STAR category analysis from mock interview questions (by question_type) ---
+    star_categories = db.query(
+        """
+        SELECT miq.question_type AS category,
+               COUNT(*) AS question_count,
+               ROUND(AVG(miq.score) FILTER (WHERE miq.score IS NOT NULL), 1) AS avg_score
+        FROM mock_interview_questions miq
+        WHERE miq.question_type IS NOT NULL
+        GROUP BY miq.question_type
+        ORDER BY avg_score DESC NULLS LAST
+        """
+    )
+
+    # --- Prep effectiveness: interviews with prep vs without ---
+    prep_effectiveness = db.query_one(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE ip.id IS NOT NULL) AS interviews_with_prep,
+            COUNT(*) FILTER (WHERE ip.id IS NULL) AS interviews_without_prep,
+            COUNT(*) FILTER (WHERE ip.id IS NOT NULL AND i.outcome = 'pass') AS prepped_passed,
+            COUNT(*) FILTER (WHERE ip.id IS NULL AND i.outcome = 'pass') AS unprepped_passed,
+            ROUND(
+                COUNT(*) FILTER (WHERE ip.id IS NOT NULL AND i.outcome = 'pass') * 100.0
+                / NULLIF(COUNT(*) FILTER (WHERE ip.id IS NOT NULL), 0), 1
+            ) AS prepped_win_rate,
+            ROUND(
+                COUNT(*) FILTER (WHERE ip.id IS NULL AND i.outcome = 'pass') * 100.0
+                / NULLIF(COUNT(*) FILTER (WHERE ip.id IS NULL), 0), 1
+            ) AS unprepped_win_rate
+        FROM interviews i
+        LEFT JOIN interview_prep ip ON ip.interview_id = i.id
+        """
+    )
+
+    # --- Improvement themes from debrief notes ---
+    notes_raw = db.query(
+        """
+        SELECT notes FROM interview_debriefs
+        WHERE notes ILIKE '%improvement_areas:%'
+        """
+    )
+    improvement_theme_counts = {}
+    for row in notes_raw:
+        n = row.get("notes", "") or ""
+        if "[improvement_areas:" in n:
+            areas_part = n.split("[improvement_areas:")[1].split("]")[0]
+            for area in areas_part.split(";"):
+                area = area.strip()[:80]
+                if area:
+                    improvement_theme_counts[area] = improvement_theme_counts.get(area, 0) + 1
+    improvement_themes = sorted(improvement_theme_counts.items(), key=lambda x: -x[1])[:10]
+    improvement_themes = [{"theme": t, "count": c} for t, c in improvement_themes]
+
+    # --- Win rate by company size ---
+    win_rate_by_size = db.query(
+        """
+        SELECT c.size,
+               COUNT(i.id) AS total_interviews,
+               COUNT(i.id) FILTER (WHERE i.outcome = 'pass') AS passed,
+               ROUND(COUNT(i.id) FILTER (WHERE i.outcome = 'pass') * 100.0
+                     / NULLIF(COUNT(i.id), 0), 1) AS win_rate
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        LEFT JOIN companies c ON c.name ILIKE '%' || a.company_name || '%'
+        WHERE c.size IS NOT NULL
+        GROUP BY c.size
+        ORDER BY win_rate DESC NULLS LAST
+        """
+    )
+
+    # --- Recent trend: last 30 days vs prior 30 days ---
+    recent_trend = db.query_one(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE i.date >= NOW() - INTERVAL '30 days') AS last_30_days,
+            COUNT(*) FILTER (WHERE i.date >= NOW() - INTERVAL '60 days'
+                             AND i.date < NOW() - INTERVAL '30 days') AS prior_30_days,
+            COUNT(*) FILTER (WHERE i.outcome = 'pass'
+                             AND i.date >= NOW() - INTERVAL '30 days') AS recent_passes
+        FROM interviews i
+        """
+    )
+
     return {
         "by_type": by_type,
         "feeling_distribution": feeling_dist,
         "common_questions": common_questions,
         "lessons_learned": lessons,
+        "star_category_analysis": star_categories,
+        "prep_effectiveness": prep_effectiveness,
+        "improvement_themes": improvement_themes,
+        "win_rate_by_company_size": win_rate_by_size,
+        "recent_trend": recent_trend,
     }
 
 

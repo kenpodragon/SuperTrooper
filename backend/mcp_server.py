@@ -481,7 +481,9 @@ def get_campaign_report() -> dict:
 
 @mcp.tool()
 def get_interview_analytics() -> dict:
-    """Get interview analytics: win rates by type, common questions, feeling distribution."""
+    """Get comprehensive interview analytics: win rates by type, common question themes,
+    feeling distribution, STAR category performance, prep effectiveness score,
+    improvement themes extracted from debriefs, win rate by company size, and recent trend."""
     from mcp_tools_reporting import get_interview_analytics as _impl
     return _impl()
 

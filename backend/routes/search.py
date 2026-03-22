@@ -89,22 +89,106 @@ def search_emails():
 
 @bp.route("/api/search/companies", methods=["GET"])
 def search_companies():
-    """Company name search."""
+    """Company search with filters: tier (priority), industry (sector), size, location,
+    funding_stage. Returns contact_count per company."""
     q = request.args.get("q", "")
+    tier = request.args.get("tier", "")          # A, B, C
+    industry = request.args.get("industry", "")  # sector ILIKE
+    size = request.args.get("size", "")
+    location = request.args.get("location", "")
+    funding_stage = request.args.get("funding_stage", "")
+    sort_by = request.args.get("sort_by", "fit_score")  # fit_score|priority|name|contact_count
     limit = int(request.args.get("limit", 20))
 
+    clauses, params = [], []
+    if q:
+        clauses.append("c.name ILIKE %s")
+        params.append(f"%{q}%")
+    if tier:
+        clauses.append("c.priority = %s")
+        params.append(tier)
+    if industry:
+        clauses.append("c.sector ILIKE %s")
+        params.append(f"%{industry}%")
+    if size:
+        clauses.append("c.size ILIKE %s")
+        params.append(f"%{size}%")
+    if location:
+        clauses.append("c.hq_location ILIKE %s")
+        params.append(f"%{location}%")
+    if funding_stage:
+        clauses.append("c.funding_stage ILIKE %s")
+        params.append(f"%{funding_stage}%")
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order_map = {
+        "fit_score": "c.fit_score DESC NULLS LAST, c.name",
+        "priority": "c.priority NULLS LAST, c.fit_score DESC NULLS LAST",
+        "name": "c.name",
+        "contact_count": "contact_count DESC NULLS LAST, c.name",
+    }
+    order_clause = order_map.get(sort_by, "c.fit_score DESC NULLS LAST, c.name")
+
     rows = db.query(
-        """
-        SELECT id, name, sector, hq_location, size, stage, fit_score, priority,
-               target_role, melbourne_relevant
-        FROM companies
-        WHERE name ILIKE %s
-        ORDER BY fit_score DESC NULLS LAST
+        f"""
+        SELECT c.id, c.name, c.sector, c.hq_location, c.size, c.stage,
+               c.fit_score, c.priority, c.target_role, c.melbourne_relevant,
+               c.glassdoor_rating, c.employee_count, c.funding_stage,
+               COUNT(ct.id) AS contact_count
+        FROM companies c
+        LEFT JOIN contacts ct ON ct.company_id = c.id
+        {where}
+        GROUP BY c.id
+        ORDER BY {order_clause}
         LIMIT %s
         """,
-        (f"%{q}%", limit),
+        params + [limit],
     )
     return jsonify({"count": len(rows), "results": rows}), 200
+
+
+@bp.route("/api/companies/batch-research", methods=["POST"])
+def batch_company_research():
+    """Get dossier summaries for multiple companies in one call.
+    Body: {"companies": ["Google", "Meta", "Apple"]}
+    """
+    data = request.get_json(force=True)
+    names = data.get("companies", [])
+    if not names:
+        return jsonify({"error": "companies list required"}), 400
+
+    results = []
+    not_found = []
+    for name in names:
+        co = db.query_one(
+            """
+            SELECT id, name, sector, hq_location, size, priority, fit_score,
+                   target_role, glassdoor_rating, employee_count, funding_stage,
+                   key_competitors, notes
+            FROM companies WHERE name ILIKE %s
+            """,
+            (f"%{name}%",),
+        )
+        if not co:
+            not_found.append(name)
+            continue
+        co["contact_count"] = (db.query_one(
+            "SELECT COUNT(*) AS c FROM contacts WHERE company ILIKE %s", (f"%{name}%",)
+        ) or {}).get("c", 0)
+        co["application_count"] = (db.query_one(
+            "SELECT COUNT(*) AS c FROM applications WHERE company_name ILIKE %s", (f"%{name}%",)
+        ) or {}).get("c", 0)
+        co["interview_count"] = (db.query_one(
+            """
+            SELECT COUNT(*) AS c FROM interviews i
+            JOIN applications a ON a.id = i.application_id
+            WHERE a.company_name ILIKE %s
+            """,
+            (f"%{name}%",),
+        ) or {}).get("c", 0)
+        results.append(co)
+
+    return jsonify({"count": len(results), "companies": results, "not_found": not_found}), 200
 
 
 @bp.route("/api/search/contacts", methods=["GET"])

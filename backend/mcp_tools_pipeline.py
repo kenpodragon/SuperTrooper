@@ -303,8 +303,10 @@ def register_pipeline_tools(mcp):
     def save_interview_prep(interview_id: int, company_dossier: str = "",
                             prepared_questions: str = "", talking_points: str = "",
                             star_stories_selected: str = "", questions_to_ask: str = "",
-                            notes: str = "") -> dict:
+                            notes: str = "", auto_generate: bool = False) -> dict:
         """Save interview prep materials. JSON fields should be passed as JSON strings.
+        Set auto_generate=True to automatically pull company dossier, STAR stories,
+        and generate suggested questions to ask based on the interview's application.
 
         Args:
             interview_id: Interview ID (required).
@@ -314,7 +316,91 @@ def register_pipeline_tools(mcp):
             star_stories_selected: JSON string of selected STAR stories.
             questions_to_ask: JSON string of questions to ask the interviewer.
             notes: Additional notes.
+            auto_generate: If True, auto-populate fields from DB (company dossier,
+                           STAR bullets, mock interview questions for this role).
         """
+        import json as _json
+
+        if auto_generate:
+            # Fetch interview + application context
+            interview = db.query_one(
+                """
+                SELECT i.*, a.role, a.company_name, a.company_id
+                FROM interviews i
+                LEFT JOIN applications a ON a.id = i.application_id
+                WHERE i.id = %s
+                """,
+                (interview_id,),
+            )
+            if interview:
+                company_name = interview.get("company_name", "")
+                role = interview.get("role", "")
+
+                # Auto-fill company dossier if not provided
+                if not company_dossier and company_name:
+                    co = db.query_one(
+                        """
+                        SELECT name, sector, hq_location, size, stage, fit_score, priority,
+                               target_role, key_differentiator, glassdoor_rating,
+                               employee_count, funding_stage, notes
+                        FROM companies WHERE name ILIKE %s
+                        """,
+                        (f"%{company_name}%",),
+                    )
+                    if co:
+                        company_dossier = _json.dumps(co)
+
+                # Auto-fill STAR stories if not provided
+                if not star_stories_selected and role:
+                    stars = db.query(
+                        """
+                        SELECT b.id, b.text, b.tags, b.role_suitability, ch.employer, ch.title
+                        FROM bullets b
+                        LEFT JOIN career_history ch ON ch.id = b.career_history_id
+                        WHERE b.type = 'achievement' AND b.text ILIKE %s
+                        LIMIT 5
+                        """,
+                        (f"%{role.split()[0] if role else ''}%",),
+                    )
+                    if not stars:
+                        stars = db.query(
+                            """
+                            SELECT b.id, b.text, b.tags, b.role_suitability, ch.employer, ch.title
+                            FROM bullets b
+                            LEFT JOIN career_history ch ON ch.id = b.career_history_id
+                            WHERE b.type = 'achievement'
+                            ORDER BY b.id DESC LIMIT 5
+                            """
+                        )
+                    star_stories_selected = _json.dumps(stars)
+
+                # Auto-fill mock interview questions for this role type
+                if not prepared_questions and role:
+                    mock_qs = db.query(
+                        """
+                        SELECT miq.question_text AS question, miq.question_type, mi.difficulty
+                        FROM mock_interview_questions miq
+                        JOIN mock_interviews mi ON mi.id = miq.mock_interview_id
+                        WHERE mi.job_title ILIKE %s
+                        ORDER BY miq.created_at DESC
+                        LIMIT 10
+                        """,
+                        (f"%{role.split()[0] if role else ''}%",),
+                    )
+                    if mock_qs:
+                        prepared_questions = _json.dumps(mock_qs)
+
+                # Auto-generate suggested questions to ask
+                if not questions_to_ask and company_name:
+                    suggested = [
+                        f"What does success look like in the first 90 days for this role?",
+                        f"How does the team at {company_name} handle disagreement on technical direction?",
+                        f"What are the biggest challenges the team is facing right now?",
+                        f"How do you measure performance for this position?",
+                        f"What's the typical career path from this role?",
+                    ]
+                    questions_to_ask = _json.dumps(suggested)
+
         row = db.execute_returning(
             """
             INSERT INTO interview_prep (interview_id, company_dossier, prepared_questions,
@@ -335,8 +421,11 @@ def register_pipeline_tools(mcp):
     def save_interview_debrief(interview_id: int, went_well: str = "", went_poorly: str = "",
                                questions_asked: str = "", next_steps: str = "",
                                overall_feeling: str = "", lessons_learned: str = "",
+                               interviewer_names: str = "", interviewer_reactions: str = "",
                                notes: str = "") -> dict:
         """Save a structured interview debrief. JSON fields as JSON strings.
+        Automatically updates the interview record with interviewers and links debrief.
+        Also auto-tags improvement areas from went_poorly content.
 
         Args:
             interview_id: Interview ID (required).
@@ -346,8 +435,42 @@ def register_pipeline_tools(mcp):
             next_steps: Free-text next steps.
             overall_feeling: great, good, neutral, concerned, or poor.
             lessons_learned: Free-text lessons learned.
+            interviewer_names: Comma-separated interviewer names (updates interviews table).
+            interviewer_reactions: JSON string mapping interviewer name to reaction/notes.
             notes: Additional notes.
         """
+        import json as _json
+
+        # Update interviewers array on interview record if provided
+        if interviewer_names:
+            names_list = [n.strip() for n in interviewer_names.split(",") if n.strip()]
+            db.execute(
+                "UPDATE interviews SET interviewers = %s WHERE id = %s",
+                (names_list, interview_id),
+            )
+
+        # Extract improvement themes from went_poorly
+        improvement_areas = []
+        if went_poorly:
+            try:
+                wp_data = _json.loads(went_poorly) if isinstance(went_poorly, str) else went_poorly
+                if isinstance(wp_data, list):
+                    improvement_areas = [str(item) for item in wp_data[:5]]
+                elif isinstance(wp_data, str):
+                    improvement_areas = [wp_data]
+            except Exception:
+                improvement_areas = [went_poorly[:200]] if went_poorly else []
+
+        # Build enriched notes with improvement areas appended
+        enriched_notes = notes or ""
+        if improvement_areas:
+            areas_str = "; ".join(improvement_areas)
+            enriched_notes = f"{enriched_notes}\n[improvement_areas: {areas_str}]".strip()
+
+        # Append interviewer reactions to notes if provided
+        if interviewer_reactions:
+            enriched_notes = f"{enriched_notes}\n[interviewer_reactions: {interviewer_reactions}]".strip()
+
         row = db.execute_returning(
             """
             INSERT INTO interview_debriefs (interview_id, went_well, went_poorly,
@@ -360,9 +483,11 @@ def register_pipeline_tools(mcp):
                 went_well or None, went_poorly or None,
                 questions_asked or None, next_steps or None,
                 overall_feeling or None, lessons_learned or None,
-                notes or None,
+                enriched_notes or None,
             ),
         )
+        if row:
+            row["improvement_areas"] = improvement_areas
         return row
 
     @mcp.tool()
