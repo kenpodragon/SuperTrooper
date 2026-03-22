@@ -410,3 +410,176 @@ def link_materials(app_id):
             updated.append(row)
 
     return jsonify({"count": len(updated), "materials": updated}), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/resume/validate — content validation (sections, placeholders, metrics, voice)
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/resume/validate", methods=["POST"])
+def validate_resume():
+    """Validate resume content for completeness, quality, and voice compliance.
+
+    Body (JSON):
+        resume_text (required): full resume text to validate
+        application_id: optional — pulls latest generated_material if resume_text omitted
+
+    Returns:
+        {
+          "valid": bool,
+          "issues": [{"section": str, "issue": str, "severity": "error"|"warning"}],
+          "summary": {"errors": int, "warnings": int}
+        }
+    """
+    data = request.get_json(force=True)
+    resume_text = data.get("resume_text", "").strip()
+    application_id = data.get("application_id")
+
+    # Pull from generated_materials if no text supplied
+    if not resume_text and application_id:
+        mat = db.query_one(
+            """
+            SELECT content FROM generated_materials
+            WHERE application_id = %s AND type IN ('resume_variant', 'resume')
+            ORDER BY generated_at DESC LIMIT 1
+            """,
+            (application_id,),
+        )
+        if mat:
+            resume_text = (mat.get("content") or "").strip()
+
+    if not resume_text:
+        return jsonify({"error": "resume_text is required (or provide application_id with a saved material)"}), 400
+
+    issues = []
+    text_lower = resume_text.lower()
+
+    # ------------------------------------------------------------------
+    # 1. Required sections present
+    # ------------------------------------------------------------------
+    section_checks = [
+        ("summary",    ["summary", "professional summary", "profile", "objective"]),
+        ("experience", ["experience", "work history", "employment", "career history"]),
+        ("education",  ["education", "academic"]),
+        ("skills",     ["skills", "competencies", "technical skills", "core competencies"]),
+    ]
+    for section_name, keywords in section_checks:
+        if not any(kw in text_lower for kw in keywords):
+            issues.append({
+                "section": section_name,
+                "issue": f"Required section '{section_name}' not detected",
+                "severity": "error",
+            })
+
+    # ------------------------------------------------------------------
+    # 2. Placeholder / draft text
+    # ------------------------------------------------------------------
+    placeholder_patterns = [
+        (r"\[.*?\]",            "Contains bracket placeholder text"),
+        (r"\bTODO\b",           "Contains TODO marker"),
+        (r"\bINSERT\b",         "Contains INSERT placeholder"),
+        (r"\bTBD\b",            "Contains TBD placeholder"),
+        (r"\bXXX\b",            "Contains XXX placeholder"),
+        (r"\bLOREM\b",          "Contains lorem ipsum text"),
+        (r"\bYOUR NAME\b",      "Contains 'YOUR NAME' placeholder"),
+        (r"\bCOMPANY NAME\b",   "Contains 'COMPANY NAME' placeholder"),
+    ]
+    for pattern, msg in placeholder_patterns:
+        if re.search(pattern, resume_text, re.IGNORECASE):
+            issues.append({
+                "section": "content",
+                "issue": msg,
+                "severity": "error",
+            })
+
+    # ------------------------------------------------------------------
+    # 3. Bullets have metrics / numbers
+    # ------------------------------------------------------------------
+    # Split into lines that look like bullets (start with -, *, •, or are indented)
+    bullet_lines = [
+        ln.strip() for ln in resume_text.splitlines()
+        if re.match(r"^[\-\*\•\u2022]\s+", ln.strip()) or re.match(r"^\s{2,}[^\s]", ln)
+    ]
+    if bullet_lines:
+        metric_pattern = re.compile(r"\d+[%\+xX]?|\$[\d,]+|\d+[\.,]\d+")
+        bullets_without_metrics = [ln for ln in bullet_lines if not metric_pattern.search(ln)]
+        ratio = len(bullets_without_metrics) / len(bullet_lines)
+        if ratio > 0.5:
+            issues.append({
+                "section": "experience",
+                "issue": (
+                    f"{len(bullets_without_metrics)} of {len(bullet_lines)} bullets lack "
+                    "quantified metrics or numbers (>50% threshold exceeded)"
+                ),
+                "severity": "warning",
+            })
+        elif bullets_without_metrics:
+            issues.append({
+                "section": "experience",
+                "issue": (
+                    f"{len(bullets_without_metrics)} bullet(s) may benefit from "
+                    "quantified metrics or measurable outcomes"
+                ),
+                "severity": "warning",
+            })
+    else:
+        issues.append({
+            "section": "experience",
+            "issue": "No bullet-point lines detected — unable to verify metric coverage",
+            "severity": "warning",
+        })
+
+    # ------------------------------------------------------------------
+    # 4. Voice rules — banned words / patterns
+    # ------------------------------------------------------------------
+    banned_words = []
+    try:
+        voice_rows = db.query(
+            "SELECT rule_text FROM voice_rules WHERE category = 'banned_word' AND active = TRUE"
+        )
+        banned_words = [r["rule_text"].lower().strip() for r in voice_rows if r.get("rule_text")]
+    except Exception:
+        pass  # voice table may not exist in all envs
+
+    banned_found = []
+    for word in banned_words:
+        if re.search(r"\b" + re.escape(word) + r"\b", text_lower):
+            banned_found.append(word)
+
+    if banned_found:
+        issues.append({
+            "section": "voice",
+            "issue": f"Banned words/phrases detected: {', '.join(banned_found[:10])}",
+            "severity": "error",
+        })
+
+    # Also flag common corporate buzzword soup patterns even if no DB rules loaded
+    generic_buzzwords = [
+        "synergy", "leverage", "utilize", "utilize", "paradigm", "ecosystem",
+        "holistic", "thought leader", "robust solution", "best-in-class",
+        "results-driven", "detail-oriented", "go-getter", "team player",
+    ]
+    found_generic = [w for w in generic_buzzwords if re.search(r"\b" + re.escape(w) + r"\b", text_lower)]
+    if found_generic:
+        issues.append({
+            "section": "voice",
+            "issue": f"Generic/buzzword language detected: {', '.join(found_generic[:8])}",
+            "severity": "warning",
+        })
+
+    # ------------------------------------------------------------------
+    # Result
+    # ------------------------------------------------------------------
+    errors = sum(1 for i in issues if i["severity"] == "error")
+    warnings = sum(1 for i in issues if i["severity"] == "warning")
+    valid = errors == 0
+
+    return jsonify({
+        "valid": valid,
+        "issues": issues,
+        "summary": {
+            "errors": errors,
+            "warnings": warnings,
+            "total_issues": len(issues),
+        },
+    }), 200
