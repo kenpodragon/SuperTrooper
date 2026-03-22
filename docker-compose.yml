@@ -48,7 +48,10 @@ services:
       # - ${USERPROFILE:-.}/.claude:/root/.claude
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8055/api}
     container_name: supertroopers-web
     restart: unless-stopped
     ports:

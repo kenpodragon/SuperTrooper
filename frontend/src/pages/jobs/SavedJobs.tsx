@@ -20,12 +20,6 @@ interface GapPreview {
   gaps?: string[];
 }
 
-interface ParsedJD {
-  skills?: string[];
-  requirements?: string[];
-  salary_range?: string;
-  experience_level?: string;
-}
 
 function JobDetailPanel({
   job,

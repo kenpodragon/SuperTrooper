@@ -185,15 +185,6 @@ export default function Networking() {
     onError: (err: any) => alert(err?.response?.data?.error || 'Failed to log touchpoint'),
   });
 
-  const updateStage = useMutation({
-    mutationFn: ({ contactId, stage }: { contactId: number; stage: string }) =>
-      api.patch<any>(`/crm/contacts/${contactId}/stage`, { stage }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['crm-pipeline'] });
-    },
-    onError: (err: any) => alert(err?.response?.data?.error || 'Failed to update stage'),
-  });
-
   const pipelineData = pipeline.data ?? {} as PipelineData;
   const healthMap: Record<number, number> = {};
   (health.data ?? []).forEach((h: HealthEntry) => { healthMap[h.id] = h.health_score; });

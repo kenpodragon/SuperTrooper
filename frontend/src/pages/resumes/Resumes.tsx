@@ -52,7 +52,7 @@ export default function Resumes() {
     enabled: selectedId != null && view === 'detail',
   });
 
-  const recipeItems: Recipe[] = Array.isArray(recipeList) ? recipeList : (recipeList as { recipes?: Recipe[] })?.recipes ?? [];
+  const recipeItems: Recipe[] = Array.isArray(recipeList) ? recipeList : (recipeList as unknown as { recipes?: Recipe[] })?.recipes ?? [];
   const bulletItems: Bullet[] = Array.isArray(bulletList) ? bulletList : [];
 
   const createRecipe = useMutation({

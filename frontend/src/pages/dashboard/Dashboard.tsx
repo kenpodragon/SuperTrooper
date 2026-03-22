@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { api, applications, interviews, savedJobs, staleApps, activity, emails } from '../../api/client';
-import type { Application, Interview, SavedJob, ActivityItem, EmailIntelStatus } from '../../api/client';
+import type { Application, Interview, ActivityItem, EmailIntelStatus } from '../../api/client';
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return (

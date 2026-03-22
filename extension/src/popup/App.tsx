@@ -41,12 +41,21 @@ export default function App() {
         <h1 className="text-sm font-bold text-st-green tracking-widest font-mono">
           SUPERTROOPERS
         </h1>
-        <span
-          title={mcpAvailable ? "AI analysis available" : "AI analysis unavailable"}
-          className={`text-xs font-mono ${mcpAvailable ? "text-st-green" : "text-st-muted opacity-40"}`}
-        >
-          &#x2317;
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => chrome.tabs.create({ url: "http://localhost:5175" })}
+            title="Open Dashboard"
+            className="text-[10px] font-mono text-st-muted hover:text-st-green transition-colors px-1.5 py-0.5 border border-st-border rounded hover:border-st-green"
+          >
+            Dashboard
+          </button>
+          <span
+            title={mcpAvailable ? "AI analysis available" : "AI analysis unavailable"}
+            className={`text-xs font-mono ${mcpAvailable ? "text-st-green" : "text-st-muted opacity-40"}`}
+          >
+            &#x2317;
+          </span>
+        </div>
       </div>
 
       <StatusBar />

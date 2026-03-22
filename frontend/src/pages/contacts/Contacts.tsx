@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { contacts, api } from '../../api/client';
 import type { Contact } from '../../api/client';
 
@@ -182,7 +182,6 @@ function DetailPanel({
 export default function Contacts() {
   const [viewMode, setViewMode] = useState<'list' | 'company'>('list');
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
-  const qc = useQueryClient();
 
   const { data, isLoading } = useQuery({
     queryKey: ['contacts'],

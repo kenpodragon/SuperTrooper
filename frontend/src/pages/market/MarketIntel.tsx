@@ -145,8 +145,8 @@ export default function MarketIntel() {
   const summaryData: MarketSummary = summary ?? {};
   const trendData = trends ?? [];
 
-  const sources = Array.from(new Set(signalList.map((s: MarketSignal) => s.source).filter(Boolean)));
-  const types = Array.from(new Set(signalList.map((s: MarketSignal) => s.signal_type).filter(Boolean)));
+  const sources: string[] = Array.from(new Set(signalList.map((s: MarketSignal) => s.source).filter((x): x is string => !!x)));
+  const types: string[] = Array.from(new Set(signalList.map((s: MarketSignal) => s.signal_type).filter((x): x is string => !!x)));
 
   // Build company activity from signals
   const companyMap: Record<string, CompanyActivity> = {};

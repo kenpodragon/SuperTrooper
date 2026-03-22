@@ -44,7 +44,7 @@ async function refreshBadge(): Promise<void> {
 function showChromeNotification(n: Notification): void {
   chrome.notifications.create(`st-notif-${n.id}`, {
     type: "basic",
-    iconUrl: "icons/icon48.png",
+    iconUrl: "assets/icons/icon-48.png",
     title: "SuperTroopers",
     message: n.message,
     priority: 1,

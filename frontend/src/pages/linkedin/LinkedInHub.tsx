@@ -136,9 +136,6 @@ function Spinner() {
   );
 }
 
-function ErrorMsg({ message }: { message: string }) {
-  return <p className="text-sm text-red-400 py-4">Error: {message}</p>;
-}
 
 function EmptyState({ message, cta, onClick }: { message: string; cta: string; onClick: () => void }) {
   return (

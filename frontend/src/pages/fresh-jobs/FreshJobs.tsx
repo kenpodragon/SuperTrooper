@@ -153,7 +153,6 @@ export default function FreshJobs() {
     if (!grouped[key]) grouped[key] = [];
     grouped[key].push(j);
   });
-  const hasSimilarGroups = Object.values(grouped).some(g => g.length > 1);
 
   const tabs = ['new', 'reviewing', 'saved', 'dismissed'];
 
