@@ -1,10 +1,15 @@
 import { useState, useEffect } from "react";
 import StatusBar from "./components/StatusBar";
 import Dashboard from "./components/Dashboard";
-import Settings from "./components/Settings";
 import SavedJobs from "./components/SavedJobs";
+import JobDetails from "./components/JobDetails";
+import GapAnalysis from "./components/GapAnalysis";
+import ResumeSelector from "./components/ResumeSelector";
+import NetworkingPanel from "./components/NetworkingPanel";
+import ApplicationHistory from "./components/ApplicationHistory";
+import SettingsPanel from "./components/SettingsPanel";
 
-type Tab = "dashboard" | "saved" | "network" | "settings";
+type Tab = "dashboard" | "job" | "gaps" | "resume" | "saved" | "network" | "history" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -16,10 +21,17 @@ export default function App() {
     }).catch(() => {});
   }, []);
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "dashboard", label: "Dashboard" },
-    { id: "saved", label: "Jobs" },
+  const primaryTabs: { id: Tab; label: string }[] = [
+    { id: "dashboard", label: "Home" },
+    { id: "job", label: "Job" },
+    { id: "gaps", label: "Fit" },
+    { id: "resume", label: "Resume" },
+  ];
+
+  const secondaryTabs: { id: Tab; label: string }[] = [
+    { id: "saved", label: "Saved" },
     { id: "network", label: "Network" },
+    { id: "history", label: "History" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -39,12 +51,30 @@ export default function App() {
 
       <StatusBar />
 
+      {/* Primary tabs */}
       <div className="flex border-b border-st-border">
-        {tabs.map((t) => (
+        {primaryTabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`flex-1 py-2 text-xs font-mono tracking-wider transition-colors ${
+            className={`flex-1 py-1.5 text-[10px] font-mono tracking-wider transition-colors ${
+              tab === t.id
+                ? "text-st-green border-b-2 border-st-green"
+                : "text-st-muted hover:text-st-text"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Secondary tabs */}
+      <div className="flex border-b border-st-border bg-st-surface/50">
+        {secondaryTabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex-1 py-1 text-[10px] font-mono tracking-wider transition-colors ${
               tab === t.id
                 ? "text-st-green border-b-2 border-st-green"
                 : "text-st-muted hover:text-st-text"
@@ -57,14 +87,13 @@ export default function App() {
 
       <div className="flex-1 overflow-y-auto">
         {tab === "dashboard" && <Dashboard />}
+        {tab === "job" && <JobDetails />}
+        {tab === "gaps" && <GapAnalysis />}
+        {tab === "resume" && <ResumeSelector />}
         {tab === "saved" && <SavedJobs />}
-        {tab === "network" && (
-          <div className="p-4 text-center text-st-muted text-sm">
-            <p className="text-st-green mb-2">Phase 4</p>
-            Networking features coming soon.
-          </div>
-        )}
-        {tab === "settings" && <Settings />}
+        {tab === "network" && <NetworkingPanel />}
+        {tab === "history" && <ApplicationHistory />}
+        {tab === "settings" && <SettingsPanel />}
       </div>
 
       <div className="px-3 py-1 text-center text-[10px] text-st-muted border-t border-st-border">
