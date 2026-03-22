@@ -6,9 +6,12 @@ interface Contact {
   id: number;
   name: string;
   company?: string;
+  title?: string;
   relationship_stage?: string;
   last_touchpoint_at?: string;
   health_score?: number;
+  is_reference?: boolean;
+  drip_sequence_status?: string;
 }
 
 interface PipelineStage {
@@ -45,14 +48,33 @@ interface TouchpointResponse {
   type: string;
 }
 
+interface OutreachDraft {
+  subject?: string;
+  body?: string;
+}
+
 const STAGES = ['cold', 'warm', 'active', 'close', 'dormant'];
+const STAGE_LABELS: Record<string, string> = {
+  cold: 'Lead',
+  warm: 'Warm',
+  active: 'Active',
+  close: 'Champion',
+  dormant: 'Dormant',
+};
 
 const STAGE_COLORS: Record<string, string> = {
-  cold: 'bg-gray-100',
-  warm: 'bg-yellow-50',
-  active: 'bg-orange-50',
-  close: 'bg-green-50',
-  dormant: 'bg-gray-50',
+  cold: 'bg-gray-50 border-t-gray-400',
+  warm: 'bg-yellow-50 border-t-yellow-400',
+  active: 'bg-orange-50 border-t-orange-400',
+  close: 'bg-green-50 border-t-green-400',
+  dormant: 'bg-gray-50 border-t-gray-300',
+};
+
+const DRIP_COLORS: Record<string, string> = {
+  active: 'bg-blue-100 text-blue-700',
+  paused: 'bg-yellow-100 text-yellow-700',
+  completed: 'bg-green-100 text-green-700',
+  none: 'bg-gray-100 text-gray-500',
 };
 
 function HealthDot({ score }: { score?: number }) {
@@ -63,12 +85,68 @@ function HealthDot({ score }: { score?: number }) {
   );
 }
 
+function ContactCard({
+  contact,
+  healthScore,
+  onLogTouchpoint,
+  onGenerateOutreach,
+}: {
+  contact: Contact;
+  healthScore?: number;
+  onLogTouchpoint: (id: number) => void;
+  onGenerateOutreach: (id: number) => void;
+}) {
+  return (
+    <div className="bg-white rounded border border-gray-100 p-2.5 mb-2 last:mb-0">
+      <div className="flex items-center gap-1.5">
+        <HealthDot score={healthScore} />
+        <p className="text-xs font-medium text-gray-800 truncate flex-1">{contact.name}</p>
+        {contact.is_reference && (
+          <span className="text-yellow-500 text-xs" title="Reference">&#9733;</span>
+        )}
+      </div>
+      <p className="text-xs text-gray-500 truncate">{contact.company}</p>
+      {contact.title && <p className="text-xs text-gray-400 truncate">{contact.title}</p>}
+      <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+        {contact.last_touchpoint_at && (
+          <span className="text-xs text-gray-400">
+            {new Date(contact.last_touchpoint_at).toLocaleDateString()}
+          </span>
+        )}
+        {contact.drip_sequence_status && contact.drip_sequence_status !== 'none' && (
+          <span className={`text-xs px-1.5 py-0.5 rounded ${DRIP_COLORS[contact.drip_sequence_status] || DRIP_COLORS.none}`}>
+            drip: {contact.drip_sequence_status}
+          </span>
+        )}
+      </div>
+      {/* Quick actions */}
+      <div className="flex gap-1 mt-2">
+        <button
+          onClick={() => onLogTouchpoint(contact.id)}
+          className="text-xs px-1.5 py-0.5 border border-gray-200 text-gray-600 rounded hover:bg-gray-50"
+          title="Log touchpoint"
+        >
+          Log
+        </button>
+        <button
+          onClick={() => onGenerateOutreach(contact.id)}
+          className="text-xs px-1.5 py-0.5 border border-blue-200 text-blue-600 rounded hover:bg-blue-50"
+          title="Generate outreach"
+        >
+          Outreach
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Networking() {
   const qc = useQueryClient();
   const [touchpointForm, setTouchpointForm] = useState<{
     contact_id: number | null; note: string; type: string;
   }>({ contact_id: null, note: '', type: 'email' });
   const [showTouchpoint, setShowTouchpoint] = useState(false);
+  const [outreachContactId, setOutreachContactId] = useState<number | null>(null);
 
   const pipeline = useQuery({
     queryKey: ['crm-pipeline'],
@@ -85,6 +163,12 @@ export default function Networking() {
     queryFn: () => api.get<NetworkingTask[]>('/crm/tasks/upcoming'),
   });
 
+  const outreach = useQuery({
+    queryKey: ['outreach-draft', outreachContactId],
+    queryFn: () => api.post<OutreachDraft>('/crm/generate-outreach', { contact_id: outreachContactId }),
+    enabled: outreachContactId != null,
+  });
+
   const logTouchpoint = useMutation({
     mutationFn: (data: typeof touchpointForm) => {
       if (!data.contact_id) throw new Error('contact_id required');
@@ -97,8 +181,13 @@ export default function Networking() {
       setShowTouchpoint(false);
       setTouchpointForm({ contact_id: null, note: '', type: 'email' });
     },
-    onError: (error: Error) => {
-      console.error('Failed to log touchpoint:', error.message);
+  });
+
+  const updateStage = useMutation({
+    mutationFn: ({ contactId, stage }: { contactId: number; stage: string }) =>
+      api.patch<any>(`/crm/contacts/${contactId}/stage`, { stage }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-pipeline'] });
     },
   });
 
@@ -106,24 +195,51 @@ export default function Networking() {
   const healthMap: Record<number, number> = {};
   (health.data ?? []).forEach((h: HealthEntry) => { healthMap[h.id] = h.health_score; });
 
-  // Flatten all contacts from pipeline for the touchpoint selector
   const allContacts: Contact[] = STAGES.flatMap(s => (pipelineData as any)[s]?.contacts ?? []);
-
   const byStage: Record<string, Contact[]> = {};
   STAGES.forEach(s => { byStage[s] = (pipelineData as any)[s]?.contacts ?? []; });
+
+  function openTouchpoint(contactId: number) {
+    setTouchpointForm({ contact_id: contactId, note: '', type: 'email' });
+    setShowTouchpoint(true);
+  }
+
+  function openOutreach(contactId: number) {
+    setOutreachContactId(contactId);
+  }
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Networking Hub</h1>
         <button
-          onClick={() => setShowTouchpoint(true)}
+          onClick={() => { setTouchpointForm({ contact_id: null, note: '', type: 'email' }); setShowTouchpoint(true); }}
           className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700"
         >
           + Log Touchpoint
         </button>
       </div>
 
+      {/* Outreach Draft Modal */}
+      {outreachContactId != null && (
+        <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-blue-900">Outreach Draft</h3>
+            <button onClick={() => setOutreachContactId(null)} className="text-blue-400 hover:text-blue-600">&times;</button>
+          </div>
+          {outreach.isLoading && <p className="text-xs text-blue-600">Generating...</p>}
+          {outreach.data && (
+            <div className="bg-white rounded border border-blue-100 p-3">
+              {outreach.data.subject && (
+                <p className="text-xs font-medium text-gray-700 mb-1">Subject: {outreach.data.subject}</p>
+              )}
+              <p className="text-xs text-gray-600 whitespace-pre-wrap">{outreach.data.body}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Touchpoint form */}
       {showTouchpoint && (
         <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
           <h2 className="text-base font-semibold text-gray-900 mb-3">Log a Touchpoint</h2>
@@ -138,7 +254,7 @@ export default function Networking() {
                 <option value="">Select a contact...</option>
                 {allContacts.map((r: Contact) => (
                   <option key={r.id} value={r.id}>
-                    {r.name}{r.company ? ` — ${r.company}` : ''}
+                    {r.name}{r.company ? ` - ${r.company}` : ''}
                   </option>
                 ))}
               </select>
@@ -179,28 +295,25 @@ export default function Networking() {
         </div>
       )}
 
-      {/* Stage columns */}
+      {/* Kanban columns with stage labels */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
         {STAGES.map(stage => (
-          <div key={stage} className={`rounded-lg border border-gray-200 p-3 ${STAGE_COLORS[stage]}`}>
+          <div key={stage} className={`rounded-lg border border-gray-200 border-t-4 p-3 ${STAGE_COLORS[stage]}`}>
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide capitalize">{stage}</h3>
+              <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                {STAGE_LABELS[stage]}
+              </h3>
               <span className="text-xs text-gray-500">{byStage[stage].length}</span>
             </div>
             {pipeline.isLoading && <p className="text-xs text-gray-400">Loading...</p>}
             {byStage[stage].map((r: Contact) => (
-              <div key={r.id} className="bg-white rounded border border-gray-100 p-2 mb-2 last:mb-0">
-                <div className="flex items-center gap-1.5">
-                  <HealthDot score={healthMap[r.id]} />
-                  <p className="text-xs font-medium text-gray-800 truncate">{r.name}</p>
-                </div>
-                <p className="text-xs text-gray-500 truncate">{r.company}</p>
-                {r.last_touchpoint_at && (
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {new Date(r.last_touchpoint_at).toLocaleDateString()}
-                  </p>
-                )}
-              </div>
+              <ContactCard
+                key={r.id}
+                contact={r}
+                healthScore={healthMap[r.id]}
+                onLogTouchpoint={openTouchpoint}
+                onGenerateOutreach={openOutreach}
+              />
             ))}
             {!pipeline.isLoading && byStage[stage].length === 0 && (
               <p className="text-xs text-gray-400 italic">None</p>
@@ -220,7 +333,9 @@ export default function Networking() {
           <div key={t.id} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
             <div>
               <p className="text-sm font-medium text-gray-800">{t.title ?? t.task_type}</p>
-              <p className="text-xs text-gray-500">{t.contact_name}{t.contact_company ? ` — ${t.contact_company}` : ''} &mdash; {t.task_type}</p>
+              <p className="text-xs text-gray-500">
+                {t.contact_name}{t.contact_company ? ` - ${t.contact_company}` : ''} &mdash; {t.task_type}
+              </p>
             </div>
             <div className="text-right">
               <p className="text-xs text-gray-500">{t.due_date ? new Date(t.due_date).toLocaleDateString() : 'No date'}</p>

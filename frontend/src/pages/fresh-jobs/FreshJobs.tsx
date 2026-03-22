@@ -9,8 +9,15 @@ interface FreshJob {
   location?: string;
   source?: string;
   fit_score?: number;
+  salary_min?: number;
+  salary_max?: number;
+  salary_range?: string;
+  skills_matched?: string[];
+  skills_missing?: string[];
   status: string;
   created_at?: string;
+  company_dossier?: string;
+  similar_group?: string;
 }
 
 interface FreshJobStats {
@@ -28,6 +35,8 @@ interface BatchTriageResponse {
   updated: number;
 }
 
+const SOURCES = ['All', 'Indeed', 'Remotive', 'The Muse', 'RSS', 'LinkedIn', 'Manual'];
+
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
@@ -43,9 +52,43 @@ function fitBadge(score?: number) {
   return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${color}`}>{score}</span>;
 }
 
+function SkillBreakdown({ matched, missing }: { matched?: string[]; missing?: string[] }) {
+  if (!matched?.length && !missing?.length) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1">
+      {(matched ?? []).slice(0, 4).map(s => (
+        <span key={s} className="text-xs px-1.5 py-0.5 bg-green-50 text-green-700 rounded">{s}</span>
+      ))}
+      {(missing ?? []).slice(0, 3).map(s => (
+        <span key={s} className="text-xs px-1.5 py-0.5 bg-red-50 text-red-600 rounded line-through">{s}</span>
+      ))}
+    </div>
+  );
+}
+
+function CompanyTooltip({ company, dossier }: { company: string; dossier?: string }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span
+      className="relative cursor-help"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      <span className="text-xs text-gray-600">{company}</span>
+      {show && dossier && (
+        <div className="absolute z-40 left-0 top-full mt-1 w-64 p-3 bg-white border border-gray-200 rounded-lg shadow-lg text-xs text-gray-700 whitespace-pre-wrap">
+          {dossier}
+        </div>
+      )}
+    </span>
+  );
+}
+
 export default function FreshJobs() {
   const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState('new');
+  const [sourceFilter, setSourceFilter] = useState('All');
+  const [salaryMin, setSalaryMin] = useState('');
   const [selected, setSelected] = useState<number[]>([]);
 
   const { data, isLoading } = useQuery({
@@ -66,9 +109,6 @@ export default function FreshJobs() {
       qc.invalidateQueries({ queryKey: ['fresh-jobs-stats'] });
       setSelected([]);
     },
-    onError: (error: Error) => {
-      console.error('Failed to triage job:', error.message);
-    },
   });
 
   const batchTriage = useMutation({
@@ -79,12 +119,21 @@ export default function FreshJobs() {
       qc.invalidateQueries({ queryKey: ['fresh-jobs-stats'] });
       setSelected([]);
     },
-    onError: (error: Error) => {
-      console.error('Failed to batch triage jobs:', error.message);
-    },
   });
 
-  const jobs = data ?? [];
+  let jobs = data ?? [];
+
+  // Client-side filters
+  if (sourceFilter !== 'All') {
+    jobs = jobs.filter((j: FreshJob) => (j.source || '').toLowerCase() === sourceFilter.toLowerCase());
+  }
+  if (salaryMin) {
+    const min = parseInt(salaryMin, 10);
+    if (!isNaN(min)) {
+      jobs = jobs.filter((j: FreshJob) => (j.salary_min ?? j.salary_max ?? 0) >= min);
+    }
+  }
+
   const allSelected = jobs.length > 0 && selected.length === jobs.length;
 
   function toggleSelect(id: number) {
@@ -94,6 +143,15 @@ export default function FreshJobs() {
   function toggleAll() {
     setSelected(allSelected ? [] : jobs.map((j: FreshJob) => j.id));
   }
+
+  // Group similar jobs
+  const grouped: Record<string, FreshJob[]> = {};
+  jobs.forEach(j => {
+    const key = j.similar_group || `single-${j.id}`;
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(j);
+  });
+  const hasSimilarGroups = Object.values(grouped).some(g => g.length > 1);
 
   const tabs = ['new', 'reviewing', 'saved', 'dismissed'];
 
@@ -139,9 +197,29 @@ export default function FreshJobs() {
           )}
         </div>
 
-        <div className="p-4 border-b border-gray-100 flex items-center gap-3">
+        {/* Filters row */}
+        <div className="p-3 border-b border-gray-100 flex items-center gap-3 bg-gray-50 flex-wrap">
           <input type="checkbox" checked={allSelected} onChange={toggleAll} className="rounded" />
           <span className="text-xs text-gray-500 uppercase tracking-wide">Select All</span>
+          <div className="ml-auto flex items-center gap-3">
+            <select
+              className="text-xs border border-gray-200 rounded px-2 py-1"
+              value={sourceFilter}
+              onChange={e => setSourceFilter(e.target.value)}
+            >
+              {SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Min $</span>
+              <input
+                type="number"
+                className="text-xs border border-gray-200 rounded px-2 py-1 w-20"
+                placeholder="0"
+                value={salaryMin}
+                onChange={e => setSalaryMin(e.target.value)}
+              />
+            </div>
+          </div>
         </div>
 
         {isLoading && <p className="text-sm text-gray-400 p-4">Loading...</p>}
@@ -160,8 +238,18 @@ export default function FreshJobs() {
                 <p className="text-sm font-medium text-gray-900">{job.title}</p>
                 {fitBadge(job.fit_score)}
                 <span className="text-xs text-gray-400">{job.source}</span>
+                {(job.salary_range || job.salary_min) && (
+                  <span className="text-xs text-green-600 font-medium">
+                    {job.salary_range || `$${(job.salary_min ?? 0).toLocaleString()}`}
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-gray-600 mt-0.5">{job.company} &middot; {job.location}</p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <CompanyTooltip company={job.company} dossier={job.company_dossier} />
+                <span className="text-xs text-gray-400">&middot;</span>
+                <span className="text-xs text-gray-500">{job.location}</span>
+              </div>
+              <SkillBreakdown matched={job.skills_matched} missing={job.skills_missing} />
               <p className="text-xs text-gray-400 mt-0.5">{job.created_at ? new Date(job.created_at).toLocaleDateString() : ''}</p>
             </div>
             <div className="flex gap-1.5 shrink-0">
@@ -176,6 +264,12 @@ export default function FreshJobs() {
                 className="text-xs px-2 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50"
               >
                 Save
+              </button>
+              <button
+                onClick={() => triage.mutate({ id: job.id, action: 'apply' })}
+                className="text-xs px-2 py-1 border border-purple-300 text-purple-700 rounded hover:bg-purple-50"
+              >
+                Quick Apply
               </button>
               <button
                 onClick={() => triage.mutate({ id: job.id, action: 'dismiss' })}
