@@ -3,9 +3,13 @@
 from flask import Blueprint, request, jsonify, send_file
 import io
 import json
+import logging
 import re
 import db
 from docx import Document
+from ai_providers.router import route_inference
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("resume", __name__)
 
@@ -221,9 +225,46 @@ def generate_from_recipe(recipe_id):
     if isinstance(recipe_json, str):
         recipe_json = json.loads(recipe_json)
 
-    content = _resolve_recipe_db(recipe_json)
+    resolved_content = _resolve_recipe_db(recipe_json)
     if recipe_row.get("headline"):
-        content["HEADLINE"] = recipe_row["headline"]
+        resolved_content["HEADLINE"] = recipe_row["headline"]
+
+    # --- AI routing: enhance resolved recipe content ---
+    ai_context = {
+        "task_type": "generate_from_recipe",
+        "recipe_id": recipe_id,
+        "resolved_content": resolved_content,
+    }
+
+    def _python_recipe_content(ctx):
+        return {"content": ctx["resolved_content"]}
+
+    def _ai_recipe_content(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        # AI can polish bullets and summary while preserving structure
+        enhanced = dict(ctx["resolved_content"])
+        # Try to enhance the summary if present
+        for key, val in enhanced.items():
+            if "SUMMARY" in key and val:
+                prompt = (
+                    f"Polish this resume summary for impact and clarity. "
+                    f"Keep the same facts and metrics. No buzzwords. No em dashes. "
+                    f"Under the same word count:\n\n{val}"
+                )
+                try:
+                    enhanced[key] = provider.generate(prompt)
+                except Exception:
+                    pass  # Keep original on failure
+        return {"content": enhanced}
+
+    gen_result = route_inference(
+        task="generate_from_recipe",
+        context=ai_context,
+        python_fallback=_python_recipe_content,
+        ai_handler=_ai_recipe_content,
+    )
+    content = gen_result["content"]
 
     # Build slot info
     slot_info = {}
@@ -749,8 +790,45 @@ def generate_resume():
             career[emp] = ch
 
     # Build content map
-    content_map = _build_content_map(spec, header, education, certifications, career, template_map)
-    content_map.update(overrides)
+    base_content_map = _build_content_map(spec, header, education, certifications, career, template_map)
+    base_content_map.update(overrides)
+
+    # --- AI routing: enhance resume content ---
+    ai_context = {
+        "task_type": "generate_resume",
+        "content_map": base_content_map,
+        "version": version,
+        "variant": variant,
+    }
+
+    def _python_resume_content(ctx):
+        return {"content_map": ctx["content_map"]}
+
+    def _ai_resume_content(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        enhanced = dict(ctx["content_map"])
+        # AI-polish summary slots
+        for key, val in enhanced.items():
+            if "SUMMARY" in key and val:
+                prompt = (
+                    f"Polish this resume summary for impact and clarity. "
+                    f"Keep the same facts and metrics. No buzzwords. No em dashes. "
+                    f"Under the same word count:\n\n{val}"
+                )
+                try:
+                    enhanced[key] = provider.generate(prompt)
+                except Exception:
+                    pass
+        return {"content_map": enhanced}
+
+    gen_result = route_inference(
+        task="generate_resume",
+        context=ai_context,
+        python_fallback=_python_resume_content,
+        ai_handler=_ai_resume_content,
+    )
+    content_map = gen_result["content_map"]
 
     # Build slot info lookup
     slot_info = {}

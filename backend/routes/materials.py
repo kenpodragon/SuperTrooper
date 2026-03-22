@@ -143,17 +143,51 @@ def generate_cover_letter():
     top_bullets = [b["text"] for b in bullets] if bullets else []
     generation_context["bullet_count"] = len(top_bullets)
 
-    # Generate placeholder cover letter with real data references
-    bullet_text = "\n".join(f"- {b}" for b in top_bullets[:3]) if top_bullets else "- [Key achievement from career history]"
-    content = (
-        f"Dear Hiring Manager,\n\n"
-        f"I am writing to express my interest in the {role_title or '[Role]'} position "
-        f"at {company_name or '[Company]'}.\n\n"
-        f"{candidate_name} brings the following key achievements:\n{bullet_text}\n\n"
-        f"[AI will expand with gap analysis alignment, company-specific value proposition, "
-        f"and voice-checked closing paragraph.]\n\n"
-        f"Sincerely,\n{candidate_name}"
+    # --- AI routing: cover letter generation ---
+    ai_context = {
+        "task_type": "cover_letter",
+        "candidate_name": candidate_name,
+        "company_name": company_name,
+        "role_title": role_title,
+        "top_bullets": top_bullets,
+        "generation_context": generation_context,
+    }
+
+    def _python_cover_letter(ctx):
+        bullet_text = "\n".join(f"- {b}" for b in ctx["top_bullets"][:3]) if ctx["top_bullets"] else "- [Key achievement from career history]"
+        return {
+            "content": (
+                f"Dear Hiring Manager,\n\n"
+                f"I am writing to express my interest in the {ctx['role_title'] or '[Role]'} position "
+                f"at {ctx['company_name'] or '[Company]'}.\n\n"
+                f"{ctx['candidate_name']} brings the following key achievements:\n{bullet_text}\n\n"
+                f"[AI will expand with gap analysis alignment, company-specific value proposition, "
+                f"and voice-checked closing paragraph.]\n\n"
+                f"Sincerely,\n{ctx['candidate_name']}"
+            )
+        }
+
+    def _ai_cover_letter(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        bullet_text = "\n".join(f"- {b}" for b in ctx["top_bullets"][:5]) if ctx["top_bullets"] else ""
+        prompt = (
+            f"Write a professional cover letter for {ctx['candidate_name']} applying to "
+            f"the {ctx['role_title'] or 'open'} position at {ctx['company_name'] or 'the company'}.\n\n"
+            f"Key achievements to highlight:\n{bullet_text}\n\n"
+            f"Requirements: conversational tone, no buzzwords, concrete metrics, under 400 words. "
+            f"Do not use em dashes. Use ellipses for pauses."
+        )
+        response = provider.generate(prompt)
+        return {"content": response}
+
+    gen_result = route_inference(
+        task="generate_cover_letter",
+        context=ai_context,
+        python_fallback=_python_cover_letter,
+        ai_handler=_ai_cover_letter,
     )
+    content = gen_result["content"]
 
     row = db.execute_returning(
         """
@@ -229,22 +263,60 @@ def generate_thank_you():
     header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
     candidate_name = header["full_name"] if header else "Candidate"
 
-    # Generate under-200-word thank-you
-    notes_ref = ""
-    if interview_notes:
-        notes_ref = f" Our discussion about {interview_notes[:80]}... was particularly engaging."
-    elif debrief_notes:
-        notes_ref = f" I especially valued our conversation about {debrief_notes[:80]}..."
+    # --- AI routing: thank-you generation ---
+    ai_context = {
+        "task_type": "thank_you",
+        "candidate_name": candidate_name,
+        "interviewer_name": interviewer_name,
+        "company_name": company_name,
+        "role_title": role_title,
+        "interview_notes": interview_notes,
+        "debrief_notes": debrief_notes,
+    }
 
-    content = (
-        f"Hi {interviewer_name},\n\n"
-        f"Thank you for taking the time to meet with me about the "
-        f"{role_title or '[Role]'} position at {company_name or '[Company]'}."
-        f"{notes_ref}\n\n"
-        f"[AI will personalize with specific discussion points, reiterate fit, "
-        f"and close with next-step enthusiasm.]\n\n"
-        f"Best regards,\n{candidate_name}"
+    def _python_thank_you(ctx):
+        notes_ref = ""
+        if ctx.get("interview_notes"):
+            notes_ref = f" Our discussion about {ctx['interview_notes'][:80]}... was particularly engaging."
+        elif ctx.get("debrief_notes"):
+            notes_ref = f" I especially valued our conversation about {ctx['debrief_notes'][:80]}..."
+        return {
+            "content": (
+                f"Hi {ctx['interviewer_name']},\n\n"
+                f"Thank you for taking the time to meet with me about the "
+                f"{ctx['role_title'] or '[Role]'} position at {ctx['company_name'] or '[Company]'}."
+                f"{notes_ref}\n\n"
+                f"[AI will personalize with specific discussion points, reiterate fit, "
+                f"and close with next-step enthusiasm.]\n\n"
+                f"Best regards,\n{ctx['candidate_name']}"
+            )
+        }
+
+    def _ai_thank_you(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        notes_context = ""
+        if ctx.get("interview_notes"):
+            notes_context = f"\nInterview discussion topics: {ctx['interview_notes']}"
+        if ctx.get("debrief_notes"):
+            notes_context += f"\nDebrief notes: {ctx['debrief_notes']}"
+        prompt = (
+            f"Write a post-interview thank-you note from {ctx['candidate_name']} to {ctx['interviewer_name']} "
+            f"about the {ctx['role_title'] or 'open'} position at {ctx['company_name'] or 'the company'}.\n"
+            f"{notes_context}\n\n"
+            f"Requirements: under 200 words, conversational, genuine, no buzzwords. "
+            f"Do not use em dashes. Use ellipses for pauses."
+        )
+        response = provider.generate(prompt)
+        return {"content": response}
+
+    gen_result = route_inference(
+        task="generate_thank_you",
+        context=ai_context,
+        python_fallback=_python_thank_you,
+        ai_handler=_ai_thank_you,
     )
+    content = gen_result["content"]
 
     row = db.execute_returning(
         """
@@ -456,19 +528,59 @@ def generate_personalized_outreach():
             role_context = f" regarding the {app.get('role', 'open')} role"
             personalization_context["application_id"] = application_id
 
-    # Generate subject and body
-    subject = f"Connecting{role_context}" if channel == "email" else None
-    company_ref = f" at {contact_company}" if contact_company else ""
-    title_ref = f" ({contact_title})" if contact_title else ""
+    # --- AI routing: personalized outreach generation ---
+    ai_context = {
+        "task_type": "personalized_outreach",
+        "candidate_name": candidate_name,
+        "contact_name": contact_name,
+        "contact_company": contact_company,
+        "contact_title": contact_title,
+        "role_context": role_context,
+        "channel": channel,
+        "message_type": message_type,
+    }
 
-    body = (
-        f"Hi {contact_name},\n\n"
-        f"I hope this message finds you well{title_ref}{company_ref}. "
-        f"My name is {candidate_name}{role_context}.\n\n"
-        f"[AI will personalize with shared connections, mutual interests, "
-        f"specific value proposition, and clear ask.]\n\n"
-        f"Best,\n{candidate_name}"
+    def _python_personalized_outreach(ctx):
+        subj = f"Connecting{ctx['role_context']}" if ctx["channel"] == "email" else None
+        company_ref = f" at {ctx['contact_company']}" if ctx.get("contact_company") else ""
+        title_ref = f" ({ctx['contact_title']})" if ctx.get("contact_title") else ""
+        return {
+            "subject": subj,
+            "body": (
+                f"Hi {ctx['contact_name']},\n\n"
+                f"I hope this message finds you well{title_ref}{company_ref}. "
+                f"My name is {ctx['candidate_name']}{ctx['role_context']}.\n\n"
+                f"[AI will personalize with shared connections, mutual interests, "
+                f"specific value proposition, and clear ask.]\n\n"
+                f"Best,\n{ctx['candidate_name']}"
+            ),
+        }
+
+    def _ai_personalized_outreach(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        prompt = (
+            f"Write a {ctx['message_type']} outreach message from {ctx['candidate_name']} "
+            f"to {ctx['contact_name']}"
+            f"{' (' + ctx['contact_title'] + ')' if ctx.get('contact_title') else ''}"
+            f"{' at ' + ctx['contact_company'] if ctx.get('contact_company') else ''}"
+            f"{ctx['role_context']}.\n\n"
+            f"Channel: {ctx['channel']}. "
+            f"Requirements: concise, personalized, clear ask, conversational tone. "
+            f"No buzzwords. Do not use em dashes. Use ellipses for pauses."
+        )
+        response = provider.generate(prompt)
+        subj = f"Connecting{ctx['role_context']}" if ctx["channel"] == "email" else None
+        return {"subject": subj, "body": response}
+
+    gen_result = route_inference(
+        task="generate_personalized_outreach",
+        context=ai_context,
+        python_fallback=_python_personalized_outreach,
+        ai_handler=_ai_personalized_outreach,
     )
+    subject = gen_result.get("subject")
+    body = gen_result["body"]
 
     row = db.execute_returning(
         """
@@ -539,15 +651,52 @@ def generate_cold_outreach():
             contact_name = contact.get("name") or contact.get("full_name") or "Hiring Manager"
             personalization_context["contact_id"] = contact_id
 
-    subject = f"Interest in {role_title} at {company_name}"
-    body = (
-        f"Dear {contact_name},\n\n"
-        f"I came across the {role_title} opportunity at {company_name} and "
-        f"wanted to reach out directly.\n\n"
-        f"[AI will add specific company research, relevant achievements, "
-        f"and a concise value proposition tied to the role.]\n\n"
-        f"Best regards,\n{candidate_name}"
+    # --- AI routing: cold outreach generation ---
+    ai_context = {
+        "task_type": "cold_outreach",
+        "candidate_name": candidate_name,
+        "contact_name": contact_name,
+        "company_name": company_name,
+        "role_title": role_title,
+    }
+
+    def _python_cold_outreach(ctx):
+        return {
+            "subject": f"Interest in {ctx['role_title']} at {ctx['company_name']}",
+            "body": (
+                f"Dear {ctx['contact_name']},\n\n"
+                f"I came across the {ctx['role_title']} opportunity at {ctx['company_name']} and "
+                f"wanted to reach out directly.\n\n"
+                f"[AI will add specific company research, relevant achievements, "
+                f"and a concise value proposition tied to the role.]\n\n"
+                f"Best regards,\n{ctx['candidate_name']}"
+            ),
+        }
+
+    def _ai_cold_outreach(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        prompt = (
+            f"Write a cold outreach email from {ctx['candidate_name']} to {ctx['contact_name']} "
+            f"about the {ctx['role_title']} position at {ctx['company_name']}.\n\n"
+            f"Requirements: brief (under 150 words), specific value proposition, "
+            f"conversational tone, clear ask. No buzzwords. "
+            f"Do not use em dashes. Use ellipses for pauses."
+        )
+        response = provider.generate(prompt)
+        return {
+            "subject": f"Interest in {ctx['role_title']} at {ctx['company_name']}",
+            "body": response,
+        }
+
+    gen_result = route_inference(
+        task="generate_cold_outreach",
+        context=ai_context,
+        python_fallback=_python_cold_outreach,
+        ai_handler=_ai_cold_outreach,
     )
+    subject = gen_result["subject"]
+    body = gen_result["body"]
 
     row = db.execute_returning(
         """
@@ -607,15 +756,53 @@ def generate_warm_intro():
     header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
     candidate_name = header["full_name"] if header else "Candidate"
 
-    subject = f"Quick favor - intro to someone at {target_company}?"
-    body = (
-        f"Hi {contact_name},\n\n"
-        f"Hope you're doing well. I'm exploring opportunities at {target_company} "
-        f"and was wondering if you might know anyone there who'd be open to a quick chat.\n\n"
-        f"[AI will add shared history context, specific ask, "
-        f"and make it easy to say yes or no.]\n\n"
-        f"Thanks either way,\n{candidate_name}"
+    # --- AI routing: warm intro generation ---
+    ai_context = {
+        "task_type": "warm_intro",
+        "candidate_name": candidate_name,
+        "contact_name": contact_name,
+        "contact_company": contact.get("company"),
+        "target_company": target_company,
+    }
+
+    def _python_warm_intro(ctx):
+        return {
+            "subject": f"Quick favor - intro to someone at {ctx['target_company']}?",
+            "body": (
+                f"Hi {ctx['contact_name']},\n\n"
+                f"Hope you're doing well. I'm exploring opportunities at {ctx['target_company']} "
+                f"and was wondering if you might know anyone there who'd be open to a quick chat.\n\n"
+                f"[AI will add shared history context, specific ask, "
+                f"and make it easy to say yes or no.]\n\n"
+                f"Thanks either way,\n{ctx['candidate_name']}"
+            ),
+        }
+
+    def _ai_warm_intro(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        prompt = (
+            f"Write a warm intro request from {ctx['candidate_name']} to {ctx['contact_name']}"
+            f"{' at ' + ctx['contact_company'] if ctx.get('contact_company') else ''}, "
+            f"asking for an introduction to someone at {ctx['target_company']}.\n\n"
+            f"Requirements: friendly, low-pressure, easy to say yes or no, "
+            f"reference shared history if possible. Under 150 words. "
+            f"No buzzwords. Do not use em dashes. Use ellipses for pauses."
+        )
+        response = provider.generate(prompt)
+        return {
+            "subject": f"Quick favor - intro to someone at {ctx['target_company']}?",
+            "body": response,
+        }
+
+    gen_result = route_inference(
+        task="generate_warm_intro",
+        context=ai_context,
+        python_fallback=_python_warm_intro,
+        ai_handler=_ai_warm_intro,
     )
+    subject = gen_result["subject"]
+    body = gen_result["body"]
 
     row = db.execute_returning(
         """

@@ -1,8 +1,12 @@
 """Routes for Campaign Management (close-out, conversion, analytics, onboarding)."""
 
 import json
+import logging
 from flask import Blueprint, request, jsonify
 import db
+from ai_providers.router import route_inference
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("campaign", __name__)
 
@@ -356,79 +360,117 @@ def analyze_voice_sample():
     if not samples or not isinstance(samples, list):
         return jsonify({"error": "writing_samples array is required"}), 400
 
-    # Analyze patterns across all samples
-    all_words = []
-    sentence_lengths = []
-    for sample in samples:
-        words = sample.split()
-        all_words.extend(words)
-        # Split on sentence-ending punctuation
-        sentences = [s.strip() for s in sample.replace("!", ".").replace("?", ".").split(".") if s.strip()]
-        sentence_lengths.extend(len(s.split()) for s in sentences)
-
-    # Word frequency (top 20 non-trivial words)
-    stop_words = {
-        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-        "being", "have", "has", "had", "do", "does", "did", "will", "would",
-        "could", "should", "may", "might", "shall", "can", "it", "its",
-        "this", "that", "these", "those", "i", "we", "you", "he", "she",
-        "they", "me", "us", "him", "her", "them", "my", "our", "your",
-        "not", "no", "so", "if", "as",
-    }
-    word_freq = {}
-    for w in all_words:
-        cleaned = w.lower().strip(".,!?;:\"'()-")
-        if cleaned and cleaned not in stop_words and len(cleaned) > 2:
-            word_freq[cleaned] = word_freq.get(cleaned, 0) + 1
-
-    top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:20]
-
-    # Tone markers
-    avg_sentence_len = round(sum(sentence_lengths) / len(sentence_lengths), 1) if sentence_lengths else 0
-    uses_contractions = any("'" in w for w in all_words)
-    uses_ellipses = any("..." in s for s in samples)
-    uses_em_dashes = any("—" in s or " - " in s for s in samples)
-
-    detected_patterns = {
-        "avg_sentence_length": avg_sentence_len,
-        "top_words": [{"word": w, "count": c} for w, c in top_words],
-        "uses_contractions": uses_contractions,
-        "uses_ellipses": uses_ellipses,
-        "uses_em_dashes": uses_em_dashes,
-        "total_words_analyzed": len(all_words),
-        "total_sentences": len(sentence_lengths),
+    # --- AI routing: voice sample analysis ---
+    ai_context = {
+        "task_type": "analyze_voice_sample",
+        "samples": samples,
     }
 
-    # Generate suggested rules
-    suggested_rules = []
-    if avg_sentence_len < 15:
-        suggested_rules.append("Keep sentences short and punchy (under 15 words average)")
-    elif avg_sentence_len > 25:
-        suggested_rules.append("Use longer, more detailed sentences when explaining concepts")
+    def _python_voice_analysis(ctx):
+        _samples = ctx["samples"]
+        all_words = []
+        sentence_lengths = []
+        for sample in _samples:
+            words = sample.split()
+            all_words.extend(words)
+            sentences = [s.strip() for s in sample.replace("!", ".").replace("?", ".").split(".") if s.strip()]
+            sentence_lengths.extend(len(s.split()) for s in sentences)
 
-    if uses_contractions:
-        suggested_rules.append("Use contractions for a conversational tone")
-    else:
-        suggested_rules.append("Avoid contractions for a more formal tone")
+        stop_words = {
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+            "being", "have", "has", "had", "do", "does", "did", "will", "would",
+            "could", "should", "may", "might", "shall", "can", "it", "its",
+            "this", "that", "these", "those", "i", "we", "you", "he", "she",
+            "they", "me", "us", "him", "her", "them", "my", "our", "your",
+            "not", "no", "so", "if", "as",
+        }
+        word_freq = {}
+        for w in all_words:
+            cleaned = w.lower().strip(".,!?;:\"'()-")
+            if cleaned and cleaned not in stop_words and len(cleaned) > 2:
+                word_freq[cleaned] = word_freq.get(cleaned, 0) + 1
 
-    if uses_ellipses:
-        suggested_rules.append("Use ellipses for trailing thoughts and pauses")
+        top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:20]
 
-    if uses_em_dashes:
-        suggested_rules.append("Use em dashes or hyphens for parenthetical asides")
+        avg_sentence_len = round(sum(sentence_lengths) / len(sentence_lengths), 1) if sentence_lengths else 0
+        uses_contractions = any("'" in w for w in all_words)
+        uses_ellipses = any("..." in s for s in _samples)
+        uses_em_dashes = any("\u2014" in s or " - " in s for s in _samples)
 
-    # Suggest based on frequent words
-    if top_words:
-        power_words = [w for w, c in top_words[:10] if c >= 3]
-        if power_words:
-            suggested_rules.append(f"Signature vocabulary: {', '.join(power_words)}")
+        detected_patterns = {
+            "avg_sentence_length": avg_sentence_len,
+            "top_words": [{"word": w, "count": c} for w, c in top_words],
+            "uses_contractions": uses_contractions,
+            "uses_ellipses": uses_ellipses,
+            "uses_em_dashes": uses_em_dashes,
+            "total_words_analyzed": len(all_words),
+            "total_sentences": len(sentence_lengths),
+        }
 
-    return jsonify({
-        "detected_patterns": detected_patterns,
-        "suggested_rules": suggested_rules,
-        "sample_count": len(samples),
-    }), 200
+        suggested_rules = []
+        if avg_sentence_len < 15:
+            suggested_rules.append("Keep sentences short and punchy (under 15 words average)")
+        elif avg_sentence_len > 25:
+            suggested_rules.append("Use longer, more detailed sentences when explaining concepts")
+
+        if uses_contractions:
+            suggested_rules.append("Use contractions for a conversational tone")
+        else:
+            suggested_rules.append("Avoid contractions for a more formal tone")
+
+        if uses_ellipses:
+            suggested_rules.append("Use ellipses for trailing thoughts and pauses")
+
+        if uses_em_dashes:
+            suggested_rules.append("Use em dashes or hyphens for parenthetical asides")
+
+        if top_words:
+            power_words = [w for w, c in top_words[:10] if c >= 3]
+            if power_words:
+                suggested_rules.append(f"Signature vocabulary: {', '.join(power_words)}")
+
+        return {
+            "detected_patterns": detected_patterns,
+            "suggested_rules": suggested_rules,
+            "sample_count": len(_samples),
+        }
+
+    def _ai_voice_analysis(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        combined = "\n---\n".join(ctx["samples"][:5])  # Limit to 5 samples for prompt size
+        prompt = (
+            f"Analyze these writing samples to detect voice patterns, tone, and style.\n\n"
+            f"Samples:\n{combined[:3000]}\n\n"
+            f"Return a JSON object with:\n"
+            f"- detected_patterns: object with avg_sentence_length (number), "
+            f"top_words (array of {{word, count}}), uses_contractions (bool), "
+            f"uses_ellipses (bool), uses_em_dashes (bool), "
+            f"total_words_analyzed (number), total_sentences (number), "
+            f"tone (string), formality_level (string), reading_level (string)\n"
+            f"- suggested_rules: array of specific voice rule strings\n"
+            f"- sample_count: {len(ctx['samples'])}\n"
+            f"No markdown formatting around the JSON."
+        )
+        response = provider.generate(prompt)
+        try:
+            result = json.loads(response)
+            if "detected_patterns" in result and "suggested_rules" in result:
+                result["sample_count"] = len(ctx["samples"])
+                return result
+        except (ValueError, TypeError):
+            pass
+        # Fall back to Python analysis on parse failure
+        return _python_voice_analysis(ctx)
+
+    gen_result = route_inference(
+        task="analyze_voice_sample",
+        context=ai_context,
+        python_fallback=_python_voice_analysis,
+        ai_handler=_ai_voice_analysis,
+    )
+    return jsonify(gen_result), 200
 
 
 # ---------------------------------------------------------------------------

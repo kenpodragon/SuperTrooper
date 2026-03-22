@@ -1,8 +1,12 @@
 """Routes for interview_prep, interview_debriefs, and interview analytics."""
 
 import json
+import logging
 from flask import Blueprint, request, jsonify
 import db
+from ai_providers.router import route_inference
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("interview_extras", __name__)
 
@@ -374,8 +378,8 @@ def generate_interview_prep_package(interview_id):
             (f"%{keyword}%",),
         )
 
-    # Generate questions to ask
-    questions_to_ask = [
+    # Generate questions to ask (Python fallback default)
+    default_questions_to_ask = [
         f"What does success look like in the first 90 days for this role?",
         f"How does the team handle disagreement on direction?",
         f"What are the biggest challenges the team is facing right now?",
@@ -383,7 +387,7 @@ def generate_interview_prep_package(interview_id):
         f"What's the career path from this role?",
     ]
     if company_name:
-        questions_to_ask.insert(1, f"What's the culture like at {company_name} day-to-day?")
+        default_questions_to_ask.insert(1, f"What's the culture like at {company_name} day-to-day?")
 
     # Recent email thread with this company (news talking points)
     recent_emails = []
@@ -398,6 +402,51 @@ def generate_interview_prep_package(interview_id):
             (f"%{company_name}%", f"%{company_name}%"),
         )
 
+    # --- AI routing: enhance interview prep package ---
+    ai_context = {
+        "task_type": "interview_prep_package",
+        "company_name": company_name,
+        "role": role,
+        "company_info": company_info,
+        "star_stories": star_stories,
+        "mock_questions": mock_questions,
+        "default_questions_to_ask": default_questions_to_ask,
+        "interview_type": interview.get("type", ""),
+    }
+
+    def _python_prep_package(ctx):
+        return {"questions_to_ask": ctx["default_questions_to_ask"]}
+
+    def _ai_prep_package(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        company_ctx = ""
+        if ctx.get("company_info"):
+            company_ctx = f"\nCompany info: {json.dumps(ctx['company_info'], default=str)[:500]}"
+        prompt = (
+            f"Generate 6-8 thoughtful questions a candidate should ask during a "
+            f"{ctx.get('interview_type', 'general')} interview for the {ctx['role'] or 'open'} "
+            f"role at {ctx['company_name'] or 'the company'}.{company_ctx}\n\n"
+            f"Requirements: specific to the role and company, show research, "
+            f"conversational tone. Return as a JSON array of strings."
+        )
+        response = provider.generate(prompt)
+        try:
+            ai_questions = json.loads(response)
+            if isinstance(ai_questions, list) and len(ai_questions) > 0:
+                return {"questions_to_ask": ai_questions}
+        except (ValueError, TypeError):
+            pass
+        return {"questions_to_ask": ctx["default_questions_to_ask"]}
+
+    gen_result = route_inference(
+        task="generate_interview_prep_package",
+        context=ai_context,
+        python_fallback=_python_prep_package,
+        ai_handler=_ai_prep_package,
+    )
+    questions_to_ask = gen_result["questions_to_ask"]
+
     package = {
         "interview_id": interview_id,
         "role": role,
@@ -411,6 +460,8 @@ def generate_interview_prep_package(interview_id):
         "questions_to_ask": questions_to_ask,
         "recent_email_threads": recent_emails,
     }
+    if isinstance(gen_result, dict) and gen_result.get("analysis_mode"):
+        package["analysis_mode"] = gen_result["analysis_mode"]
     return jsonify(package), 200
 
 

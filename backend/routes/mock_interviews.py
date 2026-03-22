@@ -1,5 +1,6 @@
 """Routes for mock interview sessions and questions."""
 
+import logging
 from flask import Blueprint, request, jsonify
 import db
 from mcp_tools_mock_interviews import (
@@ -8,6 +9,9 @@ from mcp_tools_mock_interviews import (
     evaluate_mock_interview,
     _generate_questions,
 )
+from ai_providers.router import route_inference
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("mock_interviews", __name__)
 
@@ -99,13 +103,73 @@ def generate_questions(interview_id):
     )
     start_num = (max_q["max_num"] if max_q else 0) + 1
 
-    questions = _generate_questions(
-        interview_type=interview["interview_type"],
-        difficulty=interview.get("difficulty", "medium"),
-        count=count,
-        start_number=start_num,
-        interview_id=interview_id,
+    # --- AI routing: question generation ---
+    ai_context = {
+        "task_type": "generate_questions",
+        "interview_type": interview["interview_type"],
+        "difficulty": interview.get("difficulty", "medium"),
+        "count": count,
+        "start_number": start_num,
+        "interview_id": interview_id,
+        "job_title": interview.get("job_title", ""),
+        "company": interview.get("company", ""),
+    }
+
+    def _python_generate_questions(ctx):
+        qs = _generate_questions(
+            interview_type=ctx["interview_type"],
+            difficulty=ctx["difficulty"],
+            count=ctx["count"],
+            start_number=ctx["start_number"],
+            interview_id=ctx["interview_id"],
+        )
+        return {"questions": qs}
+
+    def _ai_generate_questions(ctx):
+        from ai_providers import get_provider
+        import json as _json
+        provider = get_provider()
+        prompt = (
+            f"Generate {ctx['count']} {ctx['interview_type']} interview questions "
+            f"at {ctx['difficulty']} difficulty"
+            f"{' for a ' + ctx['job_title'] + ' role' if ctx.get('job_title') else ''}"
+            f"{' at ' + ctx['company'] if ctx.get('company') else ''}.\n\n"
+            f"Return as JSON array of objects with keys: question_text, question_type, "
+            f"difficulty, suggested_approach. No markdown formatting around the JSON."
+        )
+        response = provider.generate(prompt)
+        try:
+            ai_questions = _json.loads(response)
+        except (ValueError, TypeError):
+            # AI response wasn't valid JSON, fall back to Python
+            return _python_generate_questions(ctx)
+
+        # Persist AI-generated questions to DB
+        saved = []
+        for i, q in enumerate(ai_questions[:ctx["count"]]):
+            row = db.execute_returning(
+                """INSERT INTO mock_interview_questions
+                   (mock_interview_id, question_number, question_text, question_type, difficulty)
+                   VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+                (
+                    ctx["interview_id"],
+                    ctx["start_number"] + i,
+                    q.get("question_text", q.get("question", "")),
+                    q.get("question_type", ctx["interview_type"]),
+                    q.get("difficulty", ctx["difficulty"]),
+                ),
+            )
+            if row:
+                saved.append(row)
+        return {"questions": saved if saved else _python_generate_questions(ctx)["questions"]}
+
+    gen_result = route_inference(
+        task="generate_mock_interview_questions",
+        context=ai_context,
+        python_fallback=_python_generate_questions,
+        ai_handler=_ai_generate_questions,
     )
+    questions = gen_result["questions"]
     return jsonify({"questions": questions, "count": len(questions)}), 201
 
 
