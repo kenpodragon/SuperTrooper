@@ -18,10 +18,25 @@ interface TestResult {
   providers?: { name: string; cli_command: string; available: boolean }[];
 }
 
+interface OnboardStatus {
+  steps?: { name: string; completed: boolean; description?: string }[];
+  completion_pct?: number;
+  next_steps?: string[];
+}
+
+interface VoiceRule {
+  id: number;
+  category: string;
+  rule_text: string;
+  severity?: string;
+}
+
 export default function Settings() {
   const queryClient = useQueryClient();
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
+  const [newRule, setNewRule] = useState({ category: 'custom', rule_text: '' });
+  const [quickSetup, setQuickSetup] = useState({ name: '', email: '', target_roles: '' });
 
   const health = useQuery({
     queryKey: ['health'],
@@ -39,9 +54,40 @@ export default function Settings() {
     queryFn: () => api.get<SettingsData>('/settings'),
   });
 
+  const onboardStatus = useQuery({
+    queryKey: ['onboard-status'],
+    queryFn: () => api.get<OnboardStatus>('/onboard/status'),
+  });
+
+  const voiceRules = useQuery({
+    queryKey: ['voice-rules'],
+    queryFn: () => api.get<VoiceRule[]>('/voice-rules'),
+  });
+
   const mutation = useMutation({
     mutationFn: (data: Partial<SettingsData>) => api.patch<SettingsData>('/settings', data),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
+  });
+
+  const addVoiceRule = useMutation({
+    mutationFn: (data: typeof newRule) => api.post<VoiceRule>('/voice-rules', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['voice-rules'] });
+      setNewRule({ category: 'custom', rule_text: '' });
+    },
+  });
+
+  const deleteVoiceRule = useMutation({
+    mutationFn: (id: number) => api.del(`/voice-rules/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['voice-rules'] }),
+  });
+
+  const saveQuickSetup = useMutation({
+    mutationFn: (data: typeof quickSetup) => api.post<{ status: string }>('/onboard/quick-setup', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['onboard-status'] });
+      setQuickSetup({ name: '', email: '', target_roles: '' });
+    },
   });
 
   const testAi = async (provider?: string) => {
@@ -57,9 +103,98 @@ export default function Settings() {
     }
   };
 
+  const onboard = onboardStatus.data;
+  const rules: VoiceRule[] = Array.isArray(voiceRules.data) ? voiceRules.data : [];
+
   return (
     <div>
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Settings</h1>
+
+      {/* Onboarding Status */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-3">Onboarding Status</h2>
+        {onboardStatus.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+        {onboardStatus.isError && <p className="text-sm text-gray-400">Onboarding status unavailable</p>}
+        {onboard && (
+          <>
+            {onboard.completion_pct != null && (
+              <div className="mb-3">
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Completion</span>
+                  <span>{onboard.completion_pct}%</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div
+                    className="bg-blue-600 h-2 rounded-full transition-all"
+                    style={{ width: `${onboard.completion_pct}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            {(onboard.steps ?? []).map((step, idx) => (
+              <div key={idx} className="flex items-center gap-2 py-1.5 border-b border-gray-100 last:border-0">
+                <span className={`inline-block w-4 h-4 rounded-full text-xs text-center leading-4 font-medium ${
+                  step.completed ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-400'
+                }`}>
+                  {step.completed ? '\u2713' : '\u2022'}
+                </span>
+                <span className={`text-sm ${step.completed ? 'text-gray-500 line-through' : 'text-gray-900'}`}>{step.name}</span>
+                {step.description && <span className="text-xs text-gray-400 ml-auto">{step.description}</span>}
+              </div>
+            ))}
+            {onboard.next_steps && onboard.next_steps.length > 0 && (
+              <div className="mt-3 p-3 bg-blue-50 rounded-lg">
+                <p className="text-xs font-medium text-blue-700 mb-1">Next Steps</p>
+                <ul className="list-disc list-inside text-sm text-blue-800 space-y-1">
+                  {onboard.next_steps.map((s, i) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Quick Setup */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-3">Quick Setup</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-2xl">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Name</label>
+            <input
+              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+              value={quickSetup.name}
+              onChange={e => setQuickSetup(p => ({ ...p, name: e.target.value }))}
+              placeholder="Full name"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Email</label>
+            <input
+              type="email"
+              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+              value={quickSetup.email}
+              onChange={e => setQuickSetup(p => ({ ...p, email: e.target.value }))}
+              placeholder="you@example.com"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Target Roles</label>
+            <input
+              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+              value={quickSetup.target_roles}
+              onChange={e => setQuickSetup(p => ({ ...p, target_roles: e.target.value }))}
+              placeholder="e.g., VP Engineering, CTO"
+            />
+          </div>
+        </div>
+        <button
+          onClick={() => saveQuickSetup.mutate(quickSetup)}
+          disabled={saveQuickSetup.isPending || !quickSetup.name}
+          className="mt-3 px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+        >
+          {saveQuickSetup.isPending ? 'Saving...' : 'Save Setup'}
+        </button>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* System Status */}
@@ -93,6 +228,62 @@ export default function Settings() {
             </div>
           ))}
           {kb.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+        </div>
+      </div>
+
+      {/* Voice Rules Management */}
+      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Voice Rules</h2>
+        {voiceRules.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+        {voiceRules.isError && <p className="text-sm text-gray-400">Voice rules unavailable</p>}
+
+        {/* Add Rule */}
+        <div className="flex gap-2 mb-4 max-w-2xl">
+          <select
+            className="border border-gray-200 rounded px-2 py-1.5 text-sm"
+            value={newRule.category}
+            onChange={e => setNewRule(p => ({ ...p, category: e.target.value }))}
+          >
+            <option value="custom">Custom</option>
+            <option value="banned_word">Banned Word</option>
+            <option value="banned_pattern">Banned Pattern</option>
+            <option value="resume_rule">Resume Rule</option>
+            <option value="style">Style</option>
+          </select>
+          <input
+            className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+            value={newRule.rule_text}
+            onChange={e => setNewRule(p => ({ ...p, rule_text: e.target.value }))}
+            placeholder="Rule text..."
+          />
+          <button
+            onClick={() => addVoiceRule.mutate(newRule)}
+            disabled={addVoiceRule.isPending || !newRule.rule_text}
+            className="px-3 py-1.5 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+          >
+            Add
+          </button>
+        </div>
+
+        {/* Rules List */}
+        <div className="max-h-64 overflow-y-auto">
+          {rules.map((r) => (
+            <div key={r.id} className="flex justify-between items-center py-1.5 border-b border-gray-100 last:border-0">
+              <div className="flex gap-2 items-center">
+                <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded">{r.category}</span>
+                <span className="text-sm text-gray-700">{r.rule_text}</span>
+              </div>
+              <button
+                onClick={() => deleteVoiceRule.mutate(r.id)}
+                className="text-xs text-red-400 hover:text-red-600"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          {rules.length === 0 && !voiceRules.isLoading && (
+            <p className="text-sm text-gray-400">No voice rules loaded</p>
+          )}
         </div>
       </div>
 

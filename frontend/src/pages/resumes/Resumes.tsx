@@ -1,8 +1,42 @@
-import { useQuery } from '@tanstack/react-query';
-import { recipes, bullets } from '../../api/client';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { api, recipes, bullets } from '../../api/client';
 import type { Recipe, Bullet } from '../../api/client';
 
+interface RecipeDetail {
+  id: number;
+  name: string;
+  description?: string;
+  headline?: string;
+  template_id: number;
+  is_active?: boolean;
+  sections?: { section_name: string; bullet_ids: number[] }[];
+  created_at?: string;
+}
+
+interface GenerateResult {
+  status: string;
+  output_path?: string;
+  message?: string;
+}
+
+interface AtsScoreResult {
+  score?: number;
+  feedback?: string[];
+  keyword_matches?: string[];
+  missing_keywords?: string[];
+}
+
 export default function Resumes() {
+  const qc = useQueryClient();
+  const [view, setView] = useState<'list' | 'detail'>('list');
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [atsResult, setAtsResult] = useState<AtsScoreResult | null>(null);
+  const [genResult, setGenResult] = useState<GenerateResult | null>(null);
+  const [createForm, setCreateForm] = useState({ name: '', description: '', template_id: 1 });
+  const [atsForm, setAtsForm] = useState({ resume_text: '', jd_text: '' });
+
   const { data: recipeList, isLoading: loadingRecipes } = useQuery({
     queryKey: ['recipes'],
     queryFn: () => recipes.list(),
@@ -12,13 +46,186 @@ export default function Resumes() {
     queryFn: () => bullets.list('?limit=20'),
   });
 
-  // recipes endpoint returns { recipes: [...], count } or just [...]
+  const recipeDetail = useQuery({
+    queryKey: ['recipe-detail', selectedId],
+    queryFn: () => api.get<RecipeDetail>(`/resume/recipes/${selectedId}`),
+    enabled: selectedId != null && view === 'detail',
+  });
+
   const recipeItems: Recipe[] = Array.isArray(recipeList) ? recipeList : (recipeList as { recipes?: Recipe[] })?.recipes ?? [];
   const bulletItems: Bullet[] = Array.isArray(bulletList) ? bulletList : [];
 
+  const createRecipe = useMutation({
+    mutationFn: (data: typeof createForm) => api.post<Recipe>('/resume/recipes', data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['recipes'] });
+      setShowCreate(false);
+      setCreateForm({ name: '', description: '', template_id: 1 });
+    },
+  });
+
+  const cloneRecipe = useMutation({
+    mutationFn: (id: number) => api.post<Recipe>(`/resume/recipes/${id}/clone`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['recipes'] }),
+  });
+
+  const deleteRecipe = useMutation({
+    mutationFn: (id: number) => api.del(`/resume/recipes/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['recipes'] });
+      if (selectedId === deleteRecipe.variables) {
+        setView('list');
+        setSelectedId(null);
+      }
+    },
+  });
+
+  const generateResume = useMutation({
+    mutationFn: (id: number) => api.post<GenerateResult>(`/resume/recipes/${id}/generate`, {}),
+    onSuccess: (data) => setGenResult(data),
+  });
+
+  const runAtsScore = useMutation({
+    mutationFn: (data: typeof atsForm) => api.post<AtsScoreResult>('/resume/ats-score', data),
+    onSuccess: (data) => setAtsResult(data),
+  });
+
+  // Detail view
+  if (view === 'detail' && selectedId != null) {
+    const detail = recipeDetail.data;
+    return (
+      <div>
+        <div className="flex items-center gap-3 mb-6">
+          <button onClick={() => { setView('list'); setGenResult(null); }} className="text-sm text-blue-600 hover:underline">&larr; Back</button>
+          <h1 className="text-2xl font-bold text-gray-900">{detail?.name || 'Recipe Detail'}</h1>
+        </div>
+
+        {recipeDetail.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+
+        {detail && (
+          <div className="space-y-6">
+            {/* Recipe Info */}
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <div className="flex justify-between items-start mb-3">
+                <div>
+                  <p className="text-sm text-gray-500">{detail.description || 'No description'}</p>
+                  {detail.headline && <p className="text-sm text-gray-700 mt-1 italic">{detail.headline}</p>}
+                </div>
+                <div className="flex gap-2">
+                  {detail.is_active && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Active</span>}
+                  <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded">Template #{detail.template_id}</span>
+                </div>
+              </div>
+
+              {/* Sections */}
+              <h3 className="text-sm font-semibold text-gray-900 mt-4 mb-2">Sections</h3>
+              {(detail.sections ?? []).length === 0 && <p className="text-sm text-gray-400">No sections configured</p>}
+              {(detail.sections ?? []).map((s, idx) => (
+                <div key={idx} className="py-2 border-b border-gray-100 last:border-0">
+                  <p className="text-sm font-medium text-gray-700">{s.section_name}</p>
+                  <p className="text-xs text-gray-400">{s.bullet_ids?.length || 0} bullets selected</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => generateResume.mutate(selectedId)}
+                disabled={generateResume.isPending}
+                className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+              >
+                {generateResume.isPending ? 'Generating...' : 'Generate Resume'}
+              </button>
+              <button
+                onClick={() => cloneRecipe.mutate(selectedId)}
+                disabled={cloneRecipe.isPending}
+                className="px-4 py-2 bg-blue-50 text-blue-600 text-sm rounded hover:bg-blue-100 disabled:opacity-50"
+              >
+                Clone
+              </button>
+              <button
+                onClick={() => { if (confirm('Delete this recipe?')) deleteRecipe.mutate(selectedId); }}
+                className="px-4 py-2 bg-red-50 text-red-600 text-sm rounded hover:bg-red-100"
+              >
+                Delete
+              </button>
+            </div>
+
+            {/* Generation Result */}
+            {genResult && (
+              <div className={`p-4 rounded-lg border ${genResult.status === 'ok' || genResult.output_path ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                <p className="text-sm font-medium">{genResult.status === 'ok' || genResult.output_path ? 'Resume Generated' : 'Generation Failed'}</p>
+                {genResult.output_path && <p className="text-sm text-gray-700 mt-1">File: {genResult.output_path}</p>}
+                {genResult.message && <p className="text-sm text-gray-600 mt-1">{genResult.message}</p>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // List view
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Resume Builder</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Resume Builder</h1>
+        <button
+          onClick={() => setShowCreate(true)}
+          className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700"
+        >
+          + New Recipe
+        </button>
+      </div>
+
+      {/* Create Form */}
+      {showCreate && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Create Recipe</h2>
+          <div className="grid grid-cols-2 gap-4 max-w-lg">
+            <div className="col-span-2">
+              <label className="block text-xs text-gray-500 mb-1">Name</label>
+              <input
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={createForm.name}
+                onChange={e => setCreateForm(p => ({ ...p, name: e.target.value }))}
+                placeholder="e.g., Tech Lead - FAANG"
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-xs text-gray-500 mb-1">Description</label>
+              <input
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={createForm.description}
+                onChange={e => setCreateForm(p => ({ ...p, description: e.target.value }))}
+                placeholder="Target role and focus areas"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Template ID</label>
+              <input
+                type="number"
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={createForm.template_id}
+                onChange={e => setCreateForm(p => ({ ...p, template_id: parseInt(e.target.value) || 1 }))}
+              />
+            </div>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button
+              onClick={() => createRecipe.mutate(createForm)}
+              disabled={createRecipe.isPending || !createForm.name}
+              className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+            >
+              {createRecipe.isPending ? 'Creating...' : 'Create'}
+            </button>
+            <button onClick={() => setShowCreate(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Recipes */}
@@ -27,14 +234,33 @@ export default function Resumes() {
           {loadingRecipes && <p className="text-sm text-gray-400">Loading...</p>}
           {recipeItems.map((r: Recipe) => (
             <div key={r.id} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
-              <div>
+              <div
+                className="cursor-pointer hover:text-blue-600"
+                onClick={() => { setSelectedId(r.id); setView('detail'); }}
+              >
                 <p className="text-sm font-medium text-gray-900">{r.name}</p>
                 <p className="text-xs text-gray-400">{r.description || 'No description'}</p>
               </div>
               <div className="flex gap-2 items-center">
                 {r.is_active && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Active</span>}
-                <button className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded hover:bg-blue-100">
+                <button
+                  onClick={() => generateResume.mutate(r.id)}
+                  disabled={generateResume.isPending}
+                  className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded hover:bg-blue-100"
+                >
                   Generate
+                </button>
+                <button
+                  onClick={() => cloneRecipe.mutate(r.id)}
+                  className="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100"
+                >
+                  Clone
+                </button>
+                <button
+                  onClick={() => { if (confirm('Delete?')) deleteRecipe.mutate(r.id); }}
+                  className="text-xs bg-red-50 text-red-500 px-2 py-1 rounded hover:bg-red-100"
+                >
+                  Del
                 </button>
               </div>
             </div>
@@ -61,6 +287,90 @@ export default function Resumes() {
           </div>
         </div>
       </div>
+
+      {/* ATS Score Tool */}
+      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">ATS Score Checker</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Resume Text</label>
+            <textarea
+              rows={5}
+              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+              value={atsForm.resume_text}
+              onChange={e => setAtsForm(p => ({ ...p, resume_text: e.target.value }))}
+              placeholder="Paste resume text..."
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Job Description</label>
+            <textarea
+              rows={5}
+              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+              value={atsForm.jd_text}
+              onChange={e => setAtsForm(p => ({ ...p, jd_text: e.target.value }))}
+              placeholder="Paste job description..."
+            />
+          </div>
+        </div>
+        <button
+          onClick={() => runAtsScore.mutate(atsForm)}
+          disabled={runAtsScore.isPending || !atsForm.resume_text || !atsForm.jd_text}
+          className="mt-3 px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+        >
+          {runAtsScore.isPending ? 'Scoring...' : 'Check ATS Score'}
+        </button>
+
+        {atsResult && (
+          <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+            {atsResult.score != null && (
+              <p className="text-lg font-semibold text-gray-900">Score: {atsResult.score}/100</p>
+            )}
+            {atsResult.keyword_matches && atsResult.keyword_matches.length > 0 && (
+              <div className="mt-2">
+                <p className="text-xs font-medium text-gray-500 mb-1">Keyword Matches</p>
+                <div className="flex flex-wrap gap-1">
+                  {atsResult.keyword_matches.map(k => (
+                    <span key={k} className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">{k}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {atsResult.missing_keywords && atsResult.missing_keywords.length > 0 && (
+              <div className="mt-2">
+                <p className="text-xs font-medium text-gray-500 mb-1">Missing Keywords</p>
+                <div className="flex flex-wrap gap-1">
+                  {atsResult.missing_keywords.map(k => (
+                    <span key={k} className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded">{k}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {atsResult.feedback && atsResult.feedback.length > 0 && (
+              <div className="mt-2">
+                <p className="text-xs font-medium text-gray-500 mb-1">Feedback</p>
+                <ul className="list-disc list-inside text-sm text-gray-600 space-y-1">
+                  {atsResult.feedback.map((f, i) => <li key={i}>{f}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Generation Result Toast */}
+      {genResult && (
+        <div className={`fixed bottom-4 right-4 p-4 rounded-lg shadow-lg border ${genResult.output_path ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+          <div className="flex items-center gap-3">
+            <div>
+              <p className="text-sm font-medium">{genResult.output_path ? 'Resume Generated' : 'Generation Failed'}</p>
+              {genResult.output_path && <p className="text-xs text-gray-600">{genResult.output_path}</p>}
+              {genResult.message && <p className="text-xs text-gray-600">{genResult.message}</p>}
+            </div>
+            <button onClick={() => setGenResult(null)} className="text-xs text-gray-400 hover:text-gray-600">Dismiss</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
