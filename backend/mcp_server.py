@@ -3133,6 +3133,89 @@ def run_gap_analysis(
 
 
 # ---------------------------------------------------------------------------
+# Offer Evaluation & Negotiation (S13)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def log_offer(
+    application_id: int,
+    base_salary: float | None = None,
+    signing_bonus: float | None = None,
+    annual_bonus_pct: float | None = None,
+    equity_type: str | None = None,
+    equity_value: float | None = None,
+    equity_vesting_months: int = 48,
+    equity_cliff_months: int = 12,
+    pto_days: int | None = None,
+    remote_policy: str | None = None,
+    title_offered: str | None = None,
+    start_date: str | None = None,
+    location: str | None = None,
+    benefits_notes: str | None = None,
+) -> dict:
+    """Log a new job offer linked to an application.
+
+    Args:
+        application_id: application this offer belongs to (required)
+        base_salary: annual base salary
+        signing_bonus: one-time signing bonus
+        annual_bonus_pct: annual bonus as percentage of base
+        equity_type: rsu, options, or none
+        equity_value: total equity grant value
+        equity_vesting_months: vesting period in months (default 48)
+        equity_cliff_months: cliff period in months (default 12)
+        pto_days: paid time off days per year
+        remote_policy: remote, hybrid, or onsite
+        title_offered: job title in the offer
+        start_date: proposed start date (YYYY-MM-DD)
+        location: work location
+        benefits_notes: freeform benefits description
+    """
+    from mcp_tools_offers import log_offer as _impl
+    return _impl(
+        application_id, base_salary, signing_bonus, annual_bonus_pct,
+        equity_type, equity_value, equity_vesting_months, equity_cliff_months,
+        pto_days, remote_policy, title_offered, start_date, location, benefits_notes,
+    )
+
+
+@mcp.tool()
+def total_comp(offer_id: int) -> dict:
+    """Calculate total compensation for an offer over 4 years.
+
+    Includes base, bonus, equity vesting schedule, and year-by-year breakdown.
+
+    Args:
+        offer_id: the offer to calculate total comp for
+    """
+    from mcp_tools_offers import total_comp as _impl
+    return _impl(offer_id)
+
+
+@mcp.tool()
+def compare_offers(offer_ids: list) -> dict:
+    """Compare multiple offers side by side with total comp analysis.
+
+    Args:
+        offer_ids: list of offer IDs to compare
+    """
+    from mcp_tools_offers import compare_offers as _impl
+    return _impl(offer_ids)
+
+
+@mcp.tool()
+def benchmark_offer(offer_id: int) -> dict:
+    """Compare an offer against salary benchmarks with COLA adjustment.
+
+    Args:
+        offer_id: the offer to benchmark
+    """
+    from mcp_tools_offers import benchmark_offer as _impl
+    return _impl(offer_id)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
