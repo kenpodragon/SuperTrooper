@@ -3336,6 +3336,40 @@ def get_differentiator_analysis() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Campaign & Onboarding (S4.1, S13.5, CC)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def convert_saved_job(saved_job_id: int) -> dict:
+    """Convert a saved job into an application record.
+
+    Args:
+        saved_job_id: the saved job to convert
+    """
+    from mcp_tools_campaign import convert_saved_job as _impl
+    return _impl(saved_job_id)
+
+
+@mcp.tool()
+def close_out_campaign(accepted_application_id: int) -> dict:
+    """Execute campaign close-out: accept one offer, withdraw all others, generate emails.
+
+    Args:
+        accepted_application_id: the application with the accepted offer
+    """
+    from mcp_tools_campaign import close_out_campaign as _impl
+    return _impl(accepted_application_id)
+
+
+@mcp.tool()
+def get_campaign_summary() -> dict:
+    """Get campaign analytics summary: total apps, response rates, offer rates, timeline, sources."""
+    from mcp_tools_campaign import get_campaign_summary as _impl
+    return _impl()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

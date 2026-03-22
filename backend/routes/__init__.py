@@ -30,6 +30,7 @@ from routes.offers import bp as offers_bp
 from routes.search_intelligence import bp as search_intelligence_bp
 from routes.references import bp as references_bp
 from routes.skills_development import bp as skills_development_bp
+from routes.campaign import bp as campaign_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -62,4 +63,5 @@ ALL_BLUEPRINTS = [
     search_intelligence_bp,
     references_bp,
     skills_development_bp,
+    campaign_bp,
 ]
