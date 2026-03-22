@@ -168,6 +168,119 @@ def interview_analytics():
     return jsonify(result), 200
 
 
+# ---------------------------------------------------------------------------
+# Cross-Interview Pattern Analysis
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/interviews/cross-analysis", methods=["GET"])
+def cross_interview_analysis():
+    """Cross-interview pattern analysis.
+
+    Returns:
+      - Most common question types across all interviews
+      - Average performance by question category
+      - Company comparison (which companies have hardest interviews)
+      - Improvement trajectory over time
+    """
+    # 1. Most common question types from mock interviews
+    question_types = db.query(
+        """
+        SELECT miq.question_type, COUNT(*) AS count,
+               ROUND(AVG(miq.score)::numeric, 1) AS avg_score
+        FROM mock_interview_questions miq
+        GROUP BY miq.question_type
+        ORDER BY count DESC
+        """
+    ) or []
+
+    # 2. Average performance by question category from debriefs
+    debrief_stats = db.query(
+        """
+        SELECT a.company_name,
+               COUNT(id2.id) AS debrief_count,
+               ROUND(AVG(CASE id2.overall_feeling
+                   WHEN 'great' THEN 5
+                   WHEN 'good' THEN 4
+                   WHEN 'okay' THEN 3
+                   WHEN 'poor' THEN 2
+                   WHEN 'terrible' THEN 1
+                   ELSE 3 END)::numeric, 1) AS avg_feeling_score
+        FROM interview_debriefs id2
+        JOIN interviews i ON i.id = id2.interview_id
+        JOIN applications a ON a.id = i.application_id
+        GROUP BY a.company_name
+        ORDER BY avg_feeling_score ASC
+        """
+    ) or []
+
+    # 3. Company comparison: interview counts, pass rates
+    company_comparison = db.query(
+        """
+        SELECT a.company_name,
+               COUNT(i.id) AS total_interviews,
+               SUM(CASE WHEN i.outcome = 'pass' THEN 1 ELSE 0 END) AS passed,
+               SUM(CASE WHEN i.outcome = 'fail' THEN 1 ELSE 0 END) AS failed,
+               SUM(CASE WHEN i.outcome = 'pending' THEN 1 ELSE 0 END) AS pending,
+               ROUND(
+                   CASE WHEN SUM(CASE WHEN i.outcome IN ('pass','fail') THEN 1 ELSE 0 END) > 0
+                   THEN SUM(CASE WHEN i.outcome = 'pass' THEN 1 ELSE 0 END)::numeric /
+                        SUM(CASE WHEN i.outcome IN ('pass','fail') THEN 1 ELSE 0 END) * 100
+                   ELSE 0 END, 1
+               ) AS pass_rate_pct
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        GROUP BY a.company_name
+        HAVING COUNT(i.id) > 0
+        ORDER BY total_interviews DESC
+        """
+    ) or []
+
+    # 4. Improvement trajectory: performance over time (monthly)
+    trajectory = db.query(
+        """
+        SELECT DATE_TRUNC('month', i.date) AS month,
+               COUNT(i.id) AS interview_count,
+               SUM(CASE WHEN i.outcome = 'pass' THEN 1 ELSE 0 END) AS passed,
+               SUM(CASE WHEN i.outcome = 'fail' THEN 1 ELSE 0 END) AS failed,
+               ROUND(
+                   CASE WHEN SUM(CASE WHEN i.outcome IN ('pass','fail') THEN 1 ELSE 0 END) > 0
+                   THEN SUM(CASE WHEN i.outcome = 'pass' THEN 1 ELSE 0 END)::numeric /
+                        SUM(CASE WHEN i.outcome IN ('pass','fail') THEN 1 ELSE 0 END) * 100
+                   ELSE 0 END, 1
+               ) AS pass_rate_pct
+        FROM interviews i
+        WHERE i.date IS NOT NULL
+        GROUP BY DATE_TRUNC('month', i.date)
+        ORDER BY month ASC
+        """
+    ) or []
+
+    # 5. Mock interview difficulty and performance
+    mock_performance = db.query(
+        """
+        SELECT mi.difficulty,
+               COUNT(mi.id) AS session_count,
+               ROUND(AVG(mi.overall_score)::numeric, 1) AS avg_overall_score
+        FROM mock_interviews mi
+        WHERE mi.overall_score IS NOT NULL
+        GROUP BY mi.difficulty
+        ORDER BY CASE mi.difficulty
+            WHEN 'easy' THEN 1
+            WHEN 'medium' THEN 2
+            WHEN 'hard' THEN 3
+            ELSE 4 END
+        """
+    ) or []
+
+    return jsonify({
+        "question_types": question_types,
+        "company_debrief_scores": debrief_stats,
+        "company_comparison": company_comparison,
+        "monthly_trajectory": trajectory,
+        "mock_performance_by_difficulty": mock_performance,
+    }), 200
+
+
 @bp.route("/api/interviews/<int:interview_id>/prep/generate", methods=["POST"])
 def generate_interview_prep_package(interview_id):
     """Auto-generate a full interview prep package from application context.

@@ -504,6 +504,112 @@ def update_follow_up(fu_id):
     return jsonify(row), 200
 
 
+# ---------------------------------------------------------------------------
+# Auto-Ghosted Detection
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/pipeline/detect-ghosted", methods=["POST"])
+def detect_ghosted():
+    """Scan applications for ghost signals.
+
+    Rules:
+      - Applied > 14 days ago, no response → 'likely ghosted'
+      - Post-interview > 7 days, no response → 'ghosted post-interview'
+
+    JSON body (optional):
+        applied_days (int): threshold for applied-no-response (default 14)
+        interview_days (int): threshold for post-interview silence (default 7)
+        auto_flag (bool): if true, update status to 'Ghosted' (default false)
+    """
+    data = request.get_json(silent=True) or {}
+    applied_days = data.get("applied_days", 14)
+    interview_days = data.get("interview_days", 7)
+    auto_flag = data.get("auto_flag", False)
+
+    flagged = []
+
+    # 1. Applied > N days, still in 'Applied' status, no follow-up response
+    applied_stale = db.query(
+        """
+        SELECT a.id, a.company_name, a.role, a.status, a.date_applied,
+               a.last_status_change,
+               EXTRACT(DAY FROM NOW() - COALESCE(a.last_status_change, a.date_applied::timestamp))::int AS days_waiting,
+               (SELECT COUNT(*) FROM follow_ups f WHERE f.application_id = a.id AND f.response_received = TRUE) AS responses,
+               (SELECT COUNT(*) FROM interviews i WHERE i.application_id = a.id) AS interview_count
+        FROM applications a
+        WHERE a.status = 'Applied'
+          AND COALESCE(a.last_status_change, a.date_applied::timestamp) < NOW() - INTERVAL '%s days'
+        ORDER BY days_waiting DESC
+        """,
+        (applied_days,),
+    )
+    for app in (applied_stale or []):
+        if app["responses"] == 0 and app["interview_count"] == 0:
+            flagged.append({
+                **app,
+                "ghost_type": "likely_ghosted",
+                "reason": f"Applied {app['days_waiting']} days ago with no response or interview",
+                "recommended_action": "Send final follow-up or mark as ghosted",
+            })
+
+    # 2. Post-interview > N days, outcome still 'pending'
+    post_interview_stale = db.query(
+        """
+        SELECT a.id AS application_id, a.company_name, a.role, a.status,
+               i.id AS interview_id, i.date AS interview_date, i.type AS interview_type,
+               EXTRACT(DAY FROM NOW() - i.date)::int AS days_since_interview
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        WHERE i.outcome = 'pending'
+          AND i.date < NOW() - INTERVAL '%s days'
+          AND a.status NOT IN ('Rejected', 'Ghosted', 'Withdrawn', 'Accepted', 'Rescinded')
+        ORDER BY days_since_interview DESC
+        """,
+        (interview_days,),
+    )
+    for item in (post_interview_stale or []):
+        flagged.append({
+            "id": item["application_id"],
+            "company_name": item["company_name"],
+            "role": item["role"],
+            "status": item["status"],
+            "interview_id": item["interview_id"],
+            "interview_date": item["interview_date"],
+            "interview_type": item["interview_type"],
+            "days_since_interview": item["days_since_interview"],
+            "ghost_type": "ghosted_post_interview",
+            "reason": f"Interview was {item['days_since_interview']} days ago with no outcome update",
+            "recommended_action": "Send thank-you/follow-up or mark as ghosted",
+        })
+
+    # Auto-flag if requested
+    updated_ids = []
+    if auto_flag and flagged:
+        for item in flagged:
+            app_id = item["id"]
+            if app_id not in updated_ids:
+                old_status = item.get("status", "Applied")
+                db.execute(
+                    "UPDATE applications SET status = 'Ghosted', last_status_change = NOW() WHERE id = %s",
+                    (app_id,),
+                )
+                db.execute(
+                    """
+                    INSERT INTO application_status_history (application_id, old_status, new_status, notes)
+                    VALUES (%s, %s, 'Ghosted', %s)
+                    """,
+                    (app_id, old_status, f"Auto-flagged: {item['reason']}"),
+                )
+                updated_ids.append(app_id)
+
+    return jsonify({
+        "flagged_count": len(flagged),
+        "auto_flagged": len(updated_ids),
+        "thresholds": {"applied_days": applied_days, "interview_days": interview_days},
+        "flagged": flagged,
+    }), 200
+
+
 @bp.route("/api/applications/stale", methods=["GET"])
 def stale_applications():
     """Find applications with no activity for N days."""

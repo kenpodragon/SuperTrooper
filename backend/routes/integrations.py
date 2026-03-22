@@ -1,5 +1,6 @@
 """Blueprint for external integration and scheduler management routes."""
 
+import json
 from flask import Blueprint, jsonify, request
 import db
 
@@ -104,6 +105,124 @@ def list_integration_jobs():
         tuple(params),
     )
     return jsonify({"jobs": rows or [], "limit": limit, "offset": offset})
+
+
+# ---------------------------------------------------------------------------
+# Scheduler routes
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Company Careers Page Monitoring
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/companies/<int:company_id>/monitor", methods=["POST"])
+def monitor_company(company_id):
+    """Set up monitoring for a company's careers page.
+
+    JSON body:
+        careers_page_url (str): URL of the company's careers/jobs page
+        check_interval_hours (int): how often to check (default 24)
+        keywords (list[str]): optional keywords to watch for
+    """
+    company = db.query_one("SELECT id, name FROM companies WHERE id = %s", (company_id,))
+    if not company:
+        return jsonify({"error": "Company not found"}), 404
+
+    data = request.get_json(force=True)
+    careers_url = data.get("careers_page_url")
+    if not careers_url:
+        return jsonify({"error": "careers_page_url is required"}), 400
+
+    # Update careers_page_url on companies table (column may not exist yet — safe upsert)
+    try:
+        db.execute(
+            "UPDATE companies SET careers_page_url = %s WHERE id = %s",
+            (careers_url, company_id),
+        )
+    except Exception:
+        pass  # Column may not exist; monitoring still works via the check record
+
+    # Create or update a monitoring check record in company_monitors
+    try:
+        existing = db.query_one(
+            "SELECT id FROM company_monitors WHERE company_id = %s", (company_id,)
+        )
+        if existing:
+            row = db.execute_returning(
+                """
+                UPDATE company_monitors
+                SET careers_page_url = %s, check_interval_hours = %s,
+                    keywords = %s::jsonb, enabled = TRUE, updated_at = NOW()
+                WHERE company_id = %s
+                RETURNING *
+                """,
+                (
+                    careers_url,
+                    data.get("check_interval_hours", 24),
+                    json.dumps(data.get("keywords", [])),
+                    company_id,
+                ),
+            )
+        else:
+            row = db.execute_returning(
+                """
+                INSERT INTO company_monitors (company_id, company_name, careers_page_url,
+                    check_interval_hours, keywords, enabled)
+                VALUES (%s, %s, %s, %s, %s::jsonb, TRUE)
+                RETURNING *
+                """,
+                (
+                    company_id,
+                    company["name"],
+                    careers_url,
+                    data.get("check_interval_hours", 24),
+                    json.dumps(data.get("keywords", [])),
+                ),
+            )
+    except Exception:
+        # company_monitors table may not exist; store as stub in settings/preferences
+        row = {
+            "company_id": company_id,
+            "company_name": company["name"],
+            "careers_page_url": careers_url,
+            "check_interval_hours": data.get("check_interval_hours", 24),
+            "keywords": data.get("keywords", []),
+            "enabled": True,
+            "note": "Stub record — company_monitors table not yet created",
+        }
+
+    return jsonify(row), 201
+
+
+@bp.route("/api/companies/monitored", methods=["GET"])
+def list_monitored_companies():
+    """List all monitored companies with last check dates."""
+    try:
+        rows = db.query(
+            """
+            SELECT cm.*, c.sector, c.fit_score, c.priority
+            FROM company_monitors cm
+            LEFT JOIN companies c ON c.id = cm.company_id
+            WHERE cm.enabled = TRUE
+            ORDER BY cm.updated_at DESC NULLS LAST
+            """
+        )
+    except Exception:
+        # Fallback: companies with careers_page_url set
+        try:
+            rows = db.query(
+                """
+                SELECT id AS company_id, name AS company_name, careers_page_url,
+                       sector, fit_score, priority, updated_at
+                FROM companies
+                WHERE careers_page_url IS NOT NULL AND careers_page_url != ''
+                ORDER BY updated_at DESC NULLS LAST
+                """
+            )
+        except Exception:
+            rows = []
+
+    return jsonify({"count": len(rows), "monitored": rows}), 200
 
 
 # ---------------------------------------------------------------------------

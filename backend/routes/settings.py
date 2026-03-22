@@ -1,5 +1,6 @@
 """Routes for settings (single-row config table)."""
 
+import json
 from flask import Blueprint, request, jsonify
 import db
 
@@ -186,6 +187,90 @@ def test_ai_connection():
         "health": health,
         "providers": list_providers(),
     })
+
+
+# ---------------------------------------------------------------------------
+# Configurable Aging Thresholds
+# ---------------------------------------------------------------------------
+
+DEFAULT_AGING_RULES = {
+    "applied": 14,
+    "interviewing": 7,
+    "post_interview": 7,
+    "saved": 30,
+}
+
+
+@bp.route("/api/settings/aging-rules", methods=["GET"])
+def get_aging_rules():
+    """Return current aging thresholds per status.
+
+    Reads from settings.preferences->aging_rules. Falls back to defaults.
+    """
+    row = db.query_one("SELECT preferences FROM settings WHERE id = 1")
+    prefs = (row.get("preferences") or {}) if row else {}
+
+    # preferences may be a string or dict depending on DB driver
+    if isinstance(prefs, str):
+        try:
+            prefs = json.loads(prefs)
+        except (json.JSONDecodeError, TypeError):
+            prefs = {}
+
+    aging_rules = prefs.get("aging_rules", DEFAULT_AGING_RULES)
+    return jsonify({
+        "aging_rules": aging_rules,
+        "defaults": DEFAULT_AGING_RULES,
+    }), 200
+
+
+@bp.route("/api/settings/aging-rules", methods=["PUT"])
+def update_aging_rules():
+    """Update aging thresholds per status.
+
+    JSON body:
+        applied (int): days before 'Applied' is stale (default 14)
+        interviewing (int): days before 'Interviewing' is stale (default 7)
+        post_interview (int): days after interview with no response (default 7)
+        saved (int): days before saved job is stale (default 30)
+    """
+    data = request.get_json(force=True)
+
+    # Validate: all values must be positive integers
+    new_rules = {}
+    for key in DEFAULT_AGING_RULES:
+        if key in data:
+            val = data[key]
+            if not isinstance(val, int) or val < 1:
+                return jsonify({"error": f"{key} must be a positive integer"}), 400
+            new_rules[key] = val
+
+    if not new_rules:
+        return jsonify({"error": "Provide at least one threshold: " + ", ".join(DEFAULT_AGING_RULES.keys())}), 400
+
+    # Read current preferences
+    row = db.query_one("SELECT preferences FROM settings WHERE id = 1")
+    prefs = (row.get("preferences") or {}) if row else {}
+    if isinstance(prefs, str):
+        try:
+            prefs = json.loads(prefs)
+        except (json.JSONDecodeError, TypeError):
+            prefs = {}
+
+    # Merge with existing aging_rules (keep defaults for unset keys)
+    existing_rules = prefs.get("aging_rules", DEFAULT_AGING_RULES.copy())
+    existing_rules.update(new_rules)
+    prefs["aging_rules"] = existing_rules
+
+    db.execute(
+        "UPDATE settings SET preferences = %s::jsonb, updated_at = NOW() WHERE id = 1",
+        (json.dumps(prefs),),
+    )
+
+    return jsonify({
+        "aging_rules": existing_rules,
+        "updated_keys": list(new_rules.keys()),
+    }), 200
 
 
 @bp.route("/api/plugin/health", methods=["GET"])

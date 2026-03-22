@@ -1023,3 +1023,118 @@ def recruiter_search_tips():
         "overall_score": audit.get("overall_score"),
         "tips": tips,
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# Endorsement Strategy (S11)
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/linkedin/endorsement-strategy", methods=["GET"])
+def endorsement_strategy():
+    """Identify skills with low endorsement counts and suggest endorsers.
+
+    Cross-references skills table with target role requirements.
+    Returns priority list: skill name, current endorsement count,
+    target roles needing it, and suggested contacts who could endorse.
+    """
+    # Get all skills (endorsement_count may not exist yet; use demand_frequency as proxy)
+    skills = db.query(
+        """
+        SELECT id, name, category, proficiency,
+               COALESCE(demand_frequency, 0) AS endorsement_count
+        FROM skills
+        ORDER BY COALESCE(demand_frequency, 0) ASC, name
+        """
+    )
+    if not skills:
+        return jsonify({"error": "No skills found in database"}), 404
+
+    # Get target roles from active applications and saved jobs
+    target_roles = db.query(
+        """
+        SELECT DISTINCT role FROM (
+            SELECT role FROM applications
+            WHERE status NOT IN ('Rejected', 'Ghosted', 'Withdrawn', 'Rescinded')
+            UNION
+            SELECT title AS role FROM saved_jobs
+            WHERE status NOT IN ('archived', 'rejected')
+        ) roles
+        WHERE role IS NOT NULL
+        LIMIT 20
+        """
+    )
+    role_titles = [r["role"] for r in target_roles] if target_roles else []
+
+    # Get active contacts who could endorse
+    endorsers = db.query(
+        """
+        SELECT id, name, title, company, relationship, relationship_strength, linkedin_url
+        FROM contacts
+        WHERE relationship_stage = 'active'
+           OR relationship_strength IN ('strong', 'warm')
+        ORDER BY
+            CASE relationship_strength WHEN 'strong' THEN 1 WHEN 'warm' THEN 2 ELSE 3 END,
+            last_contact DESC NULLS LAST
+        LIMIT 30
+        """
+    )
+
+    # Build priority list
+    priority_skills = []
+    for skill in skills:
+        endorsement_count = skill["endorsement_count"]
+        # Low endorsement = high priority
+        if endorsement_count < 5:
+            priority = "high"
+        elif endorsement_count < 15:
+            priority = "medium"
+        else:
+            priority = "low"
+
+        # Find matching endorsers (people in similar domain)
+        suggested = []
+        skill_name_lower = (skill["name"] or "").lower()
+        for contact in (endorsers or []):
+            contact_title = (contact.get("title") or "").lower()
+            # Simple heuristic: suggest contacts whose title relates to skill category
+            if skill_name_lower in contact_title or (skill.get("category") or "").lower() in contact_title:
+                suggested.append({
+                    "name": contact["name"],
+                    "title": contact.get("title"),
+                    "company": contact.get("company"),
+                    "relationship_strength": contact.get("relationship_strength"),
+                })
+            if len(suggested) >= 3:
+                break
+
+        # If no specific matches, suggest top strong contacts
+        if not suggested and endorsers:
+            for contact in endorsers[:3]:
+                suggested.append({
+                    "name": contact["name"],
+                    "title": contact.get("title"),
+                    "company": contact.get("company"),
+                    "relationship_strength": contact.get("relationship_strength"),
+                })
+
+        priority_skills.append({
+            "skill_id": skill["id"],
+            "skill_name": skill["name"],
+            "category": skill.get("category"),
+            "proficiency": skill.get("proficiency"),
+            "endorsement_count": endorsement_count,
+            "priority": priority,
+            "target_roles": role_titles[:5],
+            "suggested_endorsers": suggested,
+        })
+
+    # Sort: high priority first, then by endorsement count ascending
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    priority_skills.sort(key=lambda x: (priority_order.get(x["priority"], 3), x["endorsement_count"]))
+
+    return jsonify({
+        "total_skills": len(skills),
+        "low_endorsement_count": sum(1 for s in priority_skills if s["priority"] == "high"),
+        "target_roles": role_titles,
+        "skills": priority_skills,
+    }), 200

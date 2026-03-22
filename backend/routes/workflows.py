@@ -314,3 +314,242 @@ def get_workflow_log(workflow_id):
         (workflow_id, limit),
     )
     return jsonify({"workflow": workflow, "log": rows}), 200
+
+
+# ---------------------------------------------------------------------------
+# Evaluate all active workflows against current state
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/workflows/evaluate", methods=["POST"])
+def evaluate_workflows():
+    """Evaluate all enabled workflows against current application state.
+
+    Checks trigger conditions (e.g., stale applications) and executes
+    matching actions (create notification, draft follow-up, update status).
+    """
+    workflows = db.query(
+        "SELECT * FROM workflows WHERE enabled = TRUE ORDER BY id"
+    )
+    if not workflows:
+        return jsonify({"evaluated": 0, "triggered": 0, "results": []}), 200
+
+    results = []
+    triggered_count = 0
+
+    for wf in workflows:
+        trigger_type = wf["trigger_type"]
+        trigger_config = wf["trigger_config"] or {}
+        matched = False
+        trigger_data = {}
+
+        # --- Evaluate trigger conditions ---
+        if trigger_type == "stale_application":
+            days = trigger_config.get("days", 14)
+            status_filter = trigger_config.get("status")
+            clauses = [
+                "a.status NOT IN ('Rejected', 'Ghosted', 'Withdrawn', 'Accepted', 'Rescinded')",
+                "COALESCE(a.last_status_change, a.date_applied::timestamp) < NOW() - INTERVAL '%s days'",
+            ]
+            params = [days]
+            if status_filter:
+                clauses.append("a.status = %s")
+                params.append(status_filter)
+
+            stale = db.query(
+                f"""
+                SELECT a.id, a.company_name, a.role, a.status,
+                       EXTRACT(DAY FROM NOW() - COALESCE(a.last_status_change, a.date_applied::timestamp))::int AS days_stale
+                FROM applications a
+                WHERE {' AND '.join(clauses)}
+                ORDER BY days_stale DESC
+                """,
+                params,
+            )
+            if stale:
+                matched = True
+                trigger_data = {"stale_applications": stale, "count": len(stale)}
+
+        elif trigger_type == "interview_upcoming":
+            days_ahead = trigger_config.get("days_ahead", 3)
+            upcoming = db.query(
+                """
+                SELECT i.id, i.date, i.type, a.company_name, a.role
+                FROM interviews i
+                LEFT JOIN applications a ON a.id = i.application_id
+                WHERE i.date BETWEEN NOW() AND NOW() + INTERVAL '%s days'
+                  AND i.outcome = 'pending'
+                ORDER BY i.date ASC
+                """,
+                (days_ahead,),
+            )
+            if upcoming:
+                matched = True
+                trigger_data = {"upcoming_interviews": upcoming, "count": len(upcoming)}
+
+        elif trigger_type == "status_change":
+            target_status = trigger_config.get("status", "Rejected")
+            lookback = trigger_config.get("lookback_hours", 24)
+            changes = db.query(
+                """
+                SELECT ash.*, a.company_name, a.role
+                FROM application_status_history ash
+                LEFT JOIN applications a ON a.id = ash.application_id
+                WHERE ash.new_status = %s
+                  AND ash.changed_at > NOW() - INTERVAL '%s hours'
+                ORDER BY ash.changed_at DESC
+                """,
+                (target_status, lookback),
+            )
+            if changes:
+                matched = True
+                trigger_data = {"status_changes": changes, "count": len(changes)}
+
+        elif trigger_type == "schedule":
+            # Schedule-based workflows are evaluated externally; skip here
+            continue
+
+        else:
+            results.append({
+                "workflow_id": wf["id"],
+                "name": wf["name"],
+                "matched": False,
+                "note": f"Unknown trigger_type: {trigger_type}",
+            })
+            continue
+
+        # --- Execute action if matched ---
+        if matched:
+            triggered_count += 1
+            action_result, success, error_message = _execute_action(wf, trigger_data)
+
+            # Log execution
+            db.execute_returning(
+                """
+                INSERT INTO workflow_log (workflow_id, trigger_data, action_result, success, error_message)
+                VALUES (%s, %s::jsonb, %s::jsonb, %s, %s)
+                RETURNING id
+                """,
+                (
+                    wf["id"],
+                    json.dumps(trigger_data, default=str),
+                    json.dumps(action_result, default=str),
+                    success,
+                    error_message,
+                ),
+            )
+            db.execute("UPDATE workflows SET last_run_at = NOW() WHERE id = %s", (wf["id"],))
+
+            results.append({
+                "workflow_id": wf["id"],
+                "name": wf["name"],
+                "matched": True,
+                "success": success,
+                "action_result": action_result,
+            })
+        else:
+            results.append({
+                "workflow_id": wf["id"],
+                "name": wf["name"],
+                "matched": False,
+            })
+
+    return jsonify({
+        "evaluated": len(workflows),
+        "triggered": triggered_count,
+        "results": results,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Create workflow from predefined templates
+# ---------------------------------------------------------------------------
+
+WORKFLOW_TEMPLATES = {
+    "stale-to-follow-up": {
+        "name": "Stale Application Follow-Up",
+        "trigger_type": "stale_application",
+        "trigger_config": {"days": 7},
+        "action_type": "create_notification",
+        "action_config": {
+            "type": "follow_up",
+            "severity": "warning",
+            "title": "Stale applications need follow-up",
+            "body": "Applications stale for 7+ days detected. Draft follow-up emails.",
+        },
+    },
+    "interview-prep": {
+        "name": "Interview Prep Reminder",
+        "trigger_type": "interview_upcoming",
+        "trigger_config": {"days_ahead": 3},
+        "action_type": "create_notification",
+        "action_config": {
+            "type": "interview_prep",
+            "severity": "info",
+            "title": "Upcoming interview — prep needed",
+            "body": "Interview scheduled within 3 days. Generate prep package.",
+        },
+    },
+    "rejection-analysis": {
+        "name": "Rejection Analysis",
+        "trigger_type": "status_change",
+        "trigger_config": {"status": "Rejected", "lookback_hours": 24},
+        "action_type": "create_notification",
+        "action_config": {
+            "type": "rejection",
+            "severity": "info",
+            "title": "New rejection — run analysis",
+            "body": "Application rejected. Run rejection analysis to identify patterns.",
+        },
+    },
+}
+
+
+@bp.route("/api/workflows/templates", methods=["GET"])
+def list_workflow_templates():
+    """List available workflow templates."""
+    templates = []
+    for key, tmpl in WORKFLOW_TEMPLATES.items():
+        templates.append({"key": key, "name": tmpl["name"], "trigger_type": tmpl["trigger_type"]})
+    return jsonify(templates), 200
+
+
+@bp.route("/api/workflows/templates", methods=["POST"])
+def create_from_template():
+    """Create a workflow from a predefined template.
+
+    JSON body:
+        template (str): one of 'stale-to-follow-up', 'interview-prep', 'rejection-analysis'
+        overrides (dict): optional overrides for trigger_config, action_config, name, enabled
+    """
+    data = request.get_json(force=True)
+    template_key = data.get("template")
+    if not template_key or template_key not in WORKFLOW_TEMPLATES:
+        return jsonify({
+            "error": f"template must be one of: {', '.join(WORKFLOW_TEMPLATES.keys())}",
+        }), 400
+
+    tmpl = WORKFLOW_TEMPLATES[template_key].copy()
+    overrides = data.get("overrides", {})
+
+    # Apply overrides
+    name = overrides.get("name", tmpl["name"])
+    trigger_config = {**tmpl["trigger_config"], **overrides.get("trigger_config", {})}
+    action_config = {**tmpl["action_config"], **overrides.get("action_config", {})}
+    enabled = overrides.get("enabled", True)
+
+    row = db.execute_returning(
+        """
+        INSERT INTO workflows (name, trigger_type, trigger_config, action_type, action_config, enabled)
+        VALUES (%s, %s, %s::jsonb, %s, %s::jsonb, %s)
+        RETURNING *
+        """,
+        (
+            name,
+            tmpl["trigger_type"],
+            json.dumps(trigger_config),
+            tmpl["action_type"],
+            json.dumps(action_config),
+            enabled,
+        ),
+    )
+    return jsonify({"template": template_key, "workflow": row}), 201
