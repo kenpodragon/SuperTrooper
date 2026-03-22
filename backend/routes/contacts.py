@@ -308,6 +308,139 @@ def delete_referral(ref_id):
 
 
 # ---------------------------------------------------------------------------
+# Contact Enrichment
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/contacts/<int:contact_id>/enrich", methods=["POST"])
+def enrich_contact(contact_id):
+    """Add enrichment data (current_title, current_company, linkedin_url, notes)."""
+    contact = db.query_one("SELECT id FROM contacts WHERE id = %s", (contact_id,))
+    if not contact:
+        return jsonify({"error": "Contact not found"}), 404
+
+    data = request.get_json(force=True)
+    enrichable = ["title", "company", "linkedin_url", "notes", "email", "phone"]
+    sets, params = [], []
+
+    for key in enrichable:
+        # Accept both "current_title" and "title" style keys
+        val = data.get(key) or data.get(f"current_{key}")
+        if val is not None:
+            sets.append(f"{key} = %s")
+            params.append(val)
+
+    if not sets:
+        return jsonify({"error": "No enrichment fields provided"}), 400
+
+    sets.append("enriched_at = NOW()")
+    if data.get("source"):
+        sets.append("enrichment_source = %s")
+        params.append(data["source"])
+
+    sets.append("updated_at = NOW()")
+    params.append(contact_id)
+
+    row = db.execute_returning(
+        f"UPDATE contacts SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    return jsonify(row), 200
+
+
+@bp.route("/api/contacts/stale", methods=["GET"])
+def stale_contacts():
+    """Contacts with no touchpoint in > 90 days (or never touched)."""
+    days = int(request.args.get("days", 90))
+    limit = int(request.args.get("limit", 50))
+
+    rows = db.query(
+        """
+        SELECT c.id, c.name, c.company, c.title, c.relationship_stage,
+               c.health_score, c.last_touchpoint_at, c.last_contact, c.email,
+               EXTRACT(EPOCH FROM (NOW() - c.last_touchpoint_at)) / 86400 AS days_since_touchpoint
+        FROM contacts c
+        WHERE c.merged_into_id IS NULL
+          AND (c.last_touchpoint_at < NOW() - INTERVAL '%s days'
+               OR c.last_touchpoint_at IS NULL)
+        ORDER BY c.last_touchpoint_at ASC NULLS FIRST
+        LIMIT %s
+        """,
+        (days, limit),
+    )
+    return jsonify({"stale_contacts": rows, "count": len(rows), "threshold_days": days}), 200
+
+
+@bp.route("/api/contacts/<int:contact_id>/merge", methods=["POST"])
+def merge_contacts(contact_id):
+    """Merge duplicate contacts: keep primary (contact_id), merge touchpoints/notes from secondary.
+
+    Body JSON: {"merge_from_id": int}
+    """
+    data = request.get_json(force=True)
+    merge_from_id = data.get("merge_from_id")
+    if not merge_from_id:
+        return jsonify({"error": "merge_from_id is required"}), 400
+
+    primary = db.query_one("SELECT * FROM contacts WHERE id = %s", (contact_id,))
+    if not primary:
+        return jsonify({"error": "Primary contact not found"}), 404
+
+    secondary = db.query_one("SELECT * FROM contacts WHERE id = %s", (merge_from_id,))
+    if not secondary:
+        return jsonify({"error": "Secondary contact not found"}), 404
+
+    # Move touchpoints from secondary to primary
+    db.execute(
+        "UPDATE touchpoints SET contact_id = %s WHERE contact_id = %s",
+        (contact_id, merge_from_id),
+    )
+
+    # Move networking_tasks from secondary to primary
+    db.execute(
+        "UPDATE networking_tasks SET contact_id = %s WHERE contact_id = %s",
+        (contact_id, merge_from_id),
+    )
+
+    # Move crm_tasks from secondary to primary
+    db.execute(
+        "UPDATE crm_tasks SET contact_id = %s WHERE contact_id = %s",
+        (contact_id, merge_from_id),
+    )
+
+    # Move outreach messages from secondary to primary
+    db.execute(
+        "UPDATE outreach_messages SET contact_id = %s WHERE contact_id = %s",
+        (contact_id, merge_from_id),
+    )
+
+    # Merge notes
+    if secondary.get("notes"):
+        merged_notes = (primary.get("notes") or "") + "\n\n--- Merged from " + (secondary.get("name") or str(merge_from_id)) + " ---\n" + secondary["notes"]
+        db.execute(
+            "UPDATE contacts SET notes = %s, updated_at = NOW() WHERE id = %s",
+            (merged_notes, contact_id),
+        )
+
+    # Mark secondary as merged (soft delete)
+    db.execute(
+        "UPDATE contacts SET merged_into_id = %s, updated_at = NOW() WHERE id = %s",
+        (contact_id, merge_from_id),
+    )
+
+    # Count merged records
+    tp_count = db.query_one(
+        "SELECT COUNT(*) AS cnt FROM touchpoints WHERE contact_id = %s", (contact_id,)
+    )
+
+    return jsonify({
+        "primary_id": contact_id,
+        "merged_from_id": merge_from_id,
+        "total_touchpoints": tp_count["cnt"] if tp_count else 0,
+        "status": "merged",
+    }), 200
+
+
+# ---------------------------------------------------------------------------
 # Outreach Follow-up Reminders
 # ---------------------------------------------------------------------------
 

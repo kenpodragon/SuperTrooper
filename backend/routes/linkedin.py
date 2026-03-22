@@ -1138,3 +1138,92 @@ def endorsement_strategy():
         "target_roles": role_titles,
         "skills": priority_skills,
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn Import Enrichment (S9 — match imported connections to existing contacts)
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/linkedin/import/enrich", methods=["POST"])
+def import_enrich():
+    """After CSV import, match imported connections to existing contacts by name/email.
+
+    Body JSON:
+        connections (required): array of {name, email, company, title, linkedin_url}
+
+    Returns matched records (linked) and unmatched (flagged as new potential contacts).
+    """
+    data = request.get_json(force=True)
+    connections = data.get("connections", [])
+    if not connections:
+        return jsonify({"error": "connections array is required"}), 400
+
+    matched = []
+    unmatched = []
+
+    for conn in connections:
+        name = (conn.get("name") or "").strip()
+        email = (conn.get("email") or "").strip()
+
+        if not name and not email:
+            continue
+
+        # Try to match by email first (strongest signal), then by name
+        existing = None
+        if email:
+            existing = db.query_one(
+                "SELECT id, name, company, email FROM contacts WHERE email ILIKE %s AND merged_into_id IS NULL",
+                (email,),
+            )
+        if not existing and name:
+            existing = db.query_one(
+                "SELECT id, name, company, email FROM contacts WHERE name ILIKE %s AND merged_into_id IS NULL",
+                (name,),
+            )
+
+        if existing:
+            # Enrich existing contact with any new data
+            enrich_sets, enrich_params = [], []
+            if conn.get("linkedin_url") and not existing.get("linkedin_url"):
+                enrich_sets.append("linkedin_url = %s")
+                enrich_params.append(conn["linkedin_url"])
+            if conn.get("title"):
+                enrich_sets.append("title = %s")
+                enrich_params.append(conn["title"])
+            if conn.get("company") and not existing.get("company"):
+                enrich_sets.append("company = %s")
+                enrich_params.append(conn["company"])
+
+            if enrich_sets:
+                enrich_sets.append("enriched_at = NOW()")
+                enrich_sets.append("enrichment_source = 'linkedin_import'")
+                enrich_sets.append("updated_at = NOW()")
+                enrich_params.append(existing["id"])
+                db.execute(
+                    f"UPDATE contacts SET {', '.join(enrich_sets)} WHERE id = %s",
+                    enrich_params,
+                )
+
+            matched.append({
+                "contact_id": existing["id"],
+                "name": existing["name"],
+                "matched_by": "email" if email and existing.get("email") and email.lower() == (existing["email"] or "").lower() else "name",
+                "enriched_fields": [s.split(" =")[0] for s in enrich_sets if s not in ("enriched_at = NOW()", "enrichment_source = 'linkedin_import'", "updated_at = NOW()")],
+            })
+        else:
+            unmatched.append({
+                "name": name,
+                "email": email,
+                "company": conn.get("company"),
+                "title": conn.get("title"),
+                "linkedin_url": conn.get("linkedin_url"),
+                "status": "new_potential_contact",
+            })
+
+    return jsonify({
+        "matched": matched,
+        "matched_count": len(matched),
+        "unmatched": unmatched,
+        "unmatched_count": len(unmatched),
+        "total_processed": len(matched) + len(unmatched),
+    }), 200

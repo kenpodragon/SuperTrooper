@@ -531,3 +531,261 @@ def resume_drip_sequence(seq_id):
     if not row:
         return jsonify({"error": "Sequence not found or not paused"}), 404
     return jsonify(row), 200
+
+
+# ---------------------------------------------------------------------------
+# CRM Tasks (crm_tasks table — richer task/reminder system)
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/crm/reminders", methods=["POST"])
+def create_crm_task():
+    """Create a networking task/reminder with due_date, contact_id, task_type, description."""
+    data = request.get_json(force=True)
+    if not data.get("task_type"):
+        return jsonify({"error": "task_type is required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO crm_tasks (contact_id, task_type, description, due_date, status)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            data.get("contact_id"),
+            data["task_type"],
+            data.get("description"),
+            data.get("due_date"),
+            data.get("status", "pending"),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/crm/reminders", methods=["GET"])
+def list_crm_tasks():
+    """List CRM reminders with filter: overdue, due_today, upcoming, completed, or all."""
+    filter_type = request.args.get("filter", "all")
+    limit = int(request.args.get("limit", 100))
+
+    today = date.today()
+    clauses, params = [], []
+
+    if filter_type == "overdue":
+        clauses.append("t.due_date < %s")
+        clauses.append("t.status = 'pending'")
+        params.append(today)
+    elif filter_type == "due_today":
+        clauses.append("t.due_date = %s")
+        clauses.append("t.status = 'pending'")
+        params.append(today)
+    elif filter_type == "upcoming":
+        clauses.append("t.due_date > %s")
+        clauses.append("t.status = 'pending'")
+        params.append(today)
+    elif filter_type == "completed":
+        clauses.append("t.status = 'completed'")
+    elif filter_type == "snoozed":
+        clauses.append("t.status = 'snoozed'")
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+
+    rows = db.query(
+        f"""
+        SELECT t.*, c.name AS contact_name, c.company AS contact_company
+        FROM crm_tasks t
+        LEFT JOIN contacts c ON c.id = t.contact_id
+        {where}
+        ORDER BY t.due_date ASC NULLS LAST, t.created_at DESC
+        LIMIT %s
+        """,
+        params,
+    )
+    return jsonify({"tasks": rows, "count": len(rows), "filter": filter_type}), 200
+
+
+@bp.route("/api/crm/reminders/<int:task_id>", methods=["PUT"])
+def update_crm_task(task_id):
+    """Update CRM reminder status (pending, completed, snoozed) and other fields."""
+    data = request.get_json(force=True)
+    allowed = ["task_type", "description", "due_date", "status", "snoozed_until"]
+    sets, params = [], []
+
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+
+    # Auto-set completed_at when marking complete
+    if data.get("status") == "completed":
+        sets.append("completed_at = NOW()")
+    elif data.get("status") in ("pending", "snoozed"):
+        sets.append("completed_at = NULL")
+
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(task_id)
+    row = db.execute_returning(
+        f"UPDATE crm_tasks SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/crm/reminders/overdue", methods=["GET"])
+def overdue_crm_tasks():
+    """List overdue CRM reminders with contact info."""
+    rows = db.query(
+        """
+        SELECT t.*, c.name AS contact_name, c.company AS contact_company,
+               c.email AS contact_email, c.relationship_stage
+        FROM crm_tasks t
+        LEFT JOIN contacts c ON c.id = t.contact_id
+        WHERE t.due_date < CURRENT_DATE
+          AND t.status = 'pending'
+        ORDER BY t.due_date ASC
+        """
+    )
+    return jsonify({"overdue_tasks": rows, "count": len(rows)}), 200
+
+
+# ---------------------------------------------------------------------------
+# CRM Pipeline Stages
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/crm/pipeline/health", methods=["GET"])
+def pipeline_health():
+    """Aggregate health metrics: % active, % dormant, avg touchpoints/month."""
+    total = db.query_one("SELECT COUNT(*) AS cnt FROM contacts")
+    total_count = total["cnt"] if total else 0
+
+    if total_count == 0:
+        return jsonify({
+            "total_contacts": 0,
+            "stages": {},
+            "pct_active": 0,
+            "pct_dormant": 0,
+            "avg_touchpoints_per_month": 0,
+        }), 200
+
+    stage_counts = db.query(
+        """
+        SELECT relationship_stage, COUNT(*) AS cnt
+        FROM contacts
+        GROUP BY relationship_stage
+        """
+    )
+    stages = {r["relationship_stage"]: r["cnt"] for r in stage_counts}
+
+    active_count = stages.get("active", 0) + stages.get("close", 0)
+    dormant_count = stages.get("dormant", 0)
+
+    # Avg touchpoints per month (last 90 days extrapolated)
+    tp_stats = db.query_one(
+        """
+        SELECT COUNT(*) AS total_tp
+        FROM touchpoints
+        WHERE logged_at >= NOW() - INTERVAL '90 days'
+        """
+    )
+    total_tp_90d = tp_stats["total_tp"] if tp_stats else 0
+    avg_per_month = round(total_tp_90d / 3.0, 1)
+
+    return jsonify({
+        "total_contacts": total_count,
+        "stages": stages,
+        "pct_active": round(active_count / total_count * 100, 1),
+        "pct_dormant": round(dormant_count / total_count * 100, 1),
+        "avg_touchpoints_per_month": avg_per_month,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Outreach Analytics
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/crm/outreach-stats", methods=["GET"])
+def outreach_stats():
+    """Response rates by channel, by relationship stage, by message type."""
+    by_channel = db.query(
+        """
+        SELECT channel,
+               COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE response_received = TRUE) AS responses,
+               ROUND(
+                   COUNT(*) FILTER (WHERE response_received = TRUE)::NUMERIC
+                   / NULLIF(COUNT(*), 0) * 100, 1
+               ) AS response_rate_pct
+        FROM outreach_messages
+        WHERE direction = 'outbound'
+        GROUP BY channel
+        ORDER BY response_rate_pct DESC NULLS LAST
+        """
+    )
+
+    by_stage = db.query(
+        """
+        SELECT c.relationship_stage,
+               COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE om.response_received = TRUE) AS responses,
+               ROUND(
+                   COUNT(*) FILTER (WHERE om.response_received = TRUE)::NUMERIC
+                   / NULLIF(COUNT(*), 0) * 100, 1
+               ) AS response_rate_pct
+        FROM outreach_messages om
+        JOIN contacts c ON c.id = om.contact_id
+        WHERE om.direction = 'outbound'
+        GROUP BY c.relationship_stage
+        ORDER BY response_rate_pct DESC NULLS LAST
+        """
+    )
+
+    by_type = db.query(
+        """
+        SELECT message_type,
+               COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE response_received = TRUE) AS responses,
+               ROUND(
+                   COUNT(*) FILTER (WHERE response_received = TRUE)::NUMERIC
+                   / NULLIF(COUNT(*), 0) * 100, 1
+               ) AS response_rate_pct
+        FROM outreach_messages
+        WHERE direction = 'outbound'
+        GROUP BY message_type
+        ORDER BY response_rate_pct DESC NULLS LAST
+        """
+    )
+
+    return jsonify({
+        "by_channel": by_channel,
+        "by_relationship_stage": by_stage,
+        "by_message_type": by_type,
+    }), 200
+
+
+@bp.route("/api/crm/outreach-history/<int:contact_id>", methods=["GET"])
+def outreach_history(contact_id):
+    """All outreach to a contact with responses."""
+    contact = db.query_one("SELECT id, name, company FROM contacts WHERE id = %s", (contact_id,))
+    if not contact:
+        return jsonify({"error": "Contact not found"}), 404
+
+    rows = db.query(
+        """
+        SELECT id, channel, direction, message_type, subject, body,
+               sent_at, response_received, follow_up_date, status, notes, created_at
+        FROM outreach_messages
+        WHERE contact_id = %s
+        ORDER BY sent_at DESC NULLS LAST, created_at DESC
+        """,
+        (contact_id,),
+    )
+    return jsonify({
+        "contact": contact,
+        "outreach": rows,
+        "total": len(rows),
+        "responses": sum(1 for r in rows if r.get("response_received")),
+    }), 200
