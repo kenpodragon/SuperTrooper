@@ -13,7 +13,7 @@ export default function Resumes() {
   });
 
   // recipes endpoint returns { recipes: [...], count } or just [...]
-  const recipeItems: Recipe[] = Array.isArray(recipeList) ? recipeList : (recipeList as any)?.recipes ?? [];
+  const recipeItems: Recipe[] = Array.isArray(recipeList) ? recipeList : (recipeList as { recipes?: Recipe[] })?.recipes ?? [];
   const bulletItems: Bullet[] = Array.isArray(bulletList) ? bulletList : [];
 
   return (

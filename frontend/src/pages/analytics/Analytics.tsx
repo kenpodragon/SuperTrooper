@@ -1,6 +1,26 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
+interface FunnelStage {
+  status: string;
+  count: number;
+}
+
+interface VelocityData {
+  total_applications?: number;
+  response_rate?: number;
+  avg_days_to_response?: number;
+  weekly_applications?: number;
+  interview_rate?: number;
+  offer_rate?: number;
+  rejection_rate?: number;
+}
+
+interface SourceEntry {
+  source: string;
+  count: number;
+}
+
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
@@ -25,25 +45,25 @@ function ProgressBar({ pct }: { pct: number }) {
 export default function Analytics() {
   const funnel = useQuery({
     queryKey: ['analytics-funnel'],
-    queryFn: () => api.get<any[]>('/analytics/funnel'),
+    queryFn: () => api.get<FunnelStage[]>('/analytics/funnel'),
   });
 
   const velocity = useQuery({
     queryKey: ['analytics-velocity'],
-    queryFn: () => api.get<any>('/analytics/velocity'),
+    queryFn: () => api.get<VelocityData>('/analytics/velocity'),
   });
 
   const sources = useQuery({
     queryKey: ['analytics-sources'],
-    queryFn: () => api.get<any[]>('/analytics/sources'),
+    queryFn: () => api.get<SourceEntry[]>('/analytics/sources'),
   });
 
   const funnelData = funnel.data ?? [];
-  const velData = velocity.data ?? {};
+  const velData: VelocityData = velocity.data ?? {};
   const sourceData = sources.data ?? [];
 
-  const totalApps = velData.total_applications ?? funnelData.reduce((s: number, f: any) => s + (f.count || 0), 0);
-  const maxCount = funnelData.reduce((m: number, f: any) => Math.max(m, f.count || 0), 1);
+  const totalApps = velData.total_applications ?? funnelData.reduce((s: number, f: FunnelStage) => s + (f.count || 0), 0);
+  const maxCount = funnelData.reduce((m: number, f: FunnelStage) => Math.max(m, f.count || 0), 1);
 
   return (
     <div>
@@ -71,7 +91,7 @@ export default function Analytics() {
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Pipeline Funnel</h2>
           {funnel.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
-          {funnelData.map((stage: any) => {
+          {funnelData.map((stage: FunnelStage) => {
             const pct = maxCount > 0 ? Math.round((stage.count / maxCount) * 100) : 0;
             const ofTotal = totalApps > 0 ? Math.round((stage.count / totalApps) * 100) : 0;
             return (
@@ -93,7 +113,7 @@ export default function Analytics() {
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Applications by Source</h2>
           {sources.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
-          {sourceData.map((s: any) => {
+          {sourceData.map((s: SourceEntry) => {
             const pct = totalApps > 0 ? Math.round((s.count / totalApps) * 100) : 0;
             return (
               <div key={s.source} className="mb-3">

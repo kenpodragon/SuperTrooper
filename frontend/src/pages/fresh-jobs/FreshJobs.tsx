@@ -2,6 +2,32 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
+interface FreshJob {
+  id: number;
+  title: string;
+  company: string;
+  location?: string;
+  source?: string;
+  fit_score?: number;
+  status: string;
+  created_at?: string;
+}
+
+interface FreshJobStats {
+  total_new: number;
+  reviewed_today: number;
+  saved_this_week: number;
+}
+
+interface TriageResponse {
+  id: number;
+  status: string;
+}
+
+interface BatchTriageResponse {
+  updated: number;
+}
+
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
@@ -24,31 +50,37 @@ export default function FreshJobs() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['fresh-jobs', statusFilter],
-    queryFn: () => api.get<any[]>(`/fresh-jobs?status=${statusFilter}`),
+    queryFn: () => api.get<FreshJob[]>(`/fresh-jobs?status=${statusFilter}`),
   });
 
   const { data: stats } = useQuery({
     queryKey: ['fresh-jobs-stats'],
-    queryFn: () => api.get<any>('/fresh-jobs/stats'),
+    queryFn: () => api.get<FreshJobStats>('/fresh-jobs/stats'),
   });
 
   const triage = useMutation({
     mutationFn: ({ id, action }: { id: number; action: string }) =>
-      api.post<any>(`/fresh-jobs/${id}/triage`, { action }),
+      api.post<TriageResponse>(`/fresh-jobs/${id}/triage`, { action }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['fresh-jobs'] });
       qc.invalidateQueries({ queryKey: ['fresh-jobs-stats'] });
       setSelected([]);
     },
+    onError: (error: Error) => {
+      console.error('Failed to triage job:', error.message);
+    },
   });
 
   const batchTriage = useMutation({
     mutationFn: ({ ids, action }: { ids: number[]; action: string }) =>
-      api.post<any>('/fresh-jobs/batch-triage', { job_ids: ids, action }),
+      api.post<BatchTriageResponse>('/fresh-jobs/batch-triage', { job_ids: ids, action }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['fresh-jobs'] });
       qc.invalidateQueries({ queryKey: ['fresh-jobs-stats'] });
       setSelected([]);
+    },
+    onError: (error: Error) => {
+      console.error('Failed to batch triage jobs:', error.message);
     },
   });
 
@@ -60,7 +92,7 @@ export default function FreshJobs() {
   }
 
   function toggleAll() {
-    setSelected(allSelected ? [] : jobs.map((j: any) => j.id));
+    setSelected(allSelected ? [] : jobs.map((j: FreshJob) => j.id));
   }
 
   const tabs = ['new', 'reviewing', 'saved', 'dismissed'];
@@ -115,7 +147,7 @@ export default function FreshJobs() {
         {isLoading && <p className="text-sm text-gray-400 p-4">Loading...</p>}
         {!isLoading && jobs.length === 0 && <p className="text-sm text-gray-400 p-4">No jobs in this category.</p>}
 
-        {jobs.map((job: any) => (
+        {jobs.map((job: FreshJob) => (
           <div key={job.id} className="flex items-start gap-3 p-4 border-b border-gray-100 last:border-0 hover:bg-gray-50">
             <input
               type="checkbox"

@@ -2,6 +2,41 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
+interface MockInterviewQuestion {
+  id: number;
+  question: string;
+  answer?: string;
+  feedback?: string;
+  score?: number;
+}
+
+interface MockInterview {
+  id: number;
+  job_title: string;
+  company: string;
+  interview_type: string;
+  difficulty: string;
+  overall_score?: number;
+  questions?: MockInterviewQuestion[];
+  created_at?: string;
+}
+
+interface MockInterviewDetail extends MockInterview {
+  questions: MockInterviewQuestion[];
+}
+
+interface AnswerResponse {
+  id: number;
+  question_id: number;
+  score?: number;
+  feedback?: string;
+}
+
+interface EvaluateResponse {
+  id: number;
+  overall_score: number;
+}
+
 const INTERVIEW_TYPES = ['behavioral', 'technical', 'case', 'system_design', 'culture_fit'];
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
 
@@ -23,17 +58,17 @@ export default function MockInterviews() {
 
   const list = useQuery({
     queryKey: ['mock-interviews'],
-    queryFn: () => api.get<any[]>('/mock-interviews'),
+    queryFn: () => api.get<MockInterview[]>('/mock-interviews'),
   });
 
   const detail = useQuery({
     queryKey: ['mock-interview', selectedId],
-    queryFn: () => api.get<any>(`/mock-interviews/${selectedId}`),
+    queryFn: () => api.get<MockInterviewDetail>(`/mock-interviews/${selectedId}`),
     enabled: selectedId != null,
   });
 
   const createInterview = useMutation({
-    mutationFn: (data: typeof form) => api.post<any>('/mock-interviews', data),
+    mutationFn: (data: typeof form) => api.post<MockInterview>('/mock-interviews', data),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['mock-interviews'] });
       setShowForm(false);
@@ -41,17 +76,26 @@ export default function MockInterviews() {
       setSelectedId(data.id);
       setView('detail');
     },
+    onError: (error: Error) => {
+      console.error('Failed to create mock interview:', error.message);
+    },
   });
 
   const submitAnswer = useMutation({
     mutationFn: ({ id, questionId, answer }: { id: number; questionId: number; answer: string }) =>
-      api.patch<any>(`/mock-interviews/${id}/answer`, { question_id: questionId, user_answer: answer }),
+      api.patch<AnswerResponse>(`/mock-interviews/${id}/answer`, { question_id: questionId, user_answer: answer }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['mock-interview', selectedId] }),
+    onError: (error: Error) => {
+      console.error('Failed to submit answer:', error.message);
+    },
   });
 
   const evaluate = useMutation({
-    mutationFn: (id: number) => api.patch<any>(`/mock-interviews/${id}/evaluate`, {}),
+    mutationFn: (id: number) => api.patch<EvaluateResponse>(`/mock-interviews/${id}/evaluate`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['mock-interview', selectedId] }),
+    onError: (error: Error) => {
+      console.error('Failed to evaluate interview:', error.message);
+    },
   });
 
   const interviews = list.data ?? [];
@@ -77,7 +121,7 @@ export default function MockInterviews() {
               <span className="text-xs text-gray-400">{current.job_title}</span>
             </div>
 
-            {(current.questions ?? []).map((q: any, idx: number) => (
+            {(current.questions ?? []).map((q: MockInterviewQuestion, idx: number) => (
               <div key={q.id} className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
                 <p className="text-sm font-medium text-gray-900 mb-2">Q{idx + 1}. {q.question}</p>
                 <textarea
@@ -191,7 +235,7 @@ export default function MockInterviews() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {interviews.map((iv: any) => (
+        {interviews.map((iv: MockInterview) => (
           <div
             key={iv.id}
             className="bg-white rounded-lg border border-gray-200 p-4 cursor-pointer hover:border-blue-300"

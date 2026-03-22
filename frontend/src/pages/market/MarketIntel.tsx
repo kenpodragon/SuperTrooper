@@ -2,6 +2,24 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
+interface MarketSignal {
+  id: number;
+  title?: string;
+  content?: string;
+  source?: string;
+  signal_type?: string;
+  severity: string;
+  company?: string;
+  captured_at?: string;
+}
+
+interface MarketSummary {
+  total_signals?: number;
+  critical?: number;
+  high?: number;
+  source_count?: number;
+}
+
 const SEVERITY_COLORS: Record<string, string> = {
   critical: 'bg-red-100 text-red-800',
   high: 'bg-orange-100 text-orange-800',
@@ -39,19 +57,19 @@ export default function MarketIntel() {
 
   const { data: signals, isLoading } = useQuery({
     queryKey: ['market-signals', sourceFilter, typeFilter, severityFilter],
-    queryFn: () => api.get<any[]>(`/market-intelligence${qs}`),
+    queryFn: () => api.get<MarketSignal[]>(`/market-intelligence${qs}`),
   });
 
   const { data: summary } = useQuery({
     queryKey: ['market-summary'],
-    queryFn: () => api.get<any>('/market-intelligence/summary'),
+    queryFn: () => api.get<MarketSummary>('/market-intelligence/summary'),
   });
 
   const signalList = signals ?? [];
-  const summaryData = summary ?? {};
+  const summaryData: MarketSummary = summary ?? {};
 
-  const sources = Array.from(new Set(signalList.map((s: any) => s.source).filter(Boolean)));
-  const types = Array.from(new Set(signalList.map((s: any) => s.signal_type).filter(Boolean)));
+  const sources = Array.from(new Set(signalList.map((s: MarketSignal) => s.source).filter(Boolean)));
+  const types = Array.from(new Set(signalList.map((s: MarketSignal) => s.signal_type).filter(Boolean)));
 
   return (
     <div>
@@ -109,7 +127,7 @@ export default function MarketIntel() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {signalList.map((signal: any) => (
+        {signalList.map((signal: MarketSignal) => (
           <div key={signal.id} className="bg-white rounded-lg border border-gray-200 p-4">
             <div className="flex items-start justify-between gap-2 mb-2">
               <p className="text-sm font-medium text-gray-900 flex-1">{signal.title ?? signal.content?.slice(0, 80)}</p>

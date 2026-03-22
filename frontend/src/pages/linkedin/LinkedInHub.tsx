@@ -142,6 +142,9 @@ function ProfileScorecard() {
   const runAudit = useMutation({
     mutationFn: () => api.post<ProfileAudit>('/linkedin/profile-audits', { audit_type: 'full' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['linkedin-profile-audit'] }),
+    onError: (error: Error) => {
+      console.error('Failed to run profile audit:', error.message);
+    },
   });
 
   if (isLoading) return <Spinner />;
@@ -253,11 +256,17 @@ function ContentDashboard() {
       setShowForm(false);
       setNewPost({ topic: '', theme_pillar_id: '', post_type: 'thought_leadership' });
     },
+    onError: (error: Error) => {
+      console.error('Failed to create post:', error.message);
+    },
   });
 
   const deletePillar = useMutation({
     mutationFn: (id: number) => api.del<void>(`/linkedin/theme-pillars/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['linkedin-theme-pillars'] }),
+    onError: (error: Error) => {
+      console.error('Failed to delete theme pillar:', error.message);
+    },
   });
 
   const pillarList = pillars.data ?? [];
@@ -451,6 +460,9 @@ function SkillsManager() {
   const runAudit = useMutation({
     mutationFn: () => api.post<SkillsAudit>('/linkedin/skills-audits', {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['linkedin-skills-audit'] }),
+    onError: (error: Error) => {
+      console.error('Failed to run skills audit:', error.message);
+    },
   });
 
   if (isLoading) return <Spinner />;
@@ -490,7 +502,7 @@ function SkillsManager() {
       {/* Four skill sections */}
       <div className="grid grid-cols-2 gap-4">
         {SKILL_SECTIONS.map((section) => {
-          const items = (audit[section.key] as any[]) ?? [];
+          const items = (audit[section.key] as { name: string; reason?: string; from?: number; to?: number }[]) ?? [];
           return (
             <div key={section.key} className={`bg-gray-800 rounded-lg p-4 border ${section.color}`}>
               <div className="flex items-center gap-2 mb-3">
@@ -501,7 +513,7 @@ function SkillsManager() {
               </div>
               {items.length === 0 && <p className="text-xs text-gray-500 italic">None</p>}
               <div className="space-y-1.5">
-                {items.map((item: any, i: number) => (
+                {items.map((item: { name: string; reason?: string; from?: number; to?: number }, i: number) => (
                   <div key={i} className="flex items-center justify-between">
                     <span className="text-sm text-gray-300">{item.name}</span>
                     {item.reason && <span className="text-xs text-gray-500 truncate ml-2 max-w-[50%]">{item.reason}</span>}
@@ -574,6 +586,9 @@ function VoiceGuide() {
       qc.invalidateQueries({ queryKey: ['linkedin-voice-rules'] });
       setNewRule((p) => ({ ...p, rule_text: '' }));
     },
+    onError: (error: Error) => {
+      console.error('Failed to add voice rule:', error.message);
+    },
   });
 
   const updateRule = useMutation({
@@ -583,11 +598,17 @@ function VoiceGuide() {
       qc.invalidateQueries({ queryKey: ['linkedin-voice-rules'] });
       setEditingId(null);
     },
+    onError: (error: Error) => {
+      console.error('Failed to update voice rule:', error.message);
+    },
   });
 
   const deleteRule = useMutation({
     mutationFn: (id: number) => api.del<void>(`/linkedin/voice-rules/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['linkedin-voice-rules'] }),
+    onError: (error: Error) => {
+      console.error('Failed to delete voice rule:', error.message);
+    },
   });
 
   const loadTemplate = useMutation({
@@ -597,11 +618,17 @@ function VoiceGuide() {
       qc.invalidateQueries({ queryKey: ['linkedin-voice-rules'] });
       setShowTemplateMenu(false);
     },
+    onError: (error: Error) => {
+      console.error('Failed to load voice template:', error.message);
+    },
   });
 
   const voiceCheck = useMutation({
     mutationFn: (text: string) =>
       api.post<{ violations: { rule: string; category: string }[]; passed: boolean }>('/linkedin/voice-check', { text }),
+    onError: (error: Error) => {
+      console.error('Failed to check voice:', error.message);
+    },
   });
 
   const ruleList = rules ?? [];

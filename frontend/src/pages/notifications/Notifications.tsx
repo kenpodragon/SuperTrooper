@@ -2,6 +2,24 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
+interface Notification {
+  id: number;
+  title: string;
+  message: string;
+  type: string;
+  read: boolean;
+  created_at?: string;
+}
+
+interface NotificationActionResponse {
+  id: number;
+  read?: boolean;
+}
+
+interface MarkAllReadResponse {
+  updated: number;
+}
+
 const TYPE_COLORS: Record<string, string> = {
   info: 'bg-blue-100 text-blue-800',
   warning: 'bg-yellow-100 text-yellow-800',
@@ -17,27 +35,36 @@ export default function Notifications() {
     queryKey: ['notifications', tab],
     queryFn: () => {
       const params = tab === 'unread' ? '?read=false' : tab === 'action_required' ? '?type=action_required' : '';
-      return api.get<any[]>(`/notifications${params}`);
+      return api.get<Notification[]>(`/notifications${params}`);
     },
   });
 
   const markRead = useMutation({
-    mutationFn: (id: number) => api.patch<any>(`/notifications/${id}/read`, {}),
+    mutationFn: (id: number) => api.patch<NotificationActionResponse>(`/notifications/${id}/read`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+    onError: (error: Error) => {
+      console.error('Failed to mark notification as read:', error.message);
+    },
   });
 
   const dismiss = useMutation({
-    mutationFn: (id: number) => api.del<any>(`/notifications/${id}`),
+    mutationFn: (id: number) => api.del<void>(`/notifications/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+    onError: (error: Error) => {
+      console.error('Failed to dismiss notification:', error.message);
+    },
   });
 
   const markAllRead = useMutation({
-    mutationFn: () => api.patch<any>('/notifications/read-all', {}),
+    mutationFn: () => api.patch<MarkAllReadResponse>('/notifications/read-all', {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+    onError: (error: Error) => {
+      console.error('Failed to mark all notifications as read:', error.message);
+    },
   });
 
   const notifications = data ?? [];
-  const unreadCount = notifications.filter((n: any) => !n.read).length;
+  const unreadCount = notifications.filter((n: Notification) => !n.read).length;
 
   const tabs = [
     { key: 'all', label: 'All' },
@@ -77,7 +104,7 @@ export default function Notifications() {
           <p className="text-sm text-gray-400 p-4">No notifications.</p>
         )}
 
-        {notifications.map((n: any) => (
+        {notifications.map((n: Notification) => (
           <div
             key={n.id}
             className={`flex items-start gap-3 p-4 border-b border-gray-100 last:border-0 ${!n.read ? 'bg-blue-50' : ''}`}

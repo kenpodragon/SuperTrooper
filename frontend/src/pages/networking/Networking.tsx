@@ -2,6 +2,36 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 
+interface Contact {
+  id: number;
+  contact_id?: number;
+  name: string;
+  company?: string;
+  stage?: string;
+  last_touchpoint?: string;
+}
+
+interface HealthEntry {
+  contact_id: number;
+  health_score: number;
+}
+
+interface NetworkingTask {
+  id: number;
+  name: string;
+  company?: string;
+  task_type: string;
+  due_date?: string;
+  priority: string;
+}
+
+interface TouchpointResponse {
+  id: number;
+  contact_id: number;
+  note: string;
+  type: string;
+}
+
 const STAGES = ['cold', 'warm', 'hot', 'champion', 'dormant'];
 
 const STAGE_COLORS: Record<string, string> = {
@@ -29,21 +59,21 @@ export default function Networking() {
 
   const relationships = useQuery({
     queryKey: ['crm-relationships'],
-    queryFn: () => api.get<any[]>('/crm/relationships'),
+    queryFn: () => api.get<Contact[]>('/crm/relationships'),
   });
 
   const health = useQuery({
     queryKey: ['crm-health'],
-    queryFn: () => api.get<any[]>('/crm/health'),
+    queryFn: () => api.get<HealthEntry[]>('/crm/health'),
   });
 
   const tasks = useQuery({
     queryKey: ['networking-tasks'],
-    queryFn: () => api.get<any[]>('/crm/networking-tasks'),
+    queryFn: () => api.get<NetworkingTask[]>('/crm/networking-tasks'),
   });
 
   const logTouchpoint = useMutation({
-    mutationFn: (data: typeof touchpointForm) => api.post<any>('/crm/touchpoints', data),
+    mutationFn: (data: typeof touchpointForm) => api.post<TouchpointResponse>('/crm/touchpoints', data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-relationships'] });
       qc.invalidateQueries({ queryKey: ['crm-health'] });
@@ -51,15 +81,18 @@ export default function Networking() {
       setShowTouchpoint(false);
       setTouchpointForm({ contact_id: null, note: '', type: 'email' });
     },
+    onError: (error: Error) => {
+      console.error('Failed to log touchpoint:', error.message);
+    },
   });
 
   const relData = relationships.data ?? [];
   const healthMap: Record<number, number> = {};
-  (health.data ?? []).forEach((h: any) => { healthMap[h.contact_id] = h.health_score; });
+  (health.data ?? []).forEach((h: HealthEntry) => { healthMap[h.contact_id] = h.health_score; });
 
-  const byStage: Record<string, any[]> = {};
+  const byStage: Record<string, Contact[]> = {};
   STAGES.forEach(s => { byStage[s] = []; });
-  relData.forEach((r: any) => {
+  relData.forEach((r: Contact) => {
     const stage = r.stage ?? 'cold';
     if (byStage[stage]) byStage[stage].push(r);
     else byStage['cold'].push(r);
@@ -89,7 +122,7 @@ export default function Networking() {
                 onChange={e => setTouchpointForm(p => ({ ...p, contact_id: Number(e.target.value) || null }))}
               >
                 <option value="">Select a contact...</option>
-                {relData.map((r: any) => (
+                {relData.map((r: Contact) => (
                   <option key={r.contact_id ?? r.id} value={r.contact_id ?? r.id}>
                     {r.name}{r.company ? ` — ${r.company}` : ''}
                   </option>
@@ -141,7 +174,7 @@ export default function Networking() {
               <span className="text-xs text-gray-500">{byStage[stage].length}</span>
             </div>
             {relationships.isLoading && <p className="text-xs text-gray-400">Loading...</p>}
-            {byStage[stage].map((r: any) => (
+            {byStage[stage].map((r: Contact) => (
               <div key={r.id} className="bg-white rounded border border-gray-100 p-2 mb-2 last:mb-0">
                 <div className="flex items-center gap-1.5">
                   <HealthDot score={healthMap[r.contact_id ?? r.id]} />
@@ -169,7 +202,7 @@ export default function Networking() {
         {!tasks.isLoading && (tasks.data ?? []).length === 0 && (
           <p className="text-sm text-gray-400">No networking tasks due.</p>
         )}
-        {(tasks.data ?? []).map((t: any) => (
+        {(tasks.data ?? []).map((t: NetworkingTask) => (
           <div key={t.id} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
             <div>
               <p className="text-sm font-medium text-gray-800">{t.name}</p>
