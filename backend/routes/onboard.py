@@ -614,6 +614,167 @@ def _build_onboard_next_steps(results: list) -> list:
     return steps
 
 
+@bp.route("/api/onboard/status", methods=["GET"])
+def onboard_status():
+    """Check onboarding completion status across all data categories."""
+    with db.get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cur.execute("SELECT COUNT(*) AS cnt FROM bullets")
+            bullets_count = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) AS cnt FROM career_history")
+            career_count = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) AS cnt FROM contacts")
+            contacts_count = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) AS cnt FROM skills")
+            skills_count = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) AS cnt FROM resume_recipes")
+            recipes_count = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) AS cnt FROM resume_templates")
+            templates_count = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT preferences FROM settings WHERE id = 1")
+            row = cur.fetchone()
+            prefs = (row or {}).get("preferences") or {}
+            has_profile = bool(prefs.get("candidate_name") or prefs.get("candidate_email"))
+
+        finally:
+            cur.close()
+
+    checks = {
+        "has_bullets": bullets_count > 0,
+        "has_career_history": career_count > 0,
+        "has_contacts": contacts_count > 0,
+        "has_skills": skills_count > 0,
+        "has_recipes": recipes_count > 0,
+        "has_templates": templates_count > 0,
+        "has_profile": has_profile,
+    }
+
+    completed = sum(1 for v in checks.values() if v)
+    total = len(checks)
+    completion_percentage = round(completed / total * 100, 1)
+
+    return jsonify({
+        **checks,
+        "counts": {
+            "bullets": bullets_count,
+            "career_history": career_count,
+            "contacts": contacts_count,
+            "skills": skills_count,
+            "recipes": recipes_count,
+            "templates": templates_count,
+        },
+        "completion_percentage": completion_percentage,
+    })
+
+
+@bp.route("/api/onboard/next-steps", methods=["GET"])
+def onboard_next_steps():
+    """Return ordered list of recommended onboarding actions based on current status."""
+    # Reuse the status logic
+    with db.get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cur.execute("SELECT COUNT(*) AS cnt FROM bullets")
+            has_bullets = cur.fetchone()["cnt"] > 0
+            cur.execute("SELECT COUNT(*) AS cnt FROM career_history")
+            has_career = cur.fetchone()["cnt"] > 0
+            cur.execute("SELECT COUNT(*) AS cnt FROM contacts")
+            has_contacts = cur.fetchone()["cnt"] > 0
+            cur.execute("SELECT COUNT(*) AS cnt FROM skills")
+            has_skills = cur.fetchone()["cnt"] > 0
+            cur.execute("SELECT COUNT(*) AS cnt FROM resume_recipes")
+            has_recipes = cur.fetchone()["cnt"] > 0
+            cur.execute("SELECT preferences FROM settings WHERE id = 1")
+            row = cur.fetchone()
+            prefs = (row or {}).get("preferences") or {}
+            has_profile = bool(prefs.get("candidate_name") or prefs.get("candidate_email"))
+        finally:
+            cur.close()
+
+    steps = []
+    priority = 1
+
+    if not has_profile:
+        steps.append({"priority": priority, "action": "Set up your profile",
+                       "detail": "Add your name, email, target roles, and locations via POST /api/onboard/quick-setup."})
+        priority += 1
+    if not has_career:
+        steps.append({"priority": priority, "action": "Upload your resume",
+                       "detail": "Upload a .docx or .pdf to populate career history, bullets, and skills."})
+        priority += 1
+    if not has_bullets:
+        steps.append({"priority": priority, "action": "Add resume bullets",
+                       "detail": "No bullets found. Upload a resume or add achievements with concrete metrics."})
+        priority += 1
+    if not has_skills:
+        steps.append({"priority": priority, "action": "Populate your skills",
+                       "detail": "Add technical and leadership skills to enable gap analysis and tailoring."})
+        priority += 1
+    if not has_contacts:
+        steps.append({"priority": priority, "action": "Add networking contacts",
+                       "detail": "Import contacts for warm intros, referrals, and outreach."})
+        priority += 1
+    if not has_recipes:
+        steps.append({"priority": priority, "action": "Create a resume recipe",
+                       "detail": "A recipe defines resume structure. Upload a resume to auto-generate one."})
+        priority += 1
+    if has_career and has_bullets:
+        steps.append({"priority": priority, "action": "Run a gap analysis",
+                       "detail": "Paste a job description to see how your profile matches."})
+        priority += 1
+
+    if not steps:
+        steps.append({"priority": 1, "action": "You're all set!",
+                       "detail": "All onboarding steps complete. Start searching for jobs or generating resumes."})
+
+    return jsonify({"next_steps": steps})
+
+
+@bp.route("/api/onboard/quick-setup", methods=["POST"])
+def onboard_quick_setup():
+    """Accept name, email, target_roles, target_locations and upsert into settings.preferences."""
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip()
+    target_roles = data.get("target_roles", [])
+    target_locations = data.get("target_locations", [])
+
+    if not name and not email:
+        return jsonify({"error": "At least name or email is required."}), 400
+
+    with db.get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cur.execute("SELECT preferences FROM settings WHERE id = 1")
+            row = cur.fetchone()
+            prefs = (row or {}).get("preferences") or {}
+
+            if name:
+                prefs["candidate_name"] = name
+            if email:
+                prefs["candidate_email"] = email
+            if target_roles:
+                prefs["target_roles"] = target_roles
+            if target_locations:
+                prefs["target_locations"] = target_locations
+
+            cur.execute(
+                "UPDATE settings SET preferences = %s, updated_at = NOW() WHERE id = 1",
+                (json.dumps(prefs),),
+            )
+        finally:
+            cur.close()
+
+    return jsonify({"success": True, "preferences": prefs})
+
+
 @bp.route("/api/onboard/upload", methods=["POST"])
 def upload():
     """Accept one or more .docx/.pdf files and run the full onboarding pipeline."""
