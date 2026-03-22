@@ -147,22 +147,58 @@ def generate_headline_variants(target_role: str | None = None, count: int = 3) -
 def generate_linkedin_post(topic: str, theme_pillar_id: int | None = None, style: str = "text") -> dict:
     """Create a draft LinkedIn post record.
 
+    Pulls theme pillar context (name, description, content_guidelines) before
+    generation so the post stays on-brand and aligned to the content strategy.
+
     Args:
         topic: the topic or idea for the post
         theme_pillar_id: optional theme pillar ID
         style: post_type — text, article, poll, carousel, video, document
     """
+    # Pull theme pillar context to guide generation
+    pillar_context = None
+    if theme_pillar_id:
+        pillar = db.query_one(
+            "SELECT * FROM linkedin_theme_pillars WHERE id = %s",
+            (theme_pillar_id,),
+        )
+        if pillar:
+            pillar_context = {
+                "id": pillar["id"],
+                "name": pillar.get("name"),
+                "description": pillar.get("description"),
+                "content_guidelines": pillar.get("content_guidelines"),
+                "posting_frequency": pillar.get("posting_frequency"),
+            }
+
     def _python_linkedin_post(ctx):
-        _content = f"[DRAFT] Topic: {ctx['topic']}\n\nThis is a draft post. Use the AI content generation to expand this into a full post."
+        pillar_note = ""
+        if ctx.get("pillar_context"):
+            pillar_note = f"\nTheme: {ctx['pillar_context']['name']}"
+            if ctx["pillar_context"].get("description"):
+                pillar_note += f" — {ctx['pillar_context']['description']}"
+        _content = (
+            f"[DRAFT] Topic: {ctx['topic']}{pillar_note}\n\n"
+            f"This is a draft post. Use the AI content generation to expand this into a full post."
+        )
         return {"content": _content}
 
-    post_ctx = {"topic": topic, "theme_pillar_id": theme_pillar_id, "style": style}
+    post_ctx = {
+        "topic": topic,
+        "theme_pillar_id": theme_pillar_id,
+        "pillar_context": pillar_context,
+        "style": style,
+    }
     post_result = route_inference(
         task="generate_linkedin_post",
         context=post_ctx,
         python_fallback=_python_linkedin_post,
     )
     content = post_result.get("content", f"[DRAFT] Topic: {topic}")
+
+    # Auto-check voice compliance before saving
+    voice_check = check_linkedin_voice(content)
+
     hook_text = content[:210]
 
     row = db.execute_returning(
@@ -174,7 +210,11 @@ def generate_linkedin_post(topic: str, theme_pillar_id: int | None = None, style
         """,
         (content, style, theme_pillar_id, hook_text, len(content)),
     )
-    return {"post": row}
+    return {
+        "post": row,
+        "theme_pillar": pillar_context,
+        "voice_check": voice_check,
+    }
 
 
 def check_linkedin_voice(text: str) -> dict:
@@ -327,10 +367,14 @@ def get_linkedin_analytics(days: int = 30) -> dict:
 
 
 def get_linkedin_profile_scorecard() -> dict:
-    """Return the latest profile audit as a scorecard summary.
+    """Return the latest profile audit as a scorecard with per-section gap analysis.
 
-    Formats the most recent linkedin_profile_audits record into a
-    human-readable scorecard with section grades and top recommendations.
+    Formats the most recent linkedin_profile_audits record into a scorecard with:
+    - Section-level scores and letter grades
+    - Per-section gap analysis (what's missing, what to fix)
+    - Keyword gaps from audit data
+    - Prioritised recommendations (high first)
+    - Skills endorsement gap from linkedin_skills_audits
     """
     audit = db.query_one(
         "SELECT * FROM linkedin_profile_audits ORDER BY created_at DESC LIMIT 1"
@@ -340,8 +384,8 @@ def get_linkedin_profile_scorecard() -> dict:
 
     section_scores = audit.get("section_scores") or {}
     recommendations = audit.get("recommendations") or []
+    keyword_gaps = audit.get("keyword_gaps") or {}
 
-    # Convert scores to letter grades
     def score_to_grade(score):
         if score >= 90:
             return "A"
@@ -353,22 +397,126 @@ def get_linkedin_profile_scorecard() -> dict:
             return "D"
         return "F"
 
+    # Per-section gap descriptors — define what each section needs
+    section_gap_criteria = {
+        "headline": {
+            "checks": [
+                "Contains target role title",
+                "Length 100-220 characters",
+                "Includes primary keyword",
+                "Has a differentiator (not just job title)",
+            ],
+            "min_score_for_pass": 80,
+        },
+        "about": {
+            "checks": [
+                "Leads with value proposition",
+                "Contains storytelling / narrative arc",
+                "Keyword density adequate",
+                "Ends with a call-to-action",
+            ],
+            "min_score_for_pass": 75,
+        },
+        "experience": {
+            "checks": [
+                "Bullets use metrics / measurable outcomes",
+                "Keywords aligned to target roles",
+                "Accomplishment-focused (not task-focused)",
+                "Consistent format across roles",
+            ],
+            "min_score_for_pass": 75,
+        },
+        "skills": {
+            "checks": [
+                "Top 50 skills populated",
+                "High-demand skills present for target roles",
+                "Endorsements on top 5 skills",
+                "Skills ordered by relevance (not alphabetical)",
+            ],
+            "min_score_for_pass": 70,
+        },
+        "featured": {
+            "checks": [
+                "3-5 featured items present",
+                "Featured items show recent/relevant work",
+                "Links resolve and are current",
+                "Covers multiple content types (post, article, external)",
+            ],
+            "min_score_for_pass": 65,
+        },
+    }
+
+    # Build per-section gap analysis
+    section_breakdown = {}
+    sections_needing_work = []
+
+    for section, score in section_scores.items():
+        if not isinstance(score, (int, float)):
+            continue
+        criteria = section_gap_criteria.get(section, {})
+        min_pass = criteria.get("min_score_for_pass", 70)
+        checks = criteria.get("checks", [])
+        grade = score_to_grade(score)
+        needs_work = score < min_pass
+
+        # Pull section-specific recommendations
+        section_recs = [
+            r for r in recommendations if r.get("section") == section
+        ]
+
+        # Keyword suggestions from audit keyword_gaps
+        kw_suggestions = []
+        if isinstance(keyword_gaps, dict):
+            section_kw = keyword_gaps.get("section_suggestions", {}).get(section, [])
+            kw_suggestions = section_kw if isinstance(section_kw, list) else []
+
+        section_breakdown[section] = {
+            "score": score,
+            "grade": grade,
+            "needs_work": needs_work,
+            "gap_checks": checks,
+            "recommendations": section_recs,
+            "keyword_suggestions": kw_suggestions,
+        }
+
+        if needs_work:
+            sections_needing_work.append({"section": section, "score": score, "grade": grade})
+
+    # Sort sections needing work by score ascending (worst first)
+    sections_needing_work.sort(key=lambda x: x["score"])
+
+    # Pull latest skills audit for endorsement gap data
+    skills_audit = db.query_one(
+        "SELECT * FROM linkedin_skills_audits ORDER BY created_at DESC LIMIT 1"
+    )
+    skills_gap = None
+    if skills_audit:
+        skills_gap = {
+            "skills_to_add": (skills_audit.get("skills_add") or [])[:5],
+            "skills_to_remove": (skills_audit.get("skills_remove") or [])[:5],
+            "endorsement_gaps": skills_audit.get("endorsement_gaps") or [],
+            "top_50_recommended": (skills_audit.get("top_50_recommended") or [])[:10],
+        }
+
     scorecard = {
         "audit_id": audit["id"],
         "audit_type": audit["audit_type"],
-        "audit_date": audit["created_at"],
+        "audit_date": str(audit["created_at"]),
         "overall_score": audit.get("overall_score"),
         "overall_grade": score_to_grade(audit.get("overall_score") or 0),
-        "sections": {
-            section: {"score": score, "grade": score_to_grade(score)}
-            for section, score in section_scores.items()
-            if isinstance(score, (int, float))
-        },
+        "sections": section_breakdown,
+        "sections_needing_work": sections_needing_work,
         "top_recommendations": [
             r for r in recommendations if r.get("priority") == "high"
         ][:5],
-        "keyword_gaps": audit.get("keyword_gaps"),
+        "all_recommendations": sorted(
+            recommendations,
+            key=lambda r: {"high": 0, "medium": 1, "low": 2}.get(r.get("priority", "low"), 2),
+        ),
+        "keyword_gaps": keyword_gaps.get("missing", []) if isinstance(keyword_gaps, dict) else keyword_gaps,
+        "keyword_gap_by_section": keyword_gaps.get("section_suggestions", {}) if isinstance(keyword_gaps, dict) else {},
         "match_scores": audit.get("match_scores"),
+        "skills_gap": skills_gap,
     }
 
     return scorecard

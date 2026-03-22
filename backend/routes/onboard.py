@@ -516,6 +516,104 @@ def _process_file(filename, file_bytes, file_ext):
 # Route
 # ---------------------------------------------------------------------------
 
+def _build_onboard_next_steps(results: list) -> list:
+    """Generate prioritised next-step guidance based on onboard results.
+
+    Examines what was extracted (bullets, skills, career history, recipe)
+    and returns an ordered list of suggested actions for the user.
+    """
+    steps = []
+    any_success = any(r.get("status") in ("success", "partial") for r in results)
+    if not any_success:
+        return [{"priority": 1, "action": "Fix upload errors", "detail": "No files processed successfully. Check file format and retry."}]
+
+    total_bullets = sum(
+        (r.get("steps", {}).get("parsing") or {}).get("bullet_count", 0)
+        for r in results
+        if isinstance((r.get("steps", {}).get("parsing")), dict)
+    )
+    total_skills = sum(
+        (r.get("steps", {}).get("parsing") or {}).get("skill_count", 0)
+        for r in results
+        if isinstance((r.get("steps", {}).get("parsing")), dict)
+    )
+    total_jobs = sum(
+        (r.get("steps", {}).get("parsing") or {}).get("career_history_count", 0)
+        for r in results
+        if isinstance((r.get("steps", {}).get("parsing")), dict)
+    )
+    has_recipe = any(r.get("recipe_id") for r in results)
+    has_near_dups = any(
+        len((r.get("steps", {}).get("dedup") or {}).get("near_duplicates", [])) > 0
+        for r in results
+        if isinstance(r.get("steps", {}).get("dedup"), dict)
+    )
+
+    priority = 1
+
+    if total_bullets < 10:
+        steps.append({
+            "priority": priority,
+            "action": "Add more resume bullets",
+            "detail": f"Only {total_bullets} bullets extracted. Add more achievements with metrics to strengthen your knowledge base.",
+            "tool": "search_bullets",
+        })
+        priority += 1
+
+    if total_skills < 5:
+        steps.append({
+            "priority": priority,
+            "action": "Populate your skills",
+            "detail": f"Only {total_skills} skills extracted. Add your full skill set via Settings > Skills.",
+            "tool": "get_skills",
+        })
+        priority += 1
+
+    steps.append({
+        "priority": priority,
+        "action": "Train voice rules",
+        "detail": "Upload writing samples (emails, bios, past cover letters) so the AI learns your tone and style.",
+        "endpoint": "POST /api/onboarding/voice-sample",
+    })
+    priority += 1
+
+    if not has_recipe:
+        steps.append({
+            "priority": priority,
+            "action": "Create your first recipe",
+            "detail": "A recipe defines how your resume is structured. Create one via Settings > Recipes or use create_recipe().",
+            "tool": "create_recipe",
+            "endpoint": "POST /api/onboarding/initial-recipe",
+        })
+        priority += 1
+    else:
+        steps.append({
+            "priority": priority,
+            "action": "Generate your first resume",
+            "detail": "A recipe was created from your upload. Use generate_resume() to produce a tailored .docx.",
+            "tool": "generate_resume",
+        })
+        priority += 1
+
+    if has_near_dups:
+        steps.append({
+            "priority": priority,
+            "action": "Review near-duplicate bullets",
+            "detail": "Some bullets were flagged as near-duplicates. Review and consolidate via the Bullets page.",
+            "tool": "search_bullets",
+        })
+        priority += 1
+
+    steps.append({
+        "priority": priority,
+        "action": "Run a gap analysis against a target role",
+        "detail": "Paste a job description URL or text to see how well your profile matches.",
+        "tool": "match_jd",
+    })
+
+    return steps
+
+
 @bp.route("/api/onboard/upload", methods=["POST"])
 def upload():
     """Accept one or more .docx/.pdf files and run the full onboarding pipeline."""
@@ -542,4 +640,7 @@ def upload():
         report = _process_file(fname, file_bytes, ext)
         results.append(report)
 
-    return jsonify({"results": results, "total": len(results)})
+    # Build next_steps guidance based on what was extracted
+    next_steps = _build_onboard_next_steps(results)
+
+    return jsonify({"results": results, "total": len(results), "next_steps": next_steps})

@@ -265,6 +265,96 @@ def publish_post(post_id):
     return jsonify(row), 200
 
 
+@bp.route("/api/linkedin/posts/<int:post_id>/schedule", methods=["POST"])
+def schedule_post(post_id):
+    """Schedule a post for a specific date/time.
+
+    Body (JSON):
+        scheduled_for (required): ISO 8601 datetime string, e.g. "2026-03-25T09:00:00"
+
+    Sets status to 'scheduled' and records the scheduled_for timestamp.
+    Returns 400 if the post is already published or archived.
+    """
+    data = request.get_json(force=True)
+    scheduled_for = data.get("scheduled_for")
+    if not scheduled_for:
+        return jsonify({"error": "scheduled_for is required (ISO 8601 datetime)"}), 400
+
+    # Verify post exists and is in a schedulable state
+    post = db.query_one("SELECT id, status FROM linkedin_posts WHERE id = %s", (post_id,))
+    if not post:
+        return jsonify({"error": "Post not found"}), 404
+    if post["status"] in ("published", "archived"):
+        return jsonify({
+            "error": f"Cannot schedule a post with status '{post['status']}'. Only draft or scheduled posts can be rescheduled."
+        }), 400
+
+    row = db.execute_returning(
+        """
+        UPDATE linkedin_posts
+        SET status = 'scheduled', scheduled_for = %s
+        WHERE id = %s
+        RETURNING *
+        """,
+        (scheduled_for, post_id),
+    )
+    return jsonify(row), 200
+
+
+@bp.route("/api/linkedin/posts/calendar", methods=["GET"])
+def content_calendar():
+    """Content calendar: scheduled and recently published posts.
+
+    Query params:
+        days_ahead: how many days forward to show scheduled posts (default 30)
+        days_back: how many days back to show published posts (default 7)
+
+    Returns scheduled posts grouped by date + recently published for context.
+    """
+    days_ahead = int(request.args.get("days_ahead", 30))
+    days_back = int(request.args.get("days_back", 7))
+
+    scheduled = db.query(
+        """
+        SELECT p.id, p.hook_text, p.post_type, p.status,
+               p.scheduled_for, p.theme_pillar_id, tp.name AS theme_pillar_name
+        FROM linkedin_posts p
+        LEFT JOIN linkedin_theme_pillars tp ON tp.id = p.theme_pillar_id
+        WHERE p.status = 'scheduled'
+          AND p.scheduled_for BETWEEN NOW() AND NOW() + INTERVAL '1 day' * %s
+        ORDER BY p.scheduled_for ASC
+        """,
+        (days_ahead,),
+    )
+
+    recently_published = db.query(
+        """
+        SELECT p.id, p.hook_text, p.post_type, p.status,
+               p.published_at, p.theme_pillar_id, tp.name AS theme_pillar_name,
+               e.engagement_rate, e.impressions
+        FROM linkedin_posts p
+        LEFT JOIN linkedin_theme_pillars tp ON tp.id = p.theme_pillar_id
+        LEFT JOIN linkedin_post_engagement e ON e.post_id = p.id AND e.snapshot_day = 7
+        WHERE p.status = 'published'
+          AND p.published_at >= NOW() - INTERVAL '1 day' * %s
+        ORDER BY p.published_at DESC
+        """,
+        (days_back,),
+    )
+
+    drafts_count = db.query_one(
+        "SELECT COUNT(*) AS cnt FROM linkedin_posts WHERE status = 'draft'"
+    )
+
+    return jsonify({
+        "scheduled": scheduled,
+        "scheduled_count": len(scheduled),
+        "recently_published": recently_published,
+        "drafts_available": drafts_count["cnt"] if drafts_count else 0,
+        "window": {"days_ahead": days_ahead, "days_back": days_back},
+    }), 200
+
+
 @bp.route("/api/linkedin/posts/import", methods=["POST"])
 def import_posts():
     """Bulk import posts.

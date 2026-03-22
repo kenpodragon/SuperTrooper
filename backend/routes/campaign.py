@@ -161,10 +161,53 @@ def close_out_campaign():
                 "draft": draft,
             })
 
+    # Final analytics snapshot — capture campaign stats at close-out
+    status_counts = db.query(
+        "SELECT status, COUNT(*) as count FROM applications GROUP BY status"
+    )
+    total_apps = sum(r["count"] for r in status_counts) if status_counts else 0
+    status_map = {r["status"]: r["count"] for r in status_counts} if status_counts else {}
+
+    offers_count = db.query_one(
+        "SELECT COUNT(*) as cnt FROM applications WHERE status IN ('Offer', 'Accepted')"
+    )
+    interviews_count = db.query_one(
+        "SELECT COUNT(*) as cnt FROM applications WHERE status IN ('Interview', 'Phone Screen', 'Final Round')"
+    )
+
+    response_rate = None
+    offer_rate = None
+    if total_apps > 0:
+        responded = sum(
+            status_map.get(s, 0)
+            for s in ("Interview", "Phone Screen", "Final Round", "Offer", "Accepted", "Rejected")
+        )
+        response_rate = round(responded / total_apps * 100, 1)
+        offer_count = (offers_count["cnt"] if offers_count else 0)
+        offer_rate = round(offer_count / total_apps * 100, 1)
+
+    first_app = db.query_one(
+        "SELECT MIN(applied_date) as first_date FROM applications"
+    )
+    campaign_snapshot = {
+        "total_applications": total_apps,
+        "status_breakdown": status_map,
+        "response_rate_pct": response_rate,
+        "offer_rate_pct": offer_rate,
+        "interviews_reached": interviews_count["cnt"] if interviews_count else 0,
+        "offers_received": offers_count["cnt"] if offers_count else 0,
+        "withdrawn_this_close_out": len(withdrawn),
+        "campaign_start_date": str(first_app["first_date"]) if first_app and first_app.get("first_date") else None,
+        "close_out_date": accepted.get("last_status_change"),
+        "accepted_company": accepted.get("company_name"),
+        "accepted_role": accepted.get("role"),
+    }
+
     return jsonify({
         "accepted": accepted,
         "withdrawn": withdrawn,
         "thank_yous": thank_yous,
+        "campaign_snapshot": campaign_snapshot,
     }), 200
 
 
