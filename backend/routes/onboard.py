@@ -805,3 +805,378 @@ def upload():
     next_steps = _build_onboard_next_steps(results)
 
     return jsonify({"results": results, "total": len(results), "next_steps": next_steps})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/onboard/import-archive — Import career data from uploaded doc
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/onboard/import-archive", methods=["POST"])
+def import_archive():
+    """Import career data from an uploaded resume/document.
+
+    Accepts multipart file upload (.docx or .pdf). Extracts text, parses
+    career entries, and inserts into career_history and bullets tables.
+    Similar to the main onboard endpoint but focused on supplemental imports.
+
+    Form data:
+        file: the uploaded file (.docx or .pdf)
+        merge_mode: 'append' (default) or 'replace'
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded. Use multipart form with 'file' field."}), 400
+
+    f = request.files["file"]
+    fname = f.filename or "upload"
+    merge_mode = request.form.get("merge_mode", "append")
+
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in (".docx", ".pdf"):
+        return jsonify({"error": f"Unsupported file type: {ext}. Use .docx or .pdf"}), 400
+
+    # Save to temp file and extract text
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        f.save(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        if ext == ".docx":
+            text = read_full_text(tmp_path)
+        else:
+            text = read_pdf_text(tmp_path)
+    except Exception as e:
+        return jsonify({"error": f"Failed to read file: {str(e)}"}), 500
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    if not text or len(text.strip()) < 50:
+        return jsonify({"error": "File appears to be empty or too short to parse"}), 400
+
+    # Parse the resume text
+    try:
+        parsed = parse_resume(text)
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse resume: {str(e)}"}), 500
+
+    # Extract career entries and bullets
+    imported = {"career_entries": 0, "bullets": 0, "skipped_duplicates": 0}
+
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        settings = _get_settings(cur)
+        threshold = settings.get("duplicate_threshold", 0.92)
+
+        for entry in parsed.get("experience", []):
+            employer = entry.get("company", "Unknown")
+            title = entry.get("title", "Unknown")
+            start_date = entry.get("start_date")
+            end_date = entry.get("end_date")
+
+            # Check for existing career entry
+            existing = None
+            cur.execute(
+                "SELECT id FROM career_history WHERE employer ILIKE %s AND title ILIKE %s LIMIT 1",
+                (f"%{employer}%", f"%{title}%"),
+            )
+            existing = cur.fetchone()
+
+            if existing and merge_mode == "append":
+                ch_id = existing["id"]
+            elif existing and merge_mode == "replace":
+                ch_id = existing["id"]
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO career_history (employer, title, start_date, end_date)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (employer, title, start_date, end_date),
+                )
+                ch_id = cur.fetchone()["id"]
+                imported["career_entries"] += 1
+
+            # Import bullets
+            for bullet_text in entry.get("bullets", []):
+                bullet_text = bullet_text.strip()
+                if not bullet_text:
+                    continue
+
+                skip, _ = _dedup_bullet(cur, bullet_text, ch_id, threshold)
+                if skip:
+                    imported["skipped_duplicates"] += 1
+                    continue
+
+                cur.execute(
+                    """
+                    INSERT INTO bullets (career_history_id, text, type)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (ch_id, bullet_text, "achievement"),
+                )
+                imported["bullets"] += 1
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": f"Import failed: {str(e)}"}), 500
+    finally:
+        conn.close()
+
+    return jsonify({
+        "imported": imported,
+        "merge_mode": merge_mode,
+        "source_file": fname,
+        "text_length": len(text),
+    }), 201
+
+
+# ---------------------------------------------------------------------------
+# GET /api/onboard/validation — Validate data completeness
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/onboard/validation", methods=["GET"])
+def validate_onboard_data():
+    """Validate current data completeness.
+
+    Checks:
+    - Bullets have metrics
+    - Skills are categorized
+    - Career dates are consistent
+    - Required profile fields are filled
+    """
+    issues = []
+    scores = {}
+
+    # 1. Bullets with metrics
+    total_bullets = db.query_one("SELECT COUNT(*) AS cnt FROM bullets")
+    bullets_count = total_bullets["cnt"] if total_bullets else 0
+
+    import re
+    if bullets_count > 0:
+        all_bullets = db.query("SELECT id, text FROM bullets") or []
+        with_metrics = sum(
+            1 for b in all_bullets
+            if re.search(r'\d+[\%\$KMBkmb]|\$[\d,]+|\d+\s*(?:percent|%|x|X)', b.get("text", ""))
+        )
+        metric_pct = round(with_metrics / len(all_bullets) * 100, 1) if all_bullets else 0
+        scores["bullets_with_metrics"] = metric_pct
+        if metric_pct < 80:
+            issues.append({
+                "area": "bullets",
+                "severity": "warning" if metric_pct >= 50 else "error",
+                "message": f"Only {metric_pct}% of bullets have quantifiable metrics ({with_metrics}/{len(all_bullets)})",
+            })
+    else:
+        scores["bullets_with_metrics"] = 0
+        issues.append({"area": "bullets", "severity": "error", "message": "No bullets loaded"})
+
+    # 2. Skills categorized
+    total_skills = db.query_one("SELECT COUNT(*) AS cnt FROM skills")
+    skills_count = total_skills["cnt"] if total_skills else 0
+    uncategorized = db.query_one(
+        "SELECT COUNT(*) AS cnt FROM skills WHERE category IS NULL OR category = ''"
+    )
+    uncat_count = uncategorized["cnt"] if uncategorized else 0
+
+    if skills_count > 0:
+        cat_pct = round((skills_count - uncat_count) / skills_count * 100, 1)
+        scores["skills_categorized"] = cat_pct
+        if uncat_count > 0:
+            issues.append({
+                "area": "skills",
+                "severity": "warning",
+                "message": f"{uncat_count} skills are uncategorized",
+            })
+    else:
+        scores["skills_categorized"] = 0
+        issues.append({"area": "skills", "severity": "error", "message": "No skills loaded"})
+
+    # 3. Career dates consistency
+    career = db.query(
+        "SELECT id, employer, title, start_date, end_date FROM career_history ORDER BY start_date DESC"
+    ) or []
+    scores["career_entries"] = len(career)
+
+    for c in career:
+        if not c.get("start_date"):
+            issues.append({
+                "area": "career_dates",
+                "severity": "warning",
+                "message": f"Missing start date: {c.get('employer')} - {c.get('title')}",
+            })
+        if c.get("start_date") and c.get("end_date") and c["start_date"] > c["end_date"]:
+            issues.append({
+                "area": "career_dates",
+                "severity": "error",
+                "message": f"Start date after end date: {c.get('employer')} - {c.get('title')}",
+            })
+
+    # 4. Resume header completeness
+    header = db.query_one("SELECT * FROM resume_header ORDER BY id LIMIT 1")
+    if header:
+        required_fields = ["full_name", "email", "phone"]
+        missing = [f for f in required_fields if not header.get(f)]
+        scores["header_complete"] = round((len(required_fields) - len(missing)) / len(required_fields) * 100, 1)
+        if missing:
+            issues.append({
+                "area": "header",
+                "severity": "warning",
+                "message": f"Missing header fields: {', '.join(missing)}",
+            })
+    else:
+        scores["header_complete"] = 0
+        issues.append({"area": "header", "severity": "error", "message": "No resume header found"})
+
+    # 5. Summary variants
+    summaries = db.query_one("SELECT COUNT(*) AS cnt FROM summary_variants")
+    scores["summary_variants"] = summaries["cnt"] if summaries else 0
+    if not summaries or summaries["cnt"] == 0:
+        issues.append({"area": "summaries", "severity": "warning", "message": "No summary variants created"})
+
+    # Overall completeness score
+    weights = {
+        "bullets_with_metrics": 30,
+        "skills_categorized": 20,
+        "header_complete": 20,
+        "career_entries": 15,
+        "summary_variants": 15,
+    }
+    overall = 0
+    for key, weight in weights.items():
+        val = scores.get(key, 0)
+        if key in ("career_entries", "summary_variants"):
+            val = min(100, val * 20)  # Normalize counts to percentage
+        overall += (val / 100) * weight
+
+    return jsonify({
+        "overall_score": round(overall, 1),
+        "scores": scores,
+        "issues": issues,
+        "issue_count": len(issues),
+        "data_ready": len([i for i in issues if i["severity"] == "error"]) == 0,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/onboard/create-starter-recipes — Auto-create starter recipes
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/onboard/create-starter-recipes", methods=["POST"])
+def create_starter_recipes():
+    """Auto-create starter recipes for common role types based on loaded data.
+
+    Analyzes career history and skills to determine appropriate role types,
+    then creates recipe outlines for each.
+
+    Body (JSON, optional):
+        role_types: list of role types to create (default: auto-detect)
+    """
+    data = request.get_json(force=True) if request.data else {}
+    requested_types = data.get("role_types")
+
+    # Pull career and skills data
+    career = db.query("SELECT * FROM career_history ORDER BY start_date DESC") or []
+    skills = db.query("SELECT name, category, proficiency FROM skills ORDER BY proficiency DESC NULLS LAST") or []
+    bullets = db.query("SELECT id, text, career_history_id FROM bullets ORDER BY id DESC LIMIT 50") or []
+
+    if not career:
+        return jsonify({"error": "No career history loaded. Upload a resume first."}), 400
+
+    # Auto-detect role types from career titles
+    if not requested_types:
+        titles = [c.get("title", "").lower() for c in career]
+        detected_types = set()
+
+        type_keywords = {
+            "engineering_manager": ["engineering manager", "eng manager", "dev manager", "technical manager"],
+            "director_engineering": ["director", "vp engineering", "head of engineering"],
+            "senior_engineer": ["senior engineer", "staff engineer", "principal engineer", "lead engineer"],
+            "product_manager": ["product manager", "product lead", "pm"],
+            "cto": ["cto", "chief technology", "chief technical"],
+            "general_tech_lead": ["tech lead", "technical lead", "architect"],
+        }
+
+        for role_type, keywords in type_keywords.items():
+            for title in titles:
+                if any(kw in title for kw in keywords):
+                    detected_types.add(role_type)
+                    break
+
+        # Always include a general type
+        if not detected_types:
+            detected_types.add("general_tech_lead")
+
+        requested_types = list(detected_types)
+
+    # Check for existing recipes
+    existing = db.query("SELECT name FROM resume_recipes") or []
+    existing_names = {r["name"].lower() for r in existing}
+
+    created = []
+    skipped = []
+
+    for role_type in requested_types:
+        recipe_name = f"Starter - {role_type.replace('_', ' ').title()}"
+
+        if recipe_name.lower() in existing_names:
+            skipped.append(recipe_name)
+            continue
+
+        # Build recipe JSON
+        top_skills = [s["name"] for s in skills[:12]]
+        top_bullets_ids = [b["id"] for b in bullets[:10]]
+
+        recipe_json = {
+            "role_type": role_type,
+            "sections": {
+                "summary": {"type": "summary_variant", "role_type": role_type},
+                "experience": {
+                    "entries": [
+                        {
+                            "career_history_id": c.get("id"),
+                            "employer": c.get("employer"),
+                            "title": c.get("title"),
+                        }
+                        for c in career[:5]
+                    ],
+                },
+                "skills": {"items": top_skills},
+            },
+            "bullet_ids": top_bullets_ids,
+            "auto_generated": True,
+        }
+
+        # Get default template_id
+        default_template = db.query_one("SELECT id FROM resume_templates ORDER BY id LIMIT 1")
+        if not default_template:
+            return jsonify({"error": "No resume template found. Upload a template first."}), 400
+        template_id = default_template["id"]
+
+        row = db.execute_returning(
+            """
+            INSERT INTO resume_recipes (name, description, template_id, recipe, is_active)
+            VALUES (%s, %s, %s, %s, true)
+            RETURNING id, name
+            """,
+            (
+                recipe_name,
+                f"Auto-generated starter recipe for {role_type.replace('_', ' ')} roles",
+                template_id,
+                json.dumps(recipe_json),
+            ),
+        )
+        if row:
+            created.append(row)
+
+    return jsonify({
+        "created": created,
+        "skipped": skipped,
+        "role_types_detected": requested_types,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+    }), 201

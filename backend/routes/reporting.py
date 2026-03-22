@@ -1,7 +1,7 @@
 """Routes for Analytics & Reporting (Pipeline, Campaign, Interview, Outreach, Materials)."""
 
 import json
-from flask import Blueprint, jsonify
+from flask import Blueprint, request, jsonify
 import db
 
 bp = Blueprint("reporting", __name__)
@@ -463,4 +463,194 @@ def weekly_rollup():
         "this_week": tw,
         "last_week": lw,
         "deltas": deltas,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/reporting/monthly-trends — Month-over-month trends
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/reporting/monthly-trends", methods=["GET"])
+def monthly_trends():
+    """Month-over-month trends for applications, interviews, offers.
+
+    Query params:
+        months: how many months back (default 6)
+    """
+    months = int(request.args.get("months", 6))
+
+    app_trends = db.query(
+        """
+        SELECT TO_CHAR(date_applied, 'YYYY-MM') AS month,
+               COUNT(*) AS applications,
+               COUNT(*) FILTER (WHERE status = 'Offer') AS offers,
+               COUNT(*) FILTER (WHERE status = 'Rejected') AS rejections,
+               COUNT(*) FILTER (WHERE status = 'Ghosted') AS ghosted
+        FROM applications
+        WHERE date_applied >= NOW() - make_interval(months => %s)
+        GROUP BY TO_CHAR(date_applied, 'YYYY-MM')
+        ORDER BY month ASC
+        """,
+        (months,),
+    ) or []
+
+    interview_trends = db.query(
+        """
+        SELECT TO_CHAR(date, 'YYYY-MM') AS month,
+               COUNT(*) AS interviews,
+               COUNT(*) FILTER (WHERE outcome = 'pass') AS passed,
+               COUNT(*) FILTER (WHERE outcome = 'fail') AS failed
+        FROM interviews
+        WHERE date >= NOW() - make_interval(months => %s)
+        GROUP BY TO_CHAR(date, 'YYYY-MM')
+        ORDER BY month ASC
+        """,
+        (months,),
+    ) or []
+
+    outreach_trends = db.query(
+        """
+        SELECT TO_CHAR(created_at, 'YYYY-MM') AS month,
+               COUNT(*) FILTER (WHERE direction = 'outbound') AS sent,
+               COUNT(*) FILTER (WHERE direction = 'inbound') AS responses
+        FROM outreach_messages
+        WHERE created_at >= NOW() - make_interval(months => %s)
+        GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+        ORDER BY month ASC
+        """,
+        (months,),
+    ) or []
+
+    return jsonify({
+        "applications": app_trends,
+        "interviews": interview_trends,
+        "outreach": outreach_trends,
+        "months_back": months,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/reporting/company-leaderboard — Top companies by outcomes
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/reporting/company-leaderboard", methods=["GET"])
+def company_leaderboard():
+    """Top companies by response rate, interview conversion, offer rate.
+
+    Query params:
+        min_apps: minimum applications to include (default 1)
+        limit: max companies (default 20)
+    """
+    min_apps = int(request.args.get("min_apps", 1))
+    limit = int(request.args.get("limit", 20))
+
+    rows = db.query(
+        """
+        SELECT
+            a.company_name,
+            COUNT(*) AS total_apps,
+            COUNT(DISTINCT i.id) AS interviews,
+            COUNT(*) FILTER (WHERE a.status = 'Offer') AS offers,
+            COUNT(*) FILTER (WHERE a.status = 'Rejected') AS rejections,
+            COUNT(*) FILTER (WHERE a.status = 'Ghosted') AS ghosted,
+            ROUND(
+                COUNT(DISTINCT i.id) * 100.0 / NULLIF(COUNT(*), 0), 1
+            ) AS interview_rate,
+            ROUND(
+                COUNT(*) FILTER (WHERE a.status = 'Offer') * 100.0 / NULLIF(COUNT(*), 0), 1
+            ) AS offer_rate
+        FROM applications a
+        LEFT JOIN interviews i ON i.application_id = a.id
+        GROUP BY a.company_name
+        HAVING COUNT(*) >= %s
+        ORDER BY offer_rate DESC NULLS LAST, interview_rate DESC NULLS LAST
+        LIMIT %s
+        """,
+        (min_apps, limit),
+    ) or []
+
+    return jsonify({
+        "leaderboard": rows,
+        "count": len(rows),
+        "min_apps_filter": min_apps,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/reporting/time-to-hire — Average days from application to offer
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/reporting/time-to-hire", methods=["GET"])
+def time_to_hire():
+    """Average days from application to offer by company/role.
+
+    Also includes stage-by-stage timing breakdown.
+    """
+    # Overall averages by final status
+    by_status = db.query(
+        """
+        SELECT status,
+               COUNT(*) AS count,
+               ROUND(AVG(EXTRACT(EPOCH FROM (
+                   COALESCE(last_status_change, updated_at, NOW()) - date_applied
+               )) / 86400)::numeric, 1) AS avg_days,
+               ROUND(MIN(EXTRACT(EPOCH FROM (
+                   COALESCE(last_status_change, updated_at, NOW()) - date_applied
+               )) / 86400)::numeric, 1) AS min_days,
+               ROUND(MAX(EXTRACT(EPOCH FROM (
+                   COALESCE(last_status_change, updated_at, NOW()) - date_applied
+               )) / 86400)::numeric, 1) AS max_days
+        FROM applications
+        WHERE date_applied IS NOT NULL
+        GROUP BY status
+        ORDER BY avg_days DESC
+        """
+    ) or []
+
+    # Time to first interview
+    time_to_interview = db.query_one(
+        """
+        SELECT ROUND(AVG(EXTRACT(EPOCH FROM (
+            i.date - a.date_applied
+        )) / 86400)::numeric, 1) AS avg_days
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        WHERE a.date_applied IS NOT NULL
+        """
+    )
+
+    # Time to offer (for apps that got offers)
+    time_to_offer = db.query_one(
+        """
+        SELECT ROUND(AVG(EXTRACT(EPOCH FROM (
+            o.created_at - a.date_applied
+        )) / 86400)::numeric, 1) AS avg_days
+        FROM offers o
+        JOIN applications a ON a.id = o.application_id
+        WHERE a.date_applied IS NOT NULL
+        """
+    )
+
+    # By company (top 10 with offers/interviews)
+    by_company = db.query(
+        """
+        SELECT a.company_name,
+               COUNT(*) AS apps,
+               ROUND(AVG(EXTRACT(EPOCH FROM (
+                   COALESCE(a.last_status_change, a.updated_at, NOW()) - a.date_applied
+               )) / 86400)::numeric, 1) AS avg_days
+        FROM applications a
+        WHERE a.date_applied IS NOT NULL
+        GROUP BY a.company_name
+        HAVING COUNT(*) >= 1
+        ORDER BY avg_days ASC
+        LIMIT 10
+        """
+    ) or []
+
+    return jsonify({
+        "by_status": by_status,
+        "avg_days_to_first_interview": float(time_to_interview["avg_days"]) if time_to_interview and time_to_interview.get("avg_days") else None,
+        "avg_days_to_offer": float(time_to_offer["avg_days"]) if time_to_offer and time_to_offer.get("avg_days") else None,
+        "by_company": by_company,
     }), 200

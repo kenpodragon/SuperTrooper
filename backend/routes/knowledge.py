@@ -358,3 +358,208 @@ def reindex_documents():
         "new_untracked": new_found,
         "files": [{"path": f, "size_kb": round(os.path.getsize(f) / 1024, 1)} for f in found_files[:100]],
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/knowledge/stats — KB statistics
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/stats", methods=["GET"])
+def knowledge_stats():
+    """Return knowledge base statistics: bullet count, skill count, career entries, voice rules, templates."""
+    stats = {}
+    table_map = {
+        "bullets": "bullets",
+        "skills": "skills",
+        "career_entries": "career_history",
+        "voice_rules": "voice_rules",
+        "templates": "resume_templates",
+        "recipes": "resume_recipes",
+        "content_sections": "content_sections",
+        "salary_benchmarks": "salary_benchmarks",
+        "summary_variants": "summary_variants",
+    }
+
+    for label, table in table_map.items():
+        try:
+            r = db.query_one(f"SELECT COUNT(*) AS cnt FROM {table}")
+            stats[label] = r["cnt"] if r else 0
+        except Exception:
+            stats[label] = 0
+
+    # Bullet breakdown by type
+    try:
+        bullet_types = db.query(
+            "SELECT type, COUNT(*) AS count FROM bullets GROUP BY type ORDER BY count DESC"
+        )
+        stats["bullet_types"] = {r["type"]: r["count"] for r in bullet_types} if bullet_types else {}
+    except Exception:
+        stats["bullet_types"] = {}
+
+    # Skills by category
+    try:
+        skill_cats = db.query(
+            "SELECT category, COUNT(*) AS count FROM skills GROUP BY category ORDER BY count DESC"
+        )
+        stats["skill_categories"] = {r["category"]: r["count"] for r in skill_cats} if skill_cats else {}
+    except Exception:
+        stats["skill_categories"] = {}
+
+    return jsonify(stats), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/knowledge/validate — Validate bullet against voice rules + metrics
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/validate", methods=["POST"])
+def validate_bullet():
+    """Validate a bullet against voice rules and metric requirements.
+
+    Body (JSON):
+        text (required): The bullet text to validate
+    Returns: violations list, has_metric flag, score
+    """
+    data = request.get_json(force=True)
+    text = data.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+
+    issues = []
+
+    # Check for metrics (numbers, percentages, dollar amounts)
+    import re
+    has_metric = bool(re.search(r'\d+[\%\$KMBkmb]|\$[\d,]+|\d+\s*(?:percent|%|x|X)', text))
+    if not has_metric:
+        issues.append({
+            "type": "missing_metric",
+            "message": "Bullet lacks a concrete metric or measurable outcome",
+        })
+
+    # Check voice rules — banned words
+    banned = db.query(
+        "SELECT rule_text, subcategory, explanation FROM voice_rules WHERE category = 'banned_word'"
+    ) or []
+    lower_text = text.lower()
+    for bw in banned:
+        if bw["rule_text"].lower() in lower_text:
+            issues.append({
+                "type": "banned_word",
+                "match": bw["rule_text"],
+                "subcategory": bw.get("subcategory"),
+                "explanation": bw.get("explanation"),
+            })
+
+    # Check voice rules — banned constructions
+    constructions = db.query(
+        "SELECT rule_text, subcategory, explanation FROM voice_rules WHERE category = 'banned_construction'"
+    ) or []
+    for bc in constructions:
+        if bc["rule_text"].lower() in lower_text:
+            issues.append({
+                "type": "banned_construction",
+                "match": bc["rule_text"],
+                "subcategory": bc.get("subcategory"),
+                "explanation": bc.get("explanation"),
+            })
+
+    # Length check
+    word_count = len(text.split())
+    if word_count < 5:
+        issues.append({"type": "too_short", "message": "Bullet is fewer than 5 words"})
+    if word_count > 40:
+        issues.append({"type": "too_long", "message": "Bullet exceeds 40 words"})
+
+    # Starts with action verb check
+    first_word = text.split()[0].lower().rstrip(".,;:")
+    weak_starts = {"responsible", "helped", "assisted", "worked", "involved", "participated"}
+    if first_word in weak_starts:
+        issues.append({
+            "type": "weak_start",
+            "message": f"Starts with weak verb '{first_word}'. Use a strong action verb.",
+        })
+
+    score = max(0, 100 - len(issues) * 20)
+
+    return jsonify({
+        "text": text,
+        "has_metric": has_metric,
+        "word_count": word_count,
+        "issues": issues,
+        "issue_count": len(issues),
+        "score": score,
+        "valid": len(issues) == 0,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/knowledge/search-semantic — Semantic search across bullets
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/search-semantic", methods=["GET"])
+def search_semantic():
+    """Semantic search across bullets using pgvector (if embeddings exist, else keyword fallback).
+
+    Query params:
+        q (required): search query
+        limit: max results (default 20)
+        type: filter by bullet type
+    """
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify({"error": "q parameter is required"}), 400
+
+    limit = int(request.args.get("limit", 20))
+    bullet_type = request.args.get("type")
+
+    # Try pgvector semantic search first
+    has_embeddings = False
+    try:
+        check = db.query_one(
+            "SELECT COUNT(*) AS cnt FROM bullets WHERE embedding IS NOT NULL"
+        )
+        has_embeddings = check and check["cnt"] > 0
+    except Exception:
+        pass
+
+    if has_embeddings:
+        # Use pgvector cosine similarity
+        try:
+            type_clause = "AND b.type = %s" if bullet_type else ""
+            params = [query, limit] if not bullet_type else [query, bullet_type, limit]
+
+            # Generate embedding for the query using the same approach as insert
+            # For now, fall back to keyword if we can't generate query embedding
+            has_embeddings = False  # Degrade to keyword — generating embeddings needs AI provider
+        except Exception:
+            has_embeddings = False
+
+    # Keyword fallback with ts_rank
+    type_clause = ""
+    params = [f"%{query}%", f"%{query}%"]
+    if bullet_type:
+        type_clause = "AND b.type = %s"
+        params.append(bullet_type)
+    params.append(limit)
+
+    rows = db.query(
+        f"""
+        SELECT b.id, b.text, b.type, b.tags, b.career_history_id,
+               ch.employer, ch.title,
+               ts_rank(to_tsvector('english', b.text), plainto_tsquery('english', %s)) AS rank
+        FROM bullets b
+        LEFT JOIN career_history ch ON ch.id = b.career_history_id
+        WHERE (b.text ILIKE %s OR b.tags::text ILIKE %s)
+        {type_clause}
+        ORDER BY rank DESC, b.id DESC
+        LIMIT %s
+        """,
+        [query] + params,
+    )
+
+    return jsonify({
+        "results": rows or [],
+        "count": len(rows) if rows else 0,
+        "query": query,
+        "method": "semantic" if has_embeddings else "keyword",
+    }), 200

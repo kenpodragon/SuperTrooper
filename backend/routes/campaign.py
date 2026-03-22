@@ -492,3 +492,215 @@ def initial_recipe():
         "available_bullets": len(bullets) if bullets else 0,
         "summary_found": summary is not None,
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/campaign/close-out-preview — Preview close-out actions
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/campaign/close-out-preview", methods=["GET"])
+def close_out_preview():
+    """Preview what campaign close-out would do.
+
+    Lists applications to withdraw, emails to draft, contacts to notify.
+    Does NOT actually perform any actions.
+    """
+    # Active applications that would be withdrawn
+    active_apps = db.query(
+        """
+        SELECT id, company_name, role, status, date_applied, last_status_change
+        FROM applications
+        WHERE status NOT IN ('Rejected', 'Ghosted', 'Withdrawn', 'Offer', 'Accepted')
+        ORDER BY date_applied DESC
+        """
+    ) or []
+
+    # Pending interviews that would be cancelled
+    pending_interviews = db.query(
+        """
+        SELECT i.id, i.date, i.type, a.company_name, a.role
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        WHERE i.date >= CURRENT_DATE AND i.outcome = 'pending'
+        ORDER BY i.date ASC
+        """
+    ) or []
+
+    # Draft outreach that would be discarded
+    draft_outreach = db.query(
+        """
+        SELECT id, message_type, subject, status
+        FROM outreach_messages
+        WHERE status = 'draft'
+        """
+    ) or []
+
+    # Contacts to potentially notify (strong/warm relationships with active apps)
+    contacts_to_notify = db.query(
+        """
+        SELECT DISTINCT c.id, c.name, c.company, c.relationship_strength
+        FROM contacts c
+        JOIN applications a ON a.company_name ILIKE '%%' || c.company || '%%'
+        WHERE a.status NOT IN ('Rejected', 'Ghosted', 'Withdrawn', 'Offer', 'Accepted')
+          AND c.relationship_strength IN ('strong', 'warm')
+        LIMIT 20
+        """
+    ) or []
+
+    # Thank-you emails to draft for completed interviews
+    thank_you_needed = db.query(
+        """
+        SELECT i.id AS interview_id, i.date, i.type, a.company_name, a.role
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        WHERE i.thank_you_sent = false
+          AND i.date < CURRENT_DATE
+          AND i.outcome != 'cancelled'
+        ORDER BY i.date DESC
+        """
+    ) or []
+
+    return jsonify({
+        "applications_to_withdraw": active_apps,
+        "interviews_to_cancel": pending_interviews,
+        "drafts_to_discard": draft_outreach,
+        "contacts_to_notify": contacts_to_notify,
+        "thank_yous_needed": thank_you_needed,
+        "summary": {
+            "withdraw_count": len(active_apps),
+            "cancel_interviews": len(pending_interviews),
+            "discard_drafts": len(draft_outreach),
+            "notify_contacts": len(contacts_to_notify),
+            "thank_yous_pending": len(thank_you_needed),
+        },
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/campaign/archive — Archive campaign data
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/campaign/archive", methods=["POST"])
+def archive_full_campaign():
+    """Archive completed campaign data for historical reference.
+
+    Creates a comprehensive snapshot in generated_materials with all campaign stats,
+    timeline, top outcomes, and lessons learned.
+
+    Body (JSON, optional):
+        notes: additional notes to include in the archive
+        campaign_name: name for this campaign (default: auto-generated)
+    """
+    data = request.get_json(force=True) if request.data else {}
+    notes = data.get("notes", "")
+    campaign_name = data.get("campaign_name", "")
+
+    # Gather comprehensive stats
+    app_stats = db.query(
+        "SELECT status, COUNT(*) AS count FROM applications GROUP BY status ORDER BY count DESC"
+    ) or []
+    total_apps = sum(r["count"] for r in app_stats)
+    by_status = {r["status"]: r["count"] for r in app_stats}
+
+    # Interview stats
+    interview_stats = db.query_one(
+        """
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE outcome = 'pass') AS passed,
+               COUNT(*) FILTER (WHERE outcome = 'fail') AS failed,
+               COUNT(DISTINCT application_id) AS unique_apps
+        FROM interviews
+        """
+    ) or {}
+
+    # Offer stats
+    offers = db.query(
+        """
+        SELECT o.id, o.base_salary, o.total_comp, o.status,
+               a.company_name, a.role
+        FROM offers o
+        JOIN applications a ON a.id = o.application_id
+        ORDER BY o.created_at DESC
+        """
+    ) or []
+
+    # Timeline
+    first_app = db.query_one(
+        "SELECT MIN(date_applied) AS first FROM applications"
+    )
+    last_app = db.query_one(
+        "SELECT MAX(date_applied) AS last FROM applications"
+    )
+
+    # Materials generated
+    materials_count = db.query_one(
+        "SELECT COUNT(*) AS cnt FROM generated_materials"
+    )
+
+    # Outreach stats
+    outreach_count = db.query_one(
+        """
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE status = 'sent') AS sent,
+               COUNT(*) FILTER (WHERE outcome = 'replied') AS replied
+        FROM outreach_messages
+        """
+    ) or {}
+
+    if not campaign_name:
+        start = str(first_app["first"])[:10] if first_app and first_app.get("first") else "unknown"
+        campaign_name = f"Campaign {start}"
+
+    archive = {
+        "campaign_name": campaign_name,
+        "notes": notes,
+        "timeline": {
+            "first_application": str(first_app["first"]) if first_app and first_app.get("first") else None,
+            "last_application": str(last_app["last"]) if last_app and last_app.get("last") else None,
+        },
+        "applications": {
+            "total": total_apps,
+            "by_status": by_status,
+        },
+        "interviews": {
+            "total": interview_stats.get("total", 0),
+            "passed": interview_stats.get("passed", 0),
+            "failed": interview_stats.get("failed", 0),
+            "unique_applications": interview_stats.get("unique_apps", 0),
+        },
+        "offers": [
+            {
+                "company": o.get("company_name"),
+                "role": o.get("role"),
+                "base_salary": o.get("base_salary"),
+                "total_comp": o.get("total_comp"),
+                "status": o.get("status"),
+            }
+            for o in offers
+        ],
+        "outreach": {
+            "total": outreach_count.get("total", 0),
+            "sent": outreach_count.get("sent", 0),
+            "replied": outreach_count.get("replied", 0),
+        },
+        "materials_generated": materials_count["cnt"] if materials_count else 0,
+    }
+
+    row = db.execute_returning(
+        """
+        INSERT INTO generated_materials
+            (type, content, content_format, status)
+        VALUES (%s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            "campaign_archive",
+            json.dumps(archive),
+            "json",
+            "draft",
+        ),
+    )
+    return jsonify({
+        "archive": archive,
+        "material_id": row["id"] if row else None,
+    }), 201

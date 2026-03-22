@@ -292,3 +292,172 @@ def plugin_health():
             "networking": False,
         },
     })
+
+
+# ---------------------------------------------------------------------------
+# Voice Rules CRUD
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/settings/voice-rules", methods=["GET"])
+def list_voice_rules():
+    """List all active voice rules (for settings UI).
+
+    Query params:
+        category: filter by category (banned_word, banned_construction, resume_rule, etc.)
+    """
+    category = request.args.get("category")
+    clauses, params = [], []
+
+    if category:
+        clauses.append("category = %s")
+        params.append(category)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = db.query(
+        f"""
+        SELECT id, category, subcategory, rule_text, explanation, created_at
+        FROM voice_rules
+        {where}
+        ORDER BY category, subcategory, id
+        """,
+        params,
+    )
+
+    # Group by category
+    grouped = {}
+    for r in (rows or []):
+        cat = r.get("category", "other")
+        if cat not in grouped:
+            grouped[cat] = []
+        grouped[cat].append(r)
+
+    return jsonify({
+        "rules": rows or [],
+        "by_category": grouped,
+        "total": len(rows) if rows else 0,
+    }), 200
+
+
+@bp.route("/api/settings/voice-rules", methods=["POST"])
+def add_voice_rule():
+    """Add a custom voice rule.
+
+    Body (JSON):
+        category (required): banned_word, banned_construction, resume_rule, style_rule, custom
+        rule_text (required): the rule text or banned word/phrase
+        subcategory: optional grouping
+        explanation: why this rule exists
+    """
+    data = request.get_json(force=True)
+    category = data.get("category")
+    rule_text = data.get("rule_text", "").strip()
+
+    if not category or not rule_text:
+        return jsonify({"error": "category and rule_text are required"}), 400
+
+    # Check for duplicate
+    existing = db.query_one(
+        "SELECT id FROM voice_rules WHERE category = %s AND rule_text = %s",
+        (category, rule_text),
+    )
+    if existing:
+        return jsonify({"error": "Rule already exists", "existing_id": existing["id"]}), 409
+
+    row = db.execute_returning(
+        """
+        INSERT INTO voice_rules (part, part_title, category, subcategory, rule_text, explanation, sort_order)
+        VALUES (99, 'Custom Rules', %s, %s, %s, %s, 999)
+        RETURNING *
+        """,
+        (
+            category,
+            data.get("subcategory"),
+            rule_text,
+            data.get("explanation"),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/settings/voice-rules/<int:rule_id>", methods=["DELETE"])
+def delete_voice_rule(rule_id):
+    """Remove a voice rule (hard delete)."""
+    row = db.execute_returning(
+        """
+        DELETE FROM voice_rules
+        WHERE id = %s
+        RETURNING id, category, rule_text
+        """,
+        (rule_id,),
+    )
+    if not row:
+        return jsonify({"error": "Voice rule not found"}), 404
+    return jsonify({"deleted": True, "rule": row}), 200
+
+
+# ---------------------------------------------------------------------------
+# User Preferences
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/settings/preferences", methods=["GET"])
+def get_preferences():
+    """Get user preferences (notification, display, search settings).
+
+    Reads from settings.preferences JSONB column.
+    """
+    row = db.query_one("SELECT preferences FROM settings WHERE id = 1")
+    prefs = (row.get("preferences") or {}) if row else {}
+
+    if isinstance(prefs, str):
+        try:
+            prefs = json.loads(prefs)
+        except (json.JSONDecodeError, TypeError):
+            prefs = {}
+
+    # Provide defaults for expected keys
+    defaults = {
+        "notifications_enabled": True,
+        "email_digest": "weekly",
+        "display_theme": "light",
+        "default_search_limit": 50,
+        "auto_voice_check": True,
+        "aging_rules": DEFAULT_AGING_RULES,
+    }
+
+    # Merge defaults with stored prefs
+    merged = {**defaults, **prefs}
+
+    return jsonify(merged), 200
+
+
+@bp.route("/api/settings/preferences", methods=["PUT"])
+def update_preferences():
+    """Update user preferences.
+
+    Body (JSON): any preference keys to update. Merges with existing.
+    """
+    data = request.get_json(force=True)
+    if not data:
+        return jsonify({"error": "No preferences provided"}), 400
+
+    # Read current preferences
+    row = db.query_one("SELECT preferences FROM settings WHERE id = 1")
+    prefs = (row.get("preferences") or {}) if row else {}
+    if isinstance(prefs, str):
+        try:
+            prefs = json.loads(prefs)
+        except (json.JSONDecodeError, TypeError):
+            prefs = {}
+
+    # Merge new values
+    prefs.update(data)
+
+    db.execute(
+        "UPDATE settings SET preferences = %s::jsonb, updated_at = NOW() WHERE id = 1",
+        (json.dumps(prefs),),
+    )
+
+    return jsonify({
+        "preferences": prefs,
+        "updated_keys": list(data.keys()),
+    }), 200

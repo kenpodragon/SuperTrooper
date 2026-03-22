@@ -534,3 +534,223 @@ def schedule_interview():
         "company": app.get("company_name"),
         "role": app.get("role"),
     }), 201
+
+
+# ---------------------------------------------------------------------------
+# POST /api/interviews/auto-prep — Auto-generate full prep package
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/interviews/auto-prep", methods=["POST"])
+def auto_prep():
+    """Given application_id, auto-generate a comprehensive interview prep package.
+
+    Body (JSON):
+        application_id (required): ID of the application
+
+    Returns: company research, role-specific questions, STAR stories, salary talking points.
+    """
+    data = request.get_json(force=True)
+    application_id = data.get("application_id")
+    if not application_id:
+        return jsonify({"error": "application_id is required"}), 400
+
+    app = db.query_one(
+        "SELECT * FROM applications WHERE id = %s", (application_id,)
+    )
+    if not app:
+        return jsonify({"error": "Application not found"}), 404
+
+    company_name = app.get("company_name", "")
+    role = app.get("role", "")
+    keyword = role.split()[0] if role else ""
+
+    # 1. Company research summary (from dossier)
+    company_dossier = {}
+    if company_name:
+        co = db.query_one(
+            """
+            SELECT name, sector, hq_location, size, stage, glassdoor_rating,
+                   employee_count, funding_stage, key_differentiator, notes
+            FROM companies WHERE name ILIKE %s
+            """,
+            (f"%{company_name}%",),
+        )
+        if co:
+            company_dossier = dict(co)
+
+    # Company contacts (insider intel)
+    insider_contacts = []
+    if company_name:
+        insider_contacts = db.query(
+            """
+            SELECT name, title, relationship, relationship_strength, notes
+            FROM contacts WHERE company ILIKE %s
+            ORDER BY CASE relationship_strength
+                WHEN 'strong' THEN 1 WHEN 'warm' THEN 2 ELSE 3 END
+            LIMIT 5
+            """,
+            (f"%{company_name}%",),
+        ) or []
+
+    # 2. Role-specific questions from question bank
+    role_questions = []
+    if keyword:
+        role_questions = db.query(
+            """
+            SELECT miq.question_text, miq.question_type,
+                   mi.difficulty
+            FROM mock_interview_questions miq
+            JOIN mock_interviews mi ON mi.id = miq.mock_interview_id
+            WHERE mi.job_title ILIKE %s OR miq.question_text ILIKE %s
+            ORDER BY miq.created_at DESC LIMIT 15
+            """,
+            (f"%{keyword}%", f"%{keyword}%"),
+        ) or []
+
+    # Fallback to general questions
+    if not role_questions:
+        role_questions = db.query(
+            """
+            SELECT miq.question_text, miq.question_type,
+                   mi.difficulty
+            FROM mock_interview_questions miq
+            JOIN mock_interviews mi ON mi.id = miq.mock_interview_id
+            ORDER BY miq.created_at DESC LIMIT 10
+            """
+        ) or []
+
+    # 3. STAR stories matching role requirements
+    star_stories = []
+    if keyword:
+        star_stories = db.query(
+            """
+            SELECT b.id, b.text, b.tags, ch.employer, ch.title
+            FROM bullets b
+            LEFT JOIN career_history ch ON ch.id = b.career_history_id
+            WHERE b.type = 'achievement'
+              AND (b.text ILIKE %s OR b.tags::text ILIKE %s)
+            ORDER BY b.id DESC LIMIT 8
+            """,
+            (f"%{keyword}%", f"%{keyword}%"),
+        ) or []
+
+    if not star_stories:
+        star_stories = db.query(
+            """
+            SELECT b.id, b.text, b.tags, ch.employer, ch.title
+            FROM bullets b
+            LEFT JOIN career_history ch ON ch.id = b.career_history_id
+            WHERE b.type = 'achievement'
+            ORDER BY b.id DESC LIMIT 8
+            """
+        ) or []
+
+    # Also pull from gap analysis if available
+    gap_insights = {}
+    if app.get("gap_analysis_id"):
+        gap = db.query_one(
+            "SELECT strengths, gaps, recommendations FROM gap_analyses WHERE id = %s",
+            (app["gap_analysis_id"],),
+        )
+        if gap:
+            gap_insights = {
+                "strengths": gap.get("strengths"),
+                "gaps": gap.get("gaps"),
+                "recommendations": gap.get("recommendations"),
+            }
+
+    # 4. Salary talking points
+    salary_data = {}
+    if role:
+        bench = db.query_one(
+            "SELECT * FROM salary_benchmarks WHERE role_title ILIKE %s LIMIT 1",
+            (f"%{keyword}%",),
+        )
+        if bench:
+            salary_data = {
+                "role_title": bench.get("role_title"),
+                "national_median_range": bench.get("national_median_range"),
+                "melbourne_range": bench.get("melbourne_range"),
+                "remote_range": bench.get("remote_range"),
+                "target_realistic": bench.get("target_realistic"),
+            }
+
+    # Questions to ask the interviewer
+    questions_to_ask = [
+        "What does success look like in the first 90 days for this role?",
+        "How does the team handle disagreement on technical direction?",
+        "What are the biggest challenges the team is facing right now?",
+        "How do you measure performance for this position?",
+        "What's the career growth path from this role?",
+    ]
+    if company_name:
+        questions_to_ask.insert(1, f"What's the day-to-day culture like at {company_name}?")
+
+    # Save as interview_prep if there's a scheduled interview
+    interview = db.query_one(
+        "SELECT id FROM interviews WHERE application_id = %s ORDER BY date DESC LIMIT 1",
+        (application_id,),
+    )
+
+    package = {
+        "application_id": application_id,
+        "company_name": company_name,
+        "role": role,
+        "company_dossier": company_dossier,
+        "insider_contacts": insider_contacts,
+        "role_questions": role_questions,
+        "star_stories": star_stories,
+        "gap_insights": gap_insights,
+        "salary_talking_points": salary_data,
+        "questions_to_ask": questions_to_ask,
+    }
+
+    # Persist if interview exists
+    if interview:
+        existing_prep = db.query_one(
+            "SELECT id FROM interview_prep WHERE interview_id = %s",
+            (interview["id"],),
+        )
+        if existing_prep:
+            db.execute(
+                """
+                UPDATE interview_prep
+                SET company_dossier = %s, prepared_questions = %s, talking_points = %s,
+                    star_stories_selected = %s, questions_to_ask = %s, notes = %s
+                WHERE interview_id = %s
+                """,
+                (
+                    json.dumps(company_dossier),
+                    json.dumps(role_questions),
+                    json.dumps(salary_data),
+                    json.dumps(star_stories),
+                    json.dumps(questions_to_ask),
+                    f"Auto-generated prep for {company_name} - {role}",
+                    interview["id"],
+                ),
+            )
+        else:
+            db.execute_returning(
+                """
+                INSERT INTO interview_prep
+                    (interview_id, company_dossier, prepared_questions, talking_points,
+                     star_stories_selected, questions_to_ask, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    interview["id"],
+                    json.dumps(company_dossier),
+                    json.dumps(role_questions),
+                    json.dumps(salary_data),
+                    json.dumps(star_stories),
+                    json.dumps(questions_to_ask),
+                    f"Auto-generated prep for {company_name} - {role}",
+                ),
+            )
+        package["interview_id"] = interview["id"]
+        package["saved_to_interview_prep"] = True
+    else:
+        package["saved_to_interview_prep"] = False
+
+    return jsonify(package), 200

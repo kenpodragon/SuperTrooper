@@ -777,3 +777,130 @@ def mark_outreach_sent(message_id):
     if not row:
         return jsonify({"error": "Not found"}), 404
     return jsonify(row), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/materials/history — All generated materials with dates and targets
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/materials/history", methods=["GET"])
+def materials_history():
+    """List all generated materials (cover letters, thank-yous, outreach) with dates and targets.
+
+    Query params:
+        days: limit to last N days (default: all)
+        material_type: filter by type
+        limit: max results (default 100)
+    """
+    days = request.args.get("days")
+    material_type = request.args.get("material_type")
+    limit = int(request.args.get("limit", 100))
+
+    clauses, params = [], []
+
+    if days:
+        clauses.append("gm.generated_at >= NOW() - INTERVAL '%s days'")
+        params.append(int(days))
+    if material_type:
+        clauses.append("gm.type = %s")
+        params.append(material_type)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+
+    rows = db.query(
+        f"""
+        SELECT gm.id, gm.type, gm.status, gm.generated_at, gm.content_format,
+               gm.application_id,
+               a.company_name AS target_company, a.role AS target_role,
+               LEFT(gm.content, 200) AS content_preview
+        FROM generated_materials gm
+        LEFT JOIN applications a ON a.id = gm.application_id
+        {where}
+        ORDER BY gm.generated_at DESC
+        LIMIT %s
+        """,
+        params,
+    )
+
+    # Also include outreach messages
+    outreach_clauses, outreach_params = [], []
+    if days:
+        outreach_clauses.append("om.created_at >= NOW() - INTERVAL '%s days'")
+        outreach_params.append(int(days))
+    outreach_where = f"WHERE {' AND '.join(outreach_clauses)}" if outreach_clauses else ""
+
+    outreach = db.query(
+        f"""
+        SELECT om.id, om.message_type AS type, om.status, om.created_at AS generated_at,
+               'text' AS content_format, om.application_id,
+               c.company AS target_company, c.name AS target_contact,
+               LEFT(om.body, 200) AS content_preview
+        FROM outreach_messages om
+        LEFT JOIN contacts c ON c.id = om.contact_id
+        {outreach_where}
+        ORDER BY om.created_at DESC
+        LIMIT 50
+        """,
+        outreach_params,
+    )
+
+    return jsonify({
+        "materials": rows or [],
+        "outreach": outreach or [],
+        "total_materials": len(rows) if rows else 0,
+        "total_outreach": len(outreach) if outreach else 0,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/materials/regenerate/<id> — Regenerate a material
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/materials/regenerate/<int:material_id>", methods=["POST"])
+def regenerate_material(material_id):
+    """Regenerate a material with updated context.
+
+    Copies the original material, marks old as 'superseded', creates new as 'draft'.
+    Body (JSON, optional):
+        updates: dict of fields to override in the new version
+    """
+    original = db.query_one(
+        "SELECT * FROM generated_materials WHERE id = %s",
+        (material_id,),
+    )
+    if not original:
+        return jsonify({"error": "Material not found"}), 404
+
+    data = request.get_json(force=True) if request.data else {}
+    updates = data.get("updates", {})
+
+    # Mark original as superseded
+    db.execute(
+        "UPDATE generated_materials SET status = 'superseded' WHERE id = %s",
+        (material_id,),
+    )
+
+    # Build new material from original + overrides
+    new_content = updates.get("content", original.get("content", ""))
+    new_type = updates.get("type", original.get("type"))
+
+    row = db.execute_returning(
+        """
+        INSERT INTO generated_materials
+            (type, application_id, content, content_format, status)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            new_type,
+            original.get("application_id"),
+            new_content,
+            original.get("content_format", "text"),
+            "draft",
+        ),
+    )
+    return jsonify({
+        "new_material": row,
+        "superseded_id": material_id,
+    }), 201
