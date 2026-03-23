@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, interviews } from '../../api/client';
 import type { Interview } from '../../api/client';
@@ -38,12 +38,108 @@ const emptyDebrief: DebriefForm = {
   notes: '',
 };
 
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function InterviewCalendar({ interviews: allInterviews, onSelect }: { interviews: Interview[]; onSelect: (i: Interview) => void }) {
+  const [month, setMonth] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+
+  const year = month.getFullYear();
+  const mo = month.getMonth();
+  const daysInMonth = new Date(year, mo + 1, 0).getDate();
+  const firstDow = new Date(year, mo, 1).getDay();
+
+  const byDate = useMemo(() => {
+    const map: Record<string, Interview[]> = {};
+    allInterviews.forEach(iv => {
+      if (!iv.date) return;
+      const d = new Date(iv.date);
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      (map[key] ??= []).push(iv);
+    });
+    return map;
+  }, [allInterviews]);
+
+  const today = new Date();
+  const isToday = (day: number) => today.getFullYear() === year && today.getMonth() === mo && today.getDate() === day;
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <button
+          onClick={() => setMonth(new Date(year, mo - 1, 1))}
+          className="px-2 py-1 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded"
+        >
+          &larr;
+        </button>
+        <h3 className="text-sm font-semibold text-gray-900">
+          {month.toLocaleString('default', { month: 'long', year: 'numeric' })}
+        </h3>
+        <button
+          onClick={() => setMonth(new Date(year, mo + 1, 1))}
+          className="px-2 py-1 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded"
+        >
+          &rarr;
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 gap-px">
+        {DAYS.map(d => (
+          <div key={d} className="text-center text-xs font-medium text-gray-400 py-1">{d}</div>
+        ))}
+        {/* Empty cells before first day */}
+        {Array.from({ length: firstDow }).map((_, i) => (
+          <div key={`e${i}`} className="h-20" />
+        ))}
+        {/* Day cells */}
+        {Array.from({ length: daysInMonth }).map((_, i) => {
+          const day = i + 1;
+          const key = `${year}-${mo}-${day}`;
+          const dayInterviews = byDate[key] || [];
+          return (
+            <div
+              key={day}
+              className={`h-20 border border-gray-100 rounded p-1 ${isToday(day) ? 'bg-blue-50 border-blue-300' : 'hover:bg-gray-50'}`}
+            >
+              <span className={`text-xs font-medium ${isToday(day) ? 'text-blue-600' : 'text-gray-500'}`}>
+                {day}
+              </span>
+              <div className="mt-0.5 space-y-0.5 overflow-hidden">
+                {dayInterviews.slice(0, 2).map(iv => (
+                  <button
+                    key={iv.id}
+                    onClick={() => onSelect(iv)}
+                    className={`w-full text-left text-xs px-1 py-0.5 rounded truncate cursor-pointer ${
+                      iv.outcome === 'passed' ? 'bg-green-100 text-green-800' :
+                      iv.outcome === 'failed' ? 'bg-red-100 text-red-700' :
+                      'bg-indigo-100 text-indigo-700'
+                    }`}
+                    title={`${iv.company_name} - ${iv.type}`}
+                  >
+                    {iv.company_name}
+                  </button>
+                ))}
+                {dayInterviews.length > 2 && (
+                  <span className="text-xs text-gray-400">+{dayInterviews.length - 2} more</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function Interviews() {
   const qc = useQueryClient();
   const [showDebrief, setShowDebrief] = useState<number | null>(null);
   const [debrief, setDebrief] = useState<DebriefForm>(emptyDebrief);
   const [prepResult, setPrepResult] = useState<PrepResult | null>(null);
   const [prepLoading, setPrepLoading] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('calendar');
 
   const { data, isLoading } = useQuery({
     queryKey: ['interviews'],
@@ -90,6 +186,20 @@ export default function Interviews() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Interviews</h1>
         <div className="flex gap-3 items-center">
+          <div className="flex border border-gray-200 rounded overflow-hidden">
+            <button
+              onClick={() => setViewMode('calendar')}
+              className={`px-3 py-1.5 text-xs ${viewMode === 'calendar' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >
+              Calendar
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`px-3 py-1.5 text-xs ${viewMode === 'list' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >
+              List
+            </button>
+          </div>
           <a
             href="/mock-interviews"
             className="px-4 py-2 bg-blue-50 text-blue-600 text-sm rounded hover:bg-blue-100"
@@ -99,6 +209,14 @@ export default function Interviews() {
           <span className="text-sm text-gray-500">{allInterviews.length} interviews</span>
         </div>
       </div>
+
+      {/* Calendar View */}
+      {viewMode === 'calendar' && (
+        <InterviewCalendar
+          interviews={allInterviews}
+          onSelect={(iv) => generatePrep(iv.id)}
+        />
+      )}
 
       {/* Upcoming Interviews */}
       {upcoming.length > 0 && (

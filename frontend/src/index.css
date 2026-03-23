@@ -1,1 +1,119 @@
 @import "tailwindcss";
+
+/* ============================================
+   Dark Mode — Global Overrides
+   Flips common Tailwind patterns when .dark is on <html>.
+   No per-page changes needed.
+   ============================================ */
+
+/* Backgrounds */
+.dark .bg-white { background-color: #1e293b !important; }
+.dark .bg-gray-50 { background-color: #0f172a !important; }
+.dark .bg-gray-100 { background-color: #1e293b !important; }
+
+/* Text colors — HIGH CONTRAST for readability */
+.dark .text-gray-900 { color: #f8fafc !important; }
+.dark .text-gray-800 { color: #f1f5f9 !important; }
+.dark .text-gray-700 { color: #e2e8f0 !important; }
+.dark .text-gray-600 { color: #cbd5e1 !important; }
+.dark .text-gray-500 { color: #94a3b8 !important; }
+.dark .text-gray-400 { color: #94a3b8 !important; }
+
+/* Colored text — boost for dark backgrounds */
+.dark .text-blue-600 { color: #60a5fa !important; }
+.dark .text-blue-700 { color: #93bbfd !important; }
+.dark .text-blue-800 { color: #93c5fd !important; }
+.dark .text-green-600 { color: #4ade80 !important; }
+.dark .text-green-700 { color: #86efac !important; }
+.dark .text-green-800 { color: #86efac !important; }
+.dark .text-red-600 { color: #f87171 !important; }
+.dark .text-red-700 { color: #fca5a5 !important; }
+.dark .text-red-800 { color: #fca5a5 !important; }
+.dark .text-yellow-700 { color: #fde047 !important; }
+.dark .text-yellow-800 { color: #fde68a !important; }
+.dark .text-orange-600 { color: #fb923c !important; }
+.dark .text-orange-700 { color: #fdba74 !important; }
+.dark .text-orange-800 { color: #fdba74 !important; }
+.dark .text-amber-600 { color: #fbbf24 !important; }
+.dark .text-amber-700 { color: #fcd34d !important; }
+.dark .text-amber-800 { color: #fcd34d !important; }
+.dark .text-purple-700 { color: #c084fc !important; }
+.dark .text-purple-800 { color: #d8b4fe !important; }
+.dark .text-indigo-700 { color: #a5b4fc !important; }
+.dark .text-indigo-800 { color: #c7d2fe !important; }
+.dark .text-cyan-700 { color: #67e8f9 !important; }
+.dark .text-sky-700 { color: #7dd3fc !important; }
+.dark .text-teal-700 { color: #5eead4 !important; }
+
+/* Borders */
+.dark .border-gray-200 { border-color: #334155 !important; }
+.dark .border-gray-100 { border-color: #1e293b !important; }
+.dark .border-gray-300 { border-color: #475569 !important; }
+.dark .border-blue-200 { border-color: #1e40af !important; }
+.dark .border-blue-300 { border-color: #2563eb !important; }
+.dark .border-orange-200 { border-color: #9a3412 !important; }
+.dark .border-amber-200 { border-color: #92400e !important; }
+
+/* Hover states */
+.dark .hover\:bg-gray-50:hover { background-color: #334155 !important; }
+.dark .hover\:bg-gray-100:hover { background-color: #475569 !important; }
+.dark .hover\:bg-gray-200:hover { background-color: #475569 !important; }
+.dark .hover\:bg-blue-50:hover { background-color: #1e3a5f !important; }
+.dark .hover\:bg-blue-100:hover { background-color: #1e3a5f !important; }
+
+/* Table headers */
+.dark thead.bg-gray-50 { background-color: #1e293b !important; }
+
+/* Cards with colored backgrounds — solid dark tints */
+.dark .bg-blue-50 { background-color: #172554 !important; }
+.dark .bg-green-50 { background-color: #14532d !important; }
+.dark .bg-yellow-50 { background-color: #422006 !important; }
+.dark .bg-orange-50 { background-color: #431407 !important; }
+.dark .bg-red-50 { background-color: #450a0a !important; }
+.dark .bg-indigo-50 { background-color: #1e1b4b !important; }
+.dark .bg-amber-50 { background-color: #451a03 !important; }
+.dark .bg-purple-50 { background-color: #3b0764 !important; }
+
+/* Pill/badge backgrounds — solid, not transparent */
+.dark .bg-blue-100 { background-color: #1e3a5f !important; }
+.dark .bg-green-100 { background-color: #14532d !important; }
+.dark .bg-yellow-100 { background-color: #713f12 !important; }
+.dark .bg-red-100 { background-color: #7f1d1d !important; }
+.dark .bg-orange-100 { background-color: #7c2d12 !important; }
+.dark .bg-purple-100 { background-color: #581c87 !important; }
+.dark .bg-indigo-100 { background-color: #312e81 !important; }
+.dark .bg-amber-100 { background-color: #78350f !important; }
+.dark .bg-cyan-100 { background-color: #164e63 !important; }
+.dark .bg-green-200 { background-color: #166534 !important; }
+.dark .bg-red-200 { background-color: #991b1b !important; }
+.dark .bg-sky-100 { background-color: #0c4a6e !important; }
+.dark .bg-teal-100 { background-color: #134e4a !important; }
+
+/* Form inputs */
+.dark input, .dark textarea, .dark select {
+  background-color: #0f172a !important;
+  color: #f1f5f9 !important;
+  border-color: #475569 !important;
+}
+.dark input::placeholder, .dark textarea::placeholder {
+  color: #94a3b8;
+}
+.dark input:focus, .dark textarea:focus, .dark select:focus {
+  border-color: #3b82f6 !important;
+}
+
+/* Links */
+.dark .hover\:underline:hover { color: #60a5fa !important; }
+
+/* Scrollbar */
+.dark ::-webkit-scrollbar-track { background: #0f172a; }
+.dark ::-webkit-scrollbar-thumb { background: #334155; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Shadows in dark mode */
+.dark .shadow-xl { box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5) !important; }
+.dark .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.4) !important; }
+.dark .shadow-sm { box-shadow: 0 1px 2px 0 rgba(0,0,0,0.3) !important; }
+
+/* Status pill text stays readable on dark pill backgrounds */
+.dark .text-gray-500.capitalize { color: #cbd5e1 !important; }

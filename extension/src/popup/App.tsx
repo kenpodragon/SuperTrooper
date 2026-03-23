@@ -43,6 +43,13 @@ export default function App() {
         </h1>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => chrome.tabs.create({ url: "http://localhost:5175/profile" })}
+            title="Open Profile"
+            className="text-[10px] font-mono text-st-muted hover:text-st-green transition-colors px-1.5 py-0.5 border border-st-border rounded hover:border-st-green"
+          >
+            Profile
+          </button>
+          <button
             onClick={() => chrome.tabs.create({ url: "http://localhost:5175" })}
             title="Open Dashboard"
             className="text-[10px] font-mono text-st-muted hover:text-st-green transition-colors px-1.5 py-0.5 border border-st-border rounded hover:border-st-green"

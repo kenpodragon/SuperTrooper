@@ -1,10 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { api, applications, interviews, savedJobs, staleApps, activity, emails } from '../../api/client';
 import type { Application, Interview, ActivityItem, EmailIntelStatus } from '../../api/client';
 
-function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+function StatCard({ label, value, sub, onClick }: { label: string; value: string | number; sub?: string; onClick?: () => void }) {
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4">
+    <div
+      onClick={onClick}
+      className={`bg-white rounded-lg border border-gray-200 p-4 ${onClick ? 'cursor-pointer hover:border-blue-400 hover:shadow-sm transition-all' : ''}`}
+    >
       <p className="text-sm text-gray-500">{label}</p>
       <p className="text-2xl font-semibold text-gray-900 mt-1">{value}</p>
       {sub && <p className="text-xs text-gray-400 mt-1">{sub}</p>}
@@ -44,6 +48,7 @@ interface StaleApp {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const apps = useQuery({ queryKey: ['applications'], queryFn: () => applications.list('?limit=200') });
   const intv = useQuery({ queryKey: ['interviews-upcoming'], queryFn: () => interviews.list('?limit=10') });
   const jobs = useQuery({ queryKey: ['saved-jobs'], queryFn: () => savedJobs.list('?status=saved&limit=5') });
@@ -86,10 +91,10 @@ export default function Dashboard() {
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Dashboard</h1>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Total Applications" value={appData.length} />
-        <StatCard label="Active Pipeline" value={activeCount} sub={activeStatuses.filter(s => byStatus[s]).map(s => `${s}: ${byStatus[s]}`).join(', ')} />
-        <StatCard label="Saved Jobs" value={jobs.data?.length ?? '...'} sub="Awaiting evaluation" />
-        <StatCard label="Stale (14d+)" value={stale.data?.length ?? '...'} sub="Need follow-up" />
+        <StatCard label="Total Applications" value={appData.length} onClick={() => navigate('/applications')} />
+        <StatCard label="Active Pipeline" value={activeCount} sub={activeStatuses.filter(s => byStatus[s]).map(s => `${s}: ${byStatus[s]}`).join(', ')} onClick={() => navigate('/applications')} />
+        <StatCard label="Saved Jobs" value={jobs.data?.length ?? '...'} sub="Awaiting evaluation" onClick={() => navigate('/saved-jobs')} />
+        <StatCard label="Stale (14d+)" value={stale.data?.length ?? '...'} sub="Need follow-up" onClick={() => navigate('/applications?filter=stale')} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -233,9 +238,16 @@ export default function Dashboard() {
 
         {/* Upcoming Interviews */}
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h2 className="text-lg font-semibold text-gray-900 mb-3">Recent Interviews</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-gray-900">Recent Interviews</h2>
+            <button onClick={() => navigate('/interviews')} className="text-xs text-blue-600 hover:underline">View all</button>
+          </div>
           {(intv.data ?? []).slice(0, 5).map((i: Interview) => (
-            <div key={i.id} className="flex justify-between py-1.5 border-b border-gray-100 last:border-0">
+            <div
+              key={i.id}
+              onClick={() => navigate('/interviews')}
+              className="flex justify-between py-1.5 border-b border-gray-100 last:border-0 cursor-pointer hover:bg-gray-50 rounded px-1 -mx-1 transition-colors"
+            >
               <div>
                 <p className="text-sm font-medium text-gray-700">{i.company_name}</p>
                 <p className="text-xs text-gray-400">{i.type} - {i.role}</p>
@@ -252,7 +264,10 @@ export default function Dashboard() {
 
         {/* Email Intelligence */}
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h2 className="text-lg font-semibold text-gray-900 mb-3">Email Intelligence</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-gray-900">Email Intelligence</h2>
+            <button onClick={() => navigate('/analytics')} className="text-xs text-blue-600 hover:underline">View in Analytics</button>
+          </div>
           {emailStatus.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
           {emailData && (
             <>

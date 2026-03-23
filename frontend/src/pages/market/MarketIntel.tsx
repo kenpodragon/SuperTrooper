@@ -61,6 +61,119 @@ function StatCard({ label, value, color }: { label: string; value: string | numb
   );
 }
 
+const GAUGE_SEGMENTS = [
+  { label: 'Frozen', color: '#dc2626' },
+  { label: 'Cold', color: '#ea580c' },
+  { label: 'Slow', color: '#d97706' },
+  { label: 'Neutral', color: '#ca8a04' },
+  { label: 'Warming', color: '#65a30d' },
+  { label: 'Active', color: '#16a34a' },
+  { label: 'Hot', color: '#059669' },
+];
+
+function HealthGauge({ score }: { score: number }) {
+  // score 0-100, maps to 7 segments
+  const segIndex = Math.min(Math.floor(score / (100 / 7)), 6);
+  const segment = GAUGE_SEGMENTS[segIndex];
+  const needleAngle = -90 + (score / 100) * 180; // -90 to 90 degrees
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="text-sm font-medium text-gray-700 mb-3 text-center">Market Health</h3>
+      <div className="relative mx-auto" style={{ width: 200, height: 120 }}>
+        <svg viewBox="0 0 200 110" width="200" height="110">
+          {/* Gauge arc segments */}
+          {GAUGE_SEGMENTS.map((seg, i) => {
+            const startAngle = -90 + (i / 7) * 180;
+            const endAngle = -90 + ((i + 1) / 7) * 180;
+            const r = 80;
+            const cx = 100, cy = 100;
+            const x1 = cx + r * Math.cos((startAngle * Math.PI) / 180);
+            const y1 = cy + r * Math.sin((startAngle * Math.PI) / 180);
+            const x2 = cx + r * Math.cos((endAngle * Math.PI) / 180);
+            const y2 = cy + r * Math.sin((endAngle * Math.PI) / 180);
+            return (
+              <path
+                key={i}
+                d={`M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`}
+                fill="none"
+                stroke={seg.color}
+                strokeWidth={i === segIndex ? 14 : 10}
+                opacity={i === segIndex ? 1 : 0.3}
+              />
+            );
+          })}
+          {/* Needle */}
+          <line
+            x1="100" y1="100"
+            x2={100 + 60 * Math.cos((needleAngle * Math.PI) / 180)}
+            y2={100 + 60 * Math.sin((needleAngle * Math.PI) / 180)}
+            stroke="#374151" strokeWidth="2.5" strokeLinecap="round"
+          />
+          <circle cx="100" cy="100" r="4" fill="#374151" />
+        </svg>
+      </div>
+      <div className="text-center mt-1">
+        <span className="text-lg font-bold" style={{ color: segment.color }}>{segment.label}</span>
+        <span className="text-sm text-gray-400 ml-2">({score}/100)</span>
+      </div>
+    </div>
+  );
+}
+
+function TrendLineChart({ data }: { data: TrendData[] }) {
+  if (data.length < 2) return null;
+  const max = Math.max(...data.map(d => d.count), 1);
+  const w = 400, h = 140, pad = 30;
+  const plotW = w - pad * 2, plotH = h - pad * 2;
+  const points = data.map((d, i) => ({
+    x: pad + (i / (data.length - 1)) * plotW,
+    y: pad + plotH - (d.count / max) * plotH,
+  }));
+  const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  const area = `${line} L ${points[points.length - 1].x} ${pad + plotH} L ${points[0].x} ${pad + plotH} Z`;
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="text-sm font-medium text-gray-700 mb-3">Signal Trend Over Time</h3>
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h}>
+        {/* Grid lines */}
+        {[0, 0.25, 0.5, 0.75, 1].map(pct => {
+          const y = pad + plotH - pct * plotH;
+          return (
+            <g key={pct}>
+              <line x1={pad} y1={y} x2={pad + plotW} y2={y} stroke="#e5e7eb" strokeWidth="1" />
+              <text x={pad - 4} y={y + 3} textAnchor="end" fontSize="9" fill="#9ca3af">
+                {Math.round(pct * max)}
+              </text>
+            </g>
+          );
+        })}
+        {/* Area fill */}
+        <path d={area} fill="url(#trendGradient)" opacity="0.3" />
+        {/* Line */}
+        <path d={line} fill="none" stroke="#3b82f6" strokeWidth="2" />
+        {/* Dots */}
+        {points.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r="3" fill="#3b82f6" />
+        ))}
+        {/* X labels */}
+        {data.map((d, i) => (
+          <text key={i} x={points[i].x} y={h - 4} textAnchor="middle" fontSize="8" fill="#9ca3af">
+            {d.month}
+          </text>
+        ))}
+        <defs>
+          <linearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#3b82f6" />
+            <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+  );
+}
+
 function TrendBar({ data }: { data: TrendData[] }) {
   if (!data.length) return null;
   const max = Math.max(...data.map(d => d.count), 1);
@@ -138,7 +251,7 @@ export default function MarketIntel() {
 
   const { data: trends } = useQuery({
     queryKey: ['market-trends'],
-    queryFn: () => api.get<TrendData[]>('/market-intelligence/trends'),
+    queryFn: () => api.get<{ count: number; trends: TrendData[] }>('/market-intelligence/trends').then(r => r.trends),
   });
 
   const signalList = signals ?? [];
@@ -185,11 +298,23 @@ export default function MarketIntel() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Total Signals" value={summaryData.total_signals ?? signalList.length} />
-        <StatCard label="Critical" value={summaryData.critical ?? '...'} color="text-red-600" />
-        <StatCard label="High Priority" value={summaryData.high ?? '...'} color="text-orange-600" />
-        <StatCard label="Sources" value={summaryData.source_count ?? sources.length} />
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+        <div className="md:col-span-1">
+          <HealthGauge score={(() => {
+            // Compute health from signal mix: more critical/high = lower health
+            const total = signalList.length || 1;
+            const critical = signalList.filter((s: MarketSignal) => s.severity === 'critical').length;
+            const high = signalList.filter((s: MarketSignal) => s.severity === 'high').length;
+            const negativePct = (critical * 2 + high) / (total * 2);
+            return Math.round(Math.max(0, Math.min(100, (1 - negativePct) * 100)));
+          })()} />
+        </div>
+        <div className="md:col-span-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+          <StatCard label="Total Signals" value={summaryData.total_signals ?? signalList.length} />
+          <StatCard label="Critical" value={summaryData.critical ?? '...'} color="text-red-600" />
+          <StatCard label="High Priority" value={summaryData.high ?? '...'} color="text-orange-600" />
+          <StatCard label="Sources" value={summaryData.source_count ?? sources.length} />
+        </div>
       </div>
 
       {/* BLS/JOLTS data summary */}
@@ -250,6 +375,10 @@ export default function MarketIntel() {
 
       {viewMode === 'trends' && (
         <div className="space-y-4">
+          {trendData.length === 0 && (
+            <p className="text-sm text-gray-400 p-4">No trend data available yet. Signals will appear here as they accumulate over time.</p>
+          )}
+          <TrendLineChart data={trendData} />
           <TrendBar data={trendData} />
           {/* Industry comparison - aggregate by type */}
           <div className="bg-white rounded-lg border border-gray-200 p-4">

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 
 interface Notification {
@@ -9,7 +10,19 @@ interface Notification {
   type: string;
   read: boolean;
   created_at?: string;
+  entity_type?: string;
+  entity_id?: number;
+  severity?: string;
 }
+
+const ENTITY_ROUTES: Record<string, string> = {
+  application: '/applications',
+  interview: '/interviews',
+  contact: '/contacts',
+  saved_job: '/saved-jobs',
+  fresh_job: '/fresh-jobs',
+  company: '/companies',
+};
 
 interface NotificationActionResponse {
   id: number;
@@ -29,6 +42,7 @@ const TYPE_COLORS: Record<string, string> = {
 
 export default function Notifications() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<'all' | 'unread' | 'action_required'>('all');
 
   const { data, isLoading } = useQuery({
@@ -40,7 +54,7 @@ export default function Notifications() {
   });
 
   const markRead = useMutation({
-    mutationFn: (id: number) => api.patch<NotificationActionResponse>(`/notifications/${id}/read`, {}),
+    mutationFn: (id: number) => api.put<NotificationActionResponse>(`/notifications/${id}/read`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
     onError: (error: Error) => {
       console.error('Failed to mark notification as read:', error.message);
@@ -56,7 +70,7 @@ export default function Notifications() {
   });
 
   const markAllRead = useMutation({
-    mutationFn: () => api.patch<MarkAllReadResponse>('/notifications/read-all', {}),
+    mutationFn: () => api.post<MarkAllReadResponse>('/notifications/mark-all-read', {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
     onError: (error: Error) => {
       console.error('Failed to mark all notifications as read:', error.message);
@@ -104,42 +118,72 @@ export default function Notifications() {
           <p className="text-sm text-gray-400 p-4">No notifications.</p>
         )}
 
-        {notifications.map((n: Notification) => (
-          <div
-            key={n.id}
-            className={`flex items-start gap-3 p-4 border-b border-gray-100 last:border-0 ${!n.read ? 'bg-blue-50' : ''}`}
-          >
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <p className="text-sm font-medium text-gray-900">{n.title}</p>
-                <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${TYPE_COLORS[n.type] ?? 'bg-gray-100 text-gray-700'}`}>
-                  {n.type?.replace('_', ' ')}
-                </span>
-                {!n.read && <span className="w-2 h-2 bg-blue-500 rounded-full inline-block" />}
+        {notifications.map((n: Notification) => {
+          const entityRoute = n.entity_type ? ENTITY_ROUTES[n.entity_type] : null;
+          const canNavigate = entityRoute != null;
+          return (
+            <div
+              key={n.id}
+              className={`flex items-start gap-3 p-4 border-b border-gray-100 last:border-0 ${!n.read ? 'bg-blue-50' : ''} ${canNavigate ? 'cursor-pointer hover:bg-gray-50' : ''}`}
+              onClick={() => {
+                if (canNavigate) {
+                  if (!n.read) markRead.mutate(n.id);
+                  navigate(entityRoute);
+                }
+              }}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <p className="text-sm font-medium text-gray-900">{n.title}</p>
+                  <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${TYPE_COLORS[n.type] ?? 'bg-gray-100 text-gray-700'}`}>
+                    {n.type?.replace('_', ' ')}
+                  </span>
+                  {n.severity && n.severity !== 'info' && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                      n.severity === 'critical' ? 'bg-red-100 text-red-700' :
+                      n.severity === 'high' ? 'bg-orange-100 text-orange-700' :
+                      'bg-yellow-100 text-yellow-700'
+                    }`}>
+                      {n.severity}
+                    </span>
+                  )}
+                  {!n.read && <span className="w-2 h-2 bg-blue-500 rounded-full inline-block" />}
+                </div>
+                <p className="text-sm text-gray-600">{n.message}</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <p className="text-xs text-gray-400">
+                    {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
+                  </p>
+                  {n.entity_type && (
+                    <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
+                      {n.entity_type.replace('_', ' ')}
+                      {n.entity_id ? ` #${n.entity_id}` : ''}
+                    </span>
+                  )}
+                  {canNavigate && (
+                    <span className="text-xs text-blue-500">View &rarr;</span>
+                  )}
+                </div>
               </div>
-              <p className="text-sm text-gray-600">{n.message}</p>
-              <p className="text-xs text-gray-400 mt-1">
-                {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
-              </p>
-            </div>
-            <div className="flex gap-1.5 shrink-0">
-              {!n.read && (
+              <div className="flex gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+                {!n.read && (
+                  <button
+                    onClick={() => markRead.mutate(n.id)}
+                    className="text-xs px-2 py-1 border border-blue-300 text-blue-700 rounded hover:bg-blue-50"
+                  >
+                    Mark Read
+                  </button>
+                )}
                 <button
-                  onClick={() => markRead.mutate(n.id)}
-                  className="text-xs px-2 py-1 border border-blue-300 text-blue-700 rounded hover:bg-blue-50"
+                  onClick={() => dismiss.mutate(n.id)}
+                  className="text-xs px-2 py-1 border border-gray-300 text-gray-500 rounded hover:bg-gray-50"
                 >
-                  Mark Read
+                  Dismiss
                 </button>
-              )}
-              <button
-                onClick={() => dismiss.mutate(n.id)}
-                className="text-xs px-2 py-1 border border-gray-300 text-gray-500 rounded hover:bg-gray-50"
-              >
-                Dismiss
-              </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

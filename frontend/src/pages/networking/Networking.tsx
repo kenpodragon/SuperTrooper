@@ -148,6 +148,8 @@ export default function Networking() {
   const [showTouchpoint, setShowTouchpoint] = useState(false);
   const [outreachContactId, setOutreachContactId] = useState<number | null>(null);
   const [outreachData, setOutreachData] = useState<OutreachDraft | null>(null);
+  const [filterStage, setFilterStage] = useState<string>('all');
+  const [filterSearch, setFilterSearch] = useState('');
 
   const pipeline = useQuery({
     queryKey: ['crm-pipeline'],
@@ -291,31 +293,72 @@ export default function Networking() {
         </div>
       )}
 
+      {/* Filter Bar */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <input
+          type="text"
+          placeholder="Search contacts..."
+          value={filterSearch}
+          onChange={e => setFilterSearch(e.target.value)}
+          className="border border-gray-200 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 w-48"
+        />
+        <select
+          value={filterStage}
+          onChange={e => setFilterStage(e.target.value)}
+          className="border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none"
+        >
+          <option value="all">All Stages</option>
+          {STAGES.map(s => (
+            <option key={s} value={s}>{STAGE_LABELS[s]}</option>
+          ))}
+        </select>
+        <span className="text-xs text-gray-400">
+          {allContacts.length} contacts
+        </span>
+        {(filterStage !== 'all' || filterSearch) && (
+          <button
+            onClick={() => { setFilterStage('all'); setFilterSearch(''); }}
+            className="text-xs text-blue-600 hover:underline"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
       {/* Kanban columns with stage labels */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-        {STAGES.map(stage => (
-          <div key={stage} className={`rounded-lg border border-gray-200 border-t-4 p-3 ${STAGE_COLORS[stage]}`}>
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
-                {STAGE_LABELS[stage]}
-              </h3>
-              <span className="text-xs text-gray-500">{byStage[stage].length}</span>
+        {STAGES.filter(stage => filterStage === 'all' || filterStage === stage).map(stage => {
+          const searchLower = filterSearch.toLowerCase();
+          const filtered = byStage[stage].filter((c: Contact) =>
+            !filterSearch ||
+            c.name.toLowerCase().includes(searchLower) ||
+            (c.company ?? '').toLowerCase().includes(searchLower) ||
+            (c.title ?? '').toLowerCase().includes(searchLower)
+          );
+          return (
+            <div key={stage} className={`rounded-lg border border-gray-200 border-t-4 p-3 ${STAGE_COLORS[stage]}`}>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                  {STAGE_LABELS[stage]}
+                </h3>
+                <span className="text-xs text-gray-500">{filtered.length}</span>
+              </div>
+              {pipeline.isLoading && <p className="text-xs text-gray-400">Loading...</p>}
+              {filtered.map((r: Contact) => (
+                <ContactCard
+                  key={r.id}
+                  contact={r}
+                  healthScore={healthMap[r.id]}
+                  onLogTouchpoint={openTouchpoint}
+                  onGenerateOutreach={openOutreach}
+                />
+              ))}
+              {!pipeline.isLoading && filtered.length === 0 && (
+                <p className="text-xs text-gray-400 italic">None</p>
+              )}
             </div>
-            {pipeline.isLoading && <p className="text-xs text-gray-400">Loading...</p>}
-            {byStage[stage].map((r: Contact) => (
-              <ContactCard
-                key={r.id}
-                contact={r}
-                healthScore={healthMap[r.id]}
-                onLogTouchpoint={openTouchpoint}
-                onGenerateOutreach={openOutreach}
-              />
-            ))}
-            {!pipeline.isLoading && byStage[stage].length === 0 && (
-              <p className="text-xs text-gray-400 italic">None</p>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Networking Tasks */}

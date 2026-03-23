@@ -16,14 +16,14 @@ export function injectSaveButton(anchor: Element, job: JobExtraction): void {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 8px 16px; margin: 8px 0; font-size: 13px; font-weight: 600;
       cursor: pointer; border: 1px solid #00FF41; border-radius: 6px;
-      background: rgba(0, 255, 65, 0.08); color: #00FF41;
+      background: #1a1a2e; color: #00FF41;
       font-family: 'Consolas', 'Fira Code', monospace;
       transition: all 0.2s; line-height: 1;
     }
-    .st-save-btn:hover:not(.disabled) { background: rgba(0, 255, 65, 0.2); }
+    .st-save-btn:hover:not(.disabled) { background: #16213e; }
     .st-save-btn.disabled { opacity: 0.7; cursor: default; }
-    .st-save-btn.success { border-color: #00FF41; background: rgba(0, 255, 65, 0.15); }
-    .st-save-btn.error { border-color: #ff4444; color: #ff4444; background: rgba(255, 68, 68, 0.08); }
+    .st-save-btn.success { border-color: #00FF41; background: #0d2818; }
+    .st-save-btn.error { border-color: #ff4444; color: #ff4444; background: #2e1a1a; }
   `;
   root.appendChild(style);
 

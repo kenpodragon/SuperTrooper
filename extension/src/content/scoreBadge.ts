@@ -24,18 +24,18 @@ export function injectScoreBadge(
       padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 700;
       border: 1px solid; line-height: 1; cursor: default;
     }
-    .st-score.high { color: #00FF41; border-color: #00FF41; background: rgba(0,255,65,0.08); }
-    .st-score.mid { color: #FFD700; border-color: #FFD700; background: rgba(255,215,0,0.08); }
-    .st-score.low { color: #ff4444; border-color: #ff4444; background: rgba(255,68,68,0.08); }
+    .st-score.high { color: #00FF41; border-color: #00FF41; background: #0d2818; }
+    .st-score.mid { color: #FFD700; border-color: #FFD700; background: #2e2a0d; }
+    .st-score.low { color: #ff4444; border-color: #ff4444; background: #2e1a1a; }
     .st-score .label { font-size: 10px; font-weight: 400; opacity: 0.8; }
     .st-score .mode { font-size: 9px; opacity: 0.5; margin-left: 2px; }
     .st-deep {
       display: inline-flex; align-items: center; justify-content: center;
       width: 24px; height: 24px; border-radius: 4px; border: 1px solid #00FF41;
-      background: rgba(0,255,65,0.05); color: #00FF41; cursor: pointer;
+      background: #1a1a2e; color: #00FF41; cursor: pointer;
       font-size: 14px; line-height: 1; transition: all 0.2s;
     }
-    .st-deep:hover { background: rgba(0,255,65,0.2); }
+    .st-deep:hover { background: #16213e; }
     .st-deep.running { opacity: 0.6; cursor: wait; animation: pulse 1s infinite; }
     .st-deep.done { border-color: #FFD700; color: #FFD700; cursor: default; }
     @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }

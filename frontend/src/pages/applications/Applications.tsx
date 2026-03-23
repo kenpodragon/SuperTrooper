@@ -56,77 +56,172 @@ interface QuickViewData {
   gap?: GapAnalysis | null;
 }
 
+interface RelatedInterview {
+  id: number;
+  type?: string;
+  date?: string;
+  outcome?: string;
+  role?: string;
+}
+
+interface RelatedContact {
+  id: number;
+  name: string;
+  title?: string;
+  relationship_stage?: string;
+}
+
 function QuickViewPanel({ data, onClose }: { data: QuickViewData; onClose: () => void }) {
   const { app, gap } = data;
+  const [activeTab, setActiveTab] = useState<'details' | 'interviews' | 'contacts'>('details');
+
+  const relatedInterviews = useQuery({
+    queryKey: ['app-interviews', app.id],
+    queryFn: () => api.get<RelatedInterview[]>(`/interviews?application_id=${app.id}`).catch(() => []),
+  });
+
+  const relatedContacts = useQuery({
+    queryKey: ['app-contacts', app.company_name],
+    queryFn: () => api.get<RelatedContact[]>(`/contacts?company=${encodeURIComponent(app.company_name || '')}`).catch(() => []),
+    enabled: !!app.company_name,
+  });
+
+  const tabs = [
+    { id: 'details' as const, label: 'Details' },
+    { id: 'interviews' as const, label: `Interviews (${(relatedInterviews.data ?? []).length})` },
+    { id: 'contacts' as const, label: `Contacts (${(relatedContacts.data ?? []).length})` },
+  ];
+
   return (
     <div className="fixed inset-y-0 right-0 w-96 bg-white shadow-xl border-l border-gray-200 z-50 overflow-y-auto">
       <div className="p-4 border-b border-gray-200 flex items-center justify-between">
         <h2 className="text-lg font-semibold text-gray-900">Application Details</h2>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
       </div>
+
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            className={`flex-1 py-2 text-xs font-medium transition-colors ${
+              activeTab === t.id ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       <div className="p-4 space-y-4">
+        {/* Header always visible */}
         <div>
-          <h3 className="text-sm font-medium text-gray-500 mb-1">Company & Role</h3>
           <p className="text-base font-semibold text-gray-900">{app.company_name}</p>
           <p className="text-sm text-gray-700">{app.role}</p>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <p className="text-xs text-gray-500">Status</p>
-            <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-medium ${statusColor[app.status || ''] || 'bg-gray-100'}`}>
+          <div className="flex items-center gap-2 mt-1">
+            <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${statusColor[app.status || ''] || 'bg-gray-100'}`}>
               {app.status}
             </span>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500">Source</p>
-            <p className="text-sm text-gray-800 mt-1">{app.source || '-'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500">Applied</p>
-            <p className="text-sm text-gray-800 mt-1">{app.date_applied || '-'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500">Last Update</p>
-            <p className="text-sm text-gray-800 mt-1">{app.last_status_change || '-'}</p>
+            {app.date_applied && <span className="text-xs text-gray-400">Applied {app.date_applied}</span>}
           </div>
         </div>
-        {app.contact_name && (
-          <div>
-            <p className="text-xs text-gray-500">Contact</p>
-            <p className="text-sm text-gray-800">{app.contact_name} {app.contact_email ? `(${app.contact_email})` : ''}</p>
-          </div>
-        )}
-        {app.jd_url && (
-          <div>
-            <p className="text-xs text-gray-500">JD URL</p>
-            <a href={app.jd_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline break-all">{app.jd_url}</a>
-          </div>
-        )}
-        {app.resume_version && (
-          <div>
-            <p className="text-xs text-gray-500">Resume Version</p>
-            <p className="text-sm text-gray-800">{app.resume_version}</p>
-          </div>
-        )}
-        {app.notes && (
-          <div>
-            <p className="text-xs text-gray-500">Notes</p>
-            <p className="text-sm text-gray-700 whitespace-pre-wrap">{app.notes}</p>
-          </div>
-        )}
-        {gap && (
-          <div className="border-t border-gray-200 pt-3">
-            <h3 className="text-sm font-medium text-gray-700 mb-2">Gap Analysis</h3>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs text-gray-500">Overall Score:</span>
-              <span className={`text-sm font-semibold ${(gap.overall_score ?? 0) >= 70 ? 'text-green-700' : (gap.overall_score ?? 0) >= 50 ? 'text-yellow-700' : 'text-red-700'}`}>
-                {gap.overall_score ?? 'N/A'}
-              </span>
+
+        {activeTab === 'details' && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs text-gray-500">Source</p>
+                <p className="text-sm text-gray-800 mt-1">{app.source || '-'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Last Update</p>
+                <p className="text-sm text-gray-800 mt-1">{app.last_status_change || '-'}</p>
+              </div>
             </div>
-            {gap.recommendation && (
-              <p className="text-xs text-gray-600">{gap.recommendation}</p>
+            {app.contact_name && (
+              <div>
+                <p className="text-xs text-gray-500">Contact</p>
+                <p className="text-sm text-gray-800">{app.contact_name} {app.contact_email ? `(${app.contact_email})` : ''}</p>
+              </div>
             )}
-          </div>
+            {app.jd_url && (
+              <div>
+                <p className="text-xs text-gray-500">JD URL</p>
+                <a href={app.jd_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline break-all">{app.jd_url}</a>
+              </div>
+            )}
+            {app.resume_version && (
+              <div>
+                <p className="text-xs text-gray-500">Resume Version</p>
+                <p className="text-sm text-gray-800">{app.resume_version}</p>
+              </div>
+            )}
+            {app.notes && (
+              <div>
+                <p className="text-xs text-gray-500">Notes</p>
+                <p className="text-sm text-gray-700 whitespace-pre-wrap">{app.notes}</p>
+              </div>
+            )}
+            {gap && (
+              <div className="border-t border-gray-200 pt-3">
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Gap Analysis</h3>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs text-gray-500">Overall Score:</span>
+                  <span className={`text-sm font-semibold ${(gap.overall_score ?? 0) >= 70 ? 'text-green-700' : (gap.overall_score ?? 0) >= 50 ? 'text-yellow-700' : 'text-red-700'}`}>
+                    {gap.overall_score ?? 'N/A'}
+                  </span>
+                </div>
+                {gap.recommendation && (
+                  <p className="text-xs text-gray-600">{gap.recommendation}</p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === 'interviews' && (
+          <>
+            {relatedInterviews.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+            {(relatedInterviews.data ?? []).length === 0 && !relatedInterviews.isLoading && (
+              <p className="text-sm text-gray-400">No interviews linked to this application.</p>
+            )}
+            {(relatedInterviews.data ?? []).map((iv: RelatedInterview) => (
+              <div key={iv.id} className="bg-gray-50 rounded border border-gray-200 p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-900">{iv.type || 'Interview'}</p>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${
+                    iv.outcome === 'pass' ? 'bg-green-100 text-green-700' :
+                    iv.outcome === 'fail' ? 'bg-red-100 text-red-700' :
+                    'bg-gray-100 text-gray-500'
+                  }`}>
+                    {iv.outcome || 'pending'}
+                  </span>
+                </div>
+                {iv.date && <p className="text-xs text-gray-500 mt-1">{new Date(iv.date).toLocaleDateString()}</p>}
+              </div>
+            ))}
+          </>
+        )}
+
+        {activeTab === 'contacts' && (
+          <>
+            {relatedContacts.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+            {(relatedContacts.data ?? []).length === 0 && !relatedContacts.isLoading && (
+              <p className="text-sm text-gray-400">No contacts found at {app.company_name}.</p>
+            )}
+            {(relatedContacts.data ?? []).map((c: RelatedContact) => (
+              <div key={c.id} className="bg-gray-50 rounded border border-gray-200 p-3">
+                <p className="text-sm font-medium text-gray-900">{c.name}</p>
+                {c.title && <p className="text-xs text-gray-600">{c.title}</p>}
+                {c.relationship_stage && (
+                  <span className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded mt-1 inline-block">
+                    {c.relationship_stage}
+                  </span>
+                )}
+              </div>
+            ))}
+          </>
         )}
       </div>
     </div>
