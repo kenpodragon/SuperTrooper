@@ -26,6 +26,15 @@ class AIProvider(ABC):
         Returns: {"action": "keep_a"|"keep_b"|"merge", "result": str, "reason": str}
         """
 
+    def generate(self, prompt: str, response_format: str = "json") -> "str | dict":
+        """Generic prompt — send any prompt and get a response back.
+        Args:
+            prompt: The full prompt text.
+            response_format: "json" to parse response as JSON, "text" for raw string.
+        Returns: parsed JSON dict or raw string.
+        """
+        return self._run_cli(prompt, expect_json=(response_format == "json"))
+
     @abstractmethod
     def health_check(self) -> dict:
         """Returns: {"available": bool, "version": str, "model": str}"""

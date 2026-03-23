@@ -44,8 +44,7 @@ services:
       - ./backend:/app
       - ./utils:/app/utils
       # AI CLI credentials (mount host config into container)
-      # Claude: uncomment if using Claude CLI
-      # - ${USERPROFILE:-.}/.claude:/root/.claude
+      - ${USERPROFILE:-.}/.claude:/root/.claude
 
   frontend:
     build:

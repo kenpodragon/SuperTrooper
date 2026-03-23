@@ -20,11 +20,34 @@ interface GenerateResult {
   message?: string;
 }
 
+interface KeywordMatch {
+  keyword: string;
+  found: boolean;
+  jd_count?: number;
+  resume_count?: number;
+}
+
+interface AiAnalysis {
+  overall_assessment?: string;
+  strengths?: string[];
+  weaknesses?: string[];
+  suggestions?: string[];
+  ai_score?: number;
+}
+
 interface AtsScoreResult {
+  ats_score?: number;
   score?: number;
-  feedback?: string[];
-  keyword_matches?: string[];
+  keyword_matches?: KeywordMatch[];
   missing_keywords?: string[];
+  feedback?: string[];
+  match_percentage?: number;
+  keywords_found?: number;
+  keywords_checked?: number;
+  formatting_flags?: { ats_safe?: boolean; issues?: string[] };
+  analysis_mode?: string;
+  ai_analysis?: AiAnalysis;
+  ai_error?: string;
 }
 
 export default function Resumes() {
@@ -35,7 +58,9 @@ export default function Resumes() {
   const [atsResult, setAtsResult] = useState<AtsScoreResult | null>(null);
   const [genResult, setGenResult] = useState<GenerateResult | null>(null);
   const [createForm, setCreateForm] = useState({ name: '', description: '', template_id: 1 });
-  const [atsForm, setAtsForm] = useState({ resume_text: '', jd_text: '' });
+  const [atsForm, setAtsForm] = useState({ resume_text: '', jd_text: '', use_ai: false });
+  const [jdUrl, setJdUrl] = useState('');
+  const [jdFetching, setJdFetching] = useState(false);
 
   const { data: recipeList, isLoading: loadingRecipes } = useQuery({
     queryKey: ['recipes'],
@@ -121,6 +146,20 @@ export default function Resumes() {
     onSuccess: (data) => setAtsResult(data),
     onError: (err: any) => alert(err?.response?.data?.error || 'ATS scoring failed'),
   });
+
+  const fetchJdFromUrl = async (url: string) => {
+    setJdFetching(true);
+    try {
+      const result = await api.post<{ text: string; error?: string }>('/jd/fetch-url', { url });
+      if (result.text) {
+        setAtsForm(p => ({ ...p, jd_text: result.text }));
+      }
+    } catch (err: any) {
+      alert(err?.response?.data?.error || 'Failed to fetch JD from URL');
+    } finally {
+      setJdFetching(false);
+    }
+  };
 
   // Detail view
   if (view === 'detail' && selectedId != null) {
@@ -326,46 +365,147 @@ export default function Resumes() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Resume Text</label>
+            <div className="flex gap-2 mb-2">
+              <select
+                className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                defaultValue=""
+                onChange={async (e) => {
+                  const id = Number(e.target.value);
+                  if (!id) return;
+                  try {
+                    const detail = await api.get<{ resolved_preview?: Record<string, unknown> }>(`/resume/recipes/${id}?resolve=true`);
+                    if (detail.resolved_preview) {
+                      // Flatten resolved dict to readable text
+                      const rp = detail.resolved_preview;
+                      const lines: string[] = [];
+                      for (const [key, val] of Object.entries(rp)) {
+                        if (Array.isArray(val)) {
+                          lines.push(`${key}:`);
+                          val.forEach(v => lines.push(`  - ${typeof v === 'string' ? v : JSON.stringify(v)}`));
+                        } else if (typeof val === 'string') {
+                          lines.push(`${key}: ${val}`);
+                        }
+                      }
+                      setAtsForm(p => ({ ...p, resume_text: lines.join('\n') }));
+                    }
+                  } catch {
+                    alert('Failed to load recipe content');
+                  }
+                }}
+              >
+                <option value="">Select a recipe to load...</option>
+                {recipeItems.map((r: Recipe) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
             <textarea
               rows={5}
               className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
               value={atsForm.resume_text}
               onChange={e => setAtsForm(p => ({ ...p, resume_text: e.target.value }))}
-              placeholder="Paste resume text..."
+              placeholder="Select a recipe above or paste resume text..."
             />
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Job Description</label>
+            <div className="flex gap-2 mb-2">
+              <input
+                type="text"
+                className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={jdUrl}
+                onChange={e => setJdUrl(e.target.value)}
+                placeholder="Paste JD URL to auto-fetch..."
+              />
+              <button
+                onClick={() => fetchJdFromUrl(jdUrl)}
+                disabled={jdFetching || !jdUrl.trim()}
+                className="px-3 py-1.5 bg-blue-50 text-blue-600 text-xs rounded hover:bg-blue-100 disabled:opacity-50 whitespace-nowrap"
+              >
+                {jdFetching ? 'Fetching...' : 'Fetch JD'}
+              </button>
+            </div>
             <textarea
               rows={5}
               className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
               value={atsForm.jd_text}
               onChange={e => setAtsForm(p => ({ ...p, jd_text: e.target.value }))}
-              placeholder="Paste job description..."
+              placeholder="Paste job description or use URL above..."
             />
           </div>
         </div>
-        <button
-          onClick={() => runAtsScore.mutate(atsForm)}
-          disabled={runAtsScore.isPending || !atsForm.resume_text || !atsForm.jd_text}
-          className="mt-3 px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
-        >
-          {runAtsScore.isPending ? 'Scoring...' : 'Check ATS Score'}
-        </button>
+        <div className="mt-3 flex items-center gap-4">
+          <button
+            onClick={() => runAtsScore.mutate(atsForm)}
+            disabled={runAtsScore.isPending || !atsForm.resume_text || !atsForm.jd_text}
+            className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+          >
+            {runAtsScore.isPending ? 'Scoring...' : 'Check ATS Score'}
+          </button>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <button
+              type="button"
+              onClick={() => setAtsForm(p => ({ ...p, use_ai: !p.use_ai }))}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                atsForm.use_ai ? 'bg-blue-500' : 'bg-gray-300'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                atsForm.use_ai ? 'translate-x-4' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <span className="text-xs text-gray-600">Use AI</span>
+          </label>
+        </div>
 
         {atsResult && (
           <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-            {atsResult.score != null && (
-              <p className="text-lg font-semibold text-gray-900">Score: {atsResult.score}/100</p>
+            {(atsResult.ats_score ?? atsResult.score) != null && (
+              <div className="flex items-center gap-4 mb-3">
+                <p className="text-lg font-semibold text-gray-900">
+                  ATS Score: {atsResult.ats_score ?? atsResult.score}/100
+                </p>
+                {atsResult.match_percentage != null && (
+                  <span className="text-sm text-gray-500">
+                    ({atsResult.keywords_found}/{atsResult.keywords_checked} keywords, {atsResult.match_percentage}% match)
+                  </span>
+                )}
+              </div>
             )}
             {atsResult.keyword_matches && atsResult.keyword_matches.length > 0 && (
               <div className="mt-2">
-                <p className="text-xs font-medium text-gray-500 mb-1">Keyword Matches</p>
+                <p className="text-xs font-medium text-green-600 mb-1">Found Keywords</p>
                 <div className="flex flex-wrap gap-1">
-                  {atsResult.keyword_matches.map(k => (
-                    <span key={k} className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">{k}</span>
+                  {atsResult.keyword_matches.filter(k => k.found).map(k => (
+                    <span key={k.keyword} className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">
+                      {k.keyword}{k.resume_count && k.resume_count > 1 ? ` (${k.resume_count}x)` : ''}
+                    </span>
                   ))}
                 </div>
+                {atsResult.keyword_matches.some(k => !k.found) && (
+                  <>
+                    <p className="text-xs font-medium text-red-600 mb-1 mt-2">Missing Keywords</p>
+                    <div className="flex flex-wrap gap-1">
+                      {atsResult.keyword_matches.filter(k => !k.found).map(k => (
+                        <span key={k.keyword} className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded">
+                          {k.keyword}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {atsResult.formatting_flags && (
+              <div className="mt-2">
+                <p className="text-xs font-medium text-gray-500 mb-1">
+                  Formatting: {atsResult.formatting_flags.ats_safe ? '✓ ATS Safe' : '⚠ Issues Found'}
+                </p>
+                {atsResult.formatting_flags.issues && atsResult.formatting_flags.issues.length > 0 && (
+                  <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                    {atsResult.formatting_flags.issues.map((f, i) => <li key={i}>{f}</li>)}
+                  </ul>
+                )}
               </div>
             )}
             {atsResult.missing_keywords && atsResult.missing_keywords.length > 0 && (
@@ -385,6 +525,53 @@ export default function Resumes() {
                   {atsResult.feedback.map((f, i) => <li key={i}>{f}</li>)}
                 </ul>
               </div>
+            )}
+
+            {/* AI Analysis */}
+            {atsResult.ai_analysis && (
+              <div className="mt-3 border-t border-gray-200 pt-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-bold text-blue-600 uppercase">AI Analysis</span>
+                  {atsResult.ai_analysis.ai_score != null && (
+                    <span className="text-xs text-gray-500">AI Score: {atsResult.ai_analysis.ai_score}/100</span>
+                  )}
+                </div>
+                {atsResult.ai_analysis.overall_assessment && (
+                  <p className="text-sm text-gray-700 mb-3">{atsResult.ai_analysis.overall_assessment}</p>
+                )}
+                {atsResult.ai_analysis.strengths && atsResult.ai_analysis.strengths.length > 0 && (
+                  <div className="mb-2">
+                    <p className="text-xs font-medium text-green-600 mb-1">Strengths</p>
+                    <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                      {atsResult.ai_analysis.strengths.map((s, i) => <li key={i}>{s}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {atsResult.ai_analysis.weaknesses && atsResult.ai_analysis.weaknesses.length > 0 && (
+                  <div className="mb-2">
+                    <p className="text-xs font-medium text-red-600 mb-1">Gaps</p>
+                    <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                      {atsResult.ai_analysis.weaknesses.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {atsResult.ai_analysis.suggestions && atsResult.ai_analysis.suggestions.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-blue-600 mb-1">Suggestions</p>
+                    <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                      {atsResult.ai_analysis.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+            {atsResult.ai_error && (
+              <p className="mt-2 text-xs text-amber-600">AI unavailable, showing keyword analysis only: {atsResult.ai_error}</p>
+            )}
+            {atsResult.analysis_mode && (
+              <p className="mt-2 text-xs text-gray-400 text-right">
+                Analysis: {atsResult.analysis_mode === 'ai' ? 'AI + Keywords' : 'Keywords only'}
+              </p>
             )}
           </div>
         )}

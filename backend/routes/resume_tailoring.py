@@ -248,7 +248,7 @@ def ats_score():
     format_score = 100 if formatting_flags["ats_safe"] else 60
     ats_score_val = round(match_percentage * 0.8 + format_score * 0.2)
 
-    result = {
+    python_result = {
         "keyword_matches": keyword_matches,
         "match_percentage": match_percentage,
         "keywords_found": found_count,
@@ -256,6 +256,50 @@ def ats_score():
         "formatting_flags": formatting_flags,
         "ats_score": min(ats_score_val, 100),
     }
+
+    # --- AI enhancement: richer analysis if requested ---
+    if data.get("use_ai"):
+        from ai_providers.router import route_inference
+
+        ai_context = {
+            "resume_text": resume_text[:3000],
+            "jd_text": jd_text[:3000],
+            "python_result": python_result,
+        }
+
+        def _python_fallback(ctx):
+            return {**ctx["python_result"], "analysis_mode": "python"}
+
+        def _ai_handler(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            prompt = f"""Analyze this resume against the job description for ATS compatibility.
+
+Return a JSON object with these keys:
+- overall_assessment: 2-3 sentence summary of how well this resume matches the JD
+- strengths: array of 3-5 specific strengths that match the JD requirements
+- weaknesses: array of 3-5 gaps or missing qualifications
+- suggestions: array of 3-5 actionable improvements to boost the ATS score
+- ai_score: your estimated ATS compatibility score from 0 to 100
+
+RESUME:
+{ctx["resume_text"]}
+
+JOB DESCRIPTION:
+{ctx["jd_text"]}"""
+            ai_result = provider.generate(prompt, response_format="json")
+            # Merge AI analysis into the Python keyword results
+            merged = {**ctx["python_result"]}
+            if isinstance(ai_result, dict):
+                merged["ai_analysis"] = ai_result
+                if ai_result.get("ai_score") is not None:
+                    ai_score = int(ai_result["ai_score"])
+                    merged["ats_score"] = round((ctx["python_result"]["ats_score"] + ai_score) / 2)
+            return merged
+
+        result = route_inference("ats_score_analysis", ai_context, _python_fallback, _ai_handler)
+    else:
+        result = {**python_result, "analysis_mode": "python"}
 
     return jsonify(result), 200
 

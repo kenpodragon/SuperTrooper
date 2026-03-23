@@ -12,14 +12,12 @@ interface PluginSettings {
   apiUrl: string;
   autoCapture: boolean;
   notifications: boolean;
-  atsAutoFill: boolean;
 }
 
 const DEFAULT_SETTINGS: PluginSettings = {
   apiUrl: DEFAULT_CONFIG.apiUrl,
   autoCapture: true,
   notifications: true,
-  atsAutoFill: false,
 };
 
 function Toggle({
@@ -140,23 +138,35 @@ export default function SettingsPanel() {
         <Toggle
           enabled={settings.autoCapture}
           onChange={(val) => update({ autoCapture: val })}
-          label="Auto-Capture Jobs"
-          description="Automatically detect and extract job listings from supported sites"
+          label="Auto-Track Applications"
+          description="When you submit on a job board, automatically save the job and create an application record"
         />
 
         <Toggle
           enabled={settings.notifications}
-          onChange={(val) => update({ notifications: val })}
-          label="Notifications"
-          description="Show alerts for stale apps, new matches, follow-up reminders"
+          onChange={(val) => {
+            update({ notifications: val });
+            // Update badge visibility immediately
+            if (!val) {
+              chrome.action?.setBadgeText?.({ text: "" });
+            }
+          }}
+          label="Notification Badge"
+          description="Show unread count badge on the extension icon"
         />
+      </div>
 
-        <Toggle
-          enabled={settings.atsAutoFill}
-          onChange={(val) => update({ atsAutoFill: val })}
-          label="ATS Auto-Fill"
-          description="Auto-populate application forms on Workday, Greenhouse, Lever, etc."
-        />
+      {/* Auto-Apply Button */}
+      <div className="border-t border-st-border pt-3">
+        <button
+          disabled
+          className="w-full py-3 rounded text-sm font-bold border-2 border-st-border text-st-muted cursor-not-allowed opacity-60"
+        >
+          Auto Apply — Coming Soon
+        </button>
+        <p className="text-[10px] text-st-muted mt-1.5 text-center">
+          Auto-fill ATS forms on Workday, Greenhouse, Lever, LinkedIn Easy Apply and more
+        </p>
       </div>
 
       {/* Save / Reset */}

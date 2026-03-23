@@ -74,6 +74,21 @@ interface RelatedContact {
 function QuickViewPanel({ data, onClose }: { data: QuickViewData; onClose: () => void }) {
   const { app, gap } = data;
   const [activeTab, setActiveTab] = useState<'details' | 'interviews' | 'contacts'>('details');
+  const [fetchedJd, setFetchedJd] = useState<string | null>(null);
+  const [jdFetching, setJdFetching] = useState(false);
+
+  const fetchJd = async () => {
+    if (!app.jd_url) return;
+    setJdFetching(true);
+    try {
+      const result = await api.post<{ text: string }>('/jd/fetch-url', { url: app.jd_url });
+      if (result.text) setFetchedJd(result.text);
+    } catch (err: any) {
+      alert(err?.response?.data?.error || 'Failed to fetch JD');
+    } finally {
+      setJdFetching(false);
+    }
+  };
 
   const relatedInterviews = useQuery({
     queryKey: ['app-interviews', app.id],
@@ -148,7 +163,21 @@ function QuickViewPanel({ data, onClose }: { data: QuickViewData; onClose: () =>
             {app.jd_url && (
               <div>
                 <p className="text-xs text-gray-500">JD URL</p>
-                <a href={app.jd_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline break-all">{app.jd_url}</a>
+                <div className="flex items-start gap-2">
+                  <a href={app.jd_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline break-all flex-1">{app.jd_url}</a>
+                  <button
+                    onClick={fetchJd}
+                    disabled={jdFetching}
+                    className="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded hover:bg-blue-100 disabled:opacity-50 whitespace-nowrap shrink-0"
+                  >
+                    {jdFetching ? 'Fetching...' : fetchedJd ? 'Refresh JD' : 'Fetch JD'}
+                  </button>
+                </div>
+                {fetchedJd && (
+                  <div className="mt-2 max-h-48 overflow-y-auto text-xs text-gray-600 whitespace-pre-wrap bg-gray-50 p-3 rounded border border-gray-100">
+                    {fetchedJd}
+                  </div>
+                )}
               </div>
             )}
             {app.resume_version && (

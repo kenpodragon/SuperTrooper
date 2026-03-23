@@ -33,6 +33,14 @@ async function fetchUnreadNotifications(): Promise<Notification[]> {
 // --- Badge ---
 
 async function refreshBadge(): Promise<void> {
+  // Check if badge is enabled in settings
+  const stored = await chrome.storage.local.get("pluginSettings");
+  const notificationsEnabled = stored.pluginSettings?.notifications ?? true;
+  if (!notificationsEnabled) {
+    chrome.action.setBadgeText({ text: "" });
+    return;
+  }
+
   const count = await getUnreadCount();
   const text = count > 0 ? (count > 99 ? "99+" : String(count)) : "";
   chrome.action.setBadgeText({ text });

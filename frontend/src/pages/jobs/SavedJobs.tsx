@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { savedJobs, api } from '../../api/client';
 import type { SavedJob } from '../../api/client';
@@ -29,14 +29,30 @@ function JobDetailPanel({
   onClose: () => void;
 }) {
   const [showGap, setShowGap] = useState(false);
+  const [fetchedJd, setFetchedJd] = useState<string | null>(null);
+  const [jdFetching, setJdFetching] = useState(false);
+
   const gapQuery = useQuery({
     queryKey: ['gap-preview', job.id],
     queryFn: () => api.post<GapPreview>('/pipeline/gap-analysis', { saved_job_id: job.id }),
     enabled: showGap,
   });
 
+  const fetchJd = useCallback(async () => {
+    if (!job.url) return;
+    setJdFetching(true);
+    try {
+      const result = await api.post<{ text: string }>('/jd/fetch-url', { url: job.url });
+      if (result.text) setFetchedJd(result.text);
+    } catch (err: any) {
+      alert(err?.response?.data?.error || 'Failed to fetch JD');
+    } finally {
+      setJdFetching(false);
+    }
+  }, [job.url]);
+
   // Attempt to extract parsed JD info
-  const jdText = job.jd_text || '';
+  const jdText = fetchedJd || job.jd_text || '';
   const hasJD = jdText.length > 0;
 
   return (
@@ -80,7 +96,16 @@ function JobDetailPanel({
         {job.url && (
           <div>
             <p className="text-xs text-gray-500">Posting URL</p>
-            <a href={job.url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline break-all">{job.url}</a>
+            <div className="flex items-start gap-2">
+              <a href={job.url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline break-all flex-1">{job.url}</a>
+              <button
+                onClick={fetchJd}
+                disabled={jdFetching}
+                className="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded hover:bg-blue-100 disabled:opacity-50 whitespace-nowrap shrink-0"
+              >
+                {jdFetching ? 'Fetching...' : hasJD ? 'Refresh JD' : 'Fetch JD'}
+              </button>
+            </div>
           </div>
         )}
 
