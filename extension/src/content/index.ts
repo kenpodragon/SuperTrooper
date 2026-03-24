@@ -3,6 +3,13 @@ import { MSG, sendToBackground } from "@shared/messages";
 import type { PageContext } from "@shared/types";
 import { processJobPage, resetProcessedUrl, getCurrentJobData } from "./jobCapture";
 import { checkLinkedInProfile } from "./linkedinMessaging";
+import {
+  startContactExtractor,
+  extractLinkedInContacts,
+  lookupContact,
+  createContactFromLinkedIn,
+} from "./linkedinContactExtractor";
+import type { LinkedInContact, ContactLookupResult } from "./linkedinContactExtractor";
 
 let currentContext: PageContext | null = null;
 
@@ -11,6 +18,11 @@ function init() {
 
   // Check for LinkedIn profile with pending messages (runs on /in/* pages)
   checkLinkedInProfile();
+
+  // Start LinkedIn contact extractor on any LinkedIn page
+  if (window.location.hostname.includes("linkedin.com")) {
+    startContactExtractor();
+  }
 
   if (currentContext.type === "unknown") return;
 
@@ -31,6 +43,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const jobData = getCurrentJobData();
     sendResponse({ job: jobData });
     return true;
+  }
+
+  // LinkedIn contact extraction requests from popup
+  if (message.type === "GET_LINKEDIN_CONTACTS") {
+    const contacts = extractLinkedInContacts();
+    sendResponse({ contacts });
+    return true;
+  }
+
+  if (message.type === "LOOKUP_LINKEDIN_CONTACT") {
+    const contact = message.contact as LinkedInContact;
+    lookupContact(contact).then((result: ContactLookupResult) => {
+      sendResponse(result);
+    });
+    return true; // async
+  }
+
+  if (message.type === "CREATE_LINKEDIN_CONTACT") {
+    const contact = message.contact as LinkedInContact;
+    createContactFromLinkedIn(contact).then((id: number | null) => {
+      sendResponse({ id });
+    });
+    return true; // async
   }
 
   sendResponse({ ok: true });

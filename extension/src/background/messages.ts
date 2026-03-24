@@ -124,6 +124,15 @@ async function handleAsync(message: Message): Promise<unknown> {
       return { jobs };
     }
 
+    case MSG.LINKEDIN_CONTACTS_DETECTED: {
+      // Store detected LinkedIn contacts for popup access
+      await chrome.storage.local.set({
+        linkedinContacts: message.data,
+        linkedinContactsTimestamp: Date.now(),
+      });
+      return { ok: true };
+    }
+
     default:
       return { error: `Unknown message type: ${message.type}` };
   }
