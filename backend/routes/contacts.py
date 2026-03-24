@@ -4,7 +4,7 @@ import csv
 import io
 import re
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response
 import db
 
 bp = Blueprint("contacts", __name__)
@@ -839,61 +839,152 @@ def auto_discover_contacts():
 
 
 # ---------------------------------------------------------------------------
+# Contact Export to CSV
+# ---------------------------------------------------------------------------
+
+CSV_EXPORT_COLS = [
+    "name", "email", "company", "title", "phone", "linkedin_url",
+    "relationship", "relationship_strength", "source", "notes",
+]
+
+@bp.route("/api/contacts/export/csv", methods=["GET"])
+def export_contacts_csv():
+    """Export all contacts as a downloadable CSV file."""
+    rows = db.query(
+        """
+        SELECT name, email, company, title, phone, linkedin_url,
+               relationship, relationship_strength, source, notes
+        FROM contacts
+        WHERE merged_into_id IS NULL
+        ORDER BY name
+        """
+    )
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=CSV_EXPORT_COLS)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({col: (row.get(col) or "") for col in CSV_EXPORT_COLS})
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=contacts_export.csv"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Contact Import from CSV
 # ---------------------------------------------------------------------------
 
 @bp.route("/api/contacts/import/csv", methods=["POST"])
 def import_contacts_csv():
-    """Import contacts from CSV text. Expects columns: name, email, company, title, source.
+    """Import contacts from CSV file upload or JSON text.
 
-    Body JSON: {"csv_text": str, "skip_duplicates": bool (default true)}
+    Supports two modes:
+      - multipart/form-data: file field "file", optional form field "duplicates" (skip|overwrite)
+      - application/json: {"csv_text": str, "skip_duplicates": bool, "duplicates": "skip"|"overwrite"}
+
+    Columns (case-insensitive): name (required), email, company, title, phone,
+    linkedin_url, relationship, relationship_strength, source, notes.
     """
-    data = request.get_json(force=True)
-    csv_text = data.get("csv_text")
-    if not csv_text:
-        return jsonify({"error": "csv_text is required"}), 400
-
-    skip_duplicates = data.get("skip_duplicates", True)
+    # --- Parse input: file upload or JSON text ---
+    if request.content_type and "multipart" in request.content_type:
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"error": "No file uploaded"}), 400
+        csv_text = f.read().decode("utf-8-sig")  # handle BOM from Excel
+        dup_mode = request.form.get("duplicates", "skip")
+    else:
+        data = request.get_json(force=True)
+        csv_text = data.get("csv_text")
+        if not csv_text:
+            return jsonify({"error": "csv_text is required"}), 400
+        dup_mode = data.get("duplicates", "skip" if data.get("skip_duplicates", True) else "overwrite")
 
     reader = csv.DictReader(io.StringIO(csv_text))
     imported = []
+    updated = []
     skipped = []
     errors = []
 
+    def _col(row, *names):
+        for n in names:
+            v = row.get(n) or row.get(n.lower()) or row.get(n.capitalize()) or row.get(n.upper())
+            if v and v.strip():
+                return v.strip()
+        return ""
+
     for i, row in enumerate(reader):
-        name = (row.get("name") or row.get("Name") or "").strip()
+        name = _col(row, "name", "Name", "Full Name", "full_name")
         if not name:
             errors.append({"row": i + 1, "error": "Missing name"})
             continue
 
-        email = (row.get("email") or row.get("Email") or "").strip()
-        company = (row.get("company") or row.get("Company") or "").strip()
-        title = (row.get("title") or row.get("Title") or "").strip()
-        source = (row.get("source") or row.get("Source") or "csv_import").strip()
+        email = _col(row, "email", "Email", "E-Mail", "email_address")
+        company = _col(row, "company", "Company", "organization")
+        title = _col(row, "title", "Title", "job_title", "Job Title")
+        phone = _col(row, "phone", "Phone", "phone_number")
+        linkedin_url = _col(row, "linkedin_url", "LinkedIn", "linkedin", "LinkedIn URL")
+        relationship = _col(row, "relationship", "Relationship")
+        strength = _col(row, "relationship_strength", "Strength", "relationship_strength")
+        source = _col(row, "source", "Source") or "csv_import"
+        notes = _col(row, "notes", "Notes")
 
         # Check for duplicate by email
-        if skip_duplicates and email:
+        existing = None
+        if email:
             existing = db.query_one(
                 "SELECT id FROM contacts WHERE email ILIKE %s AND merged_into_id IS NULL",
                 (email,),
             )
-            if existing:
-                skipped.append({"name": name, "email": email, "reason": "duplicate email"})
-                continue
 
+        if existing and dup_mode == "skip":
+            skipped.append({"name": name, "email": email, "reason": "duplicate email"})
+            continue
+
+        if existing and dup_mode == "overwrite":
+            # Update existing contact with non-empty fields from CSV
+            sets = []
+            vals = []
+            for col, val in [
+                ("name", name), ("company", company), ("title", title),
+                ("phone", phone), ("linkedin_url", linkedin_url),
+                ("relationship", relationship), ("relationship_strength", strength),
+                ("source", source), ("notes", notes),
+            ]:
+                if val:
+                    sets.append(f"{col} = %s")
+                    vals.append(val)
+            if sets:
+                vals.append(existing["id"])
+                contact = db.execute_returning(
+                    f"UPDATE contacts SET {', '.join(sets)}, updated_at = NOW() WHERE id = %s RETURNING id, name, email, company, title",
+                    vals,
+                )
+                updated.append(contact)
+            else:
+                skipped.append({"name": name, "email": email, "reason": "no new data"})
+            continue
+
+        # Insert new contact
         contact = db.execute_returning(
             """
-            INSERT INTO contacts (name, email, company, title, source)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO contacts (name, email, company, title, phone, linkedin_url,
+                                  relationship, relationship_strength, source, notes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, name, email, company, title, source
             """,
-            (name, email or None, company or None, title or None, source),
+            (name, email or None, company or None, title or None, phone or None,
+             linkedin_url or None, relationship or None, strength or None, source, notes or None),
         )
         imported.append(contact)
 
     return jsonify({
         "imported": imported,
         "imported_count": len(imported),
+        "updated": updated,
+        "updated_count": len(updated),
         "skipped": skipped,
         "skipped_count": len(skipped),
         "errors": errors,

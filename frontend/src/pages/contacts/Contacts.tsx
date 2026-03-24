@@ -435,6 +435,15 @@ export default function Contacts() {
   const [importError, setImportError] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
 
+  // CSV import/export state
+  const [showCsvModal, setShowCsvModal] = useState(false);
+  const [csvMode, setCsvMode] = useState<'import' | 'export'>('import');
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvDuplicates, setCsvDuplicates] = useState<'skip' | 'overwrite'>('skip');
+  const [csvImporting, setCsvImporting] = useState(false);
+  const [csvResult, setCsvResult] = useState<{ imported_count: number; updated_count: number; skipped_count: number; error_count: number; errors: { row: number; error: string }[] } | null>(null);
+  const [csvError, setCsvError] = useState<string | null>(null);
+
   const startImport = async () => {
     setImportProgress({ imported: 0, updated: 0, skipped: 0, fetched: 0, done: false });
     setImportError(null);
@@ -470,6 +479,47 @@ export default function Contacts() {
     }
   };
 
+  const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+  const handleCsvExport = () => {
+    window.open(`${API_BASE}/contacts/export/csv`, '_blank');
+  };
+
+  const handleCsvImport = async () => {
+    if (!csvFile) return;
+    setCsvImporting(true);
+    setCsvError(null);
+    setCsvResult(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', csvFile);
+      formData.append('duplicates', csvDuplicates);
+      const res = await fetch(`${API_BASE}/contacts/import/csv`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || res.statusText);
+      }
+      const data = await res.json();
+      setCsvResult(data);
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+    } catch (err: unknown) {
+      setCsvError(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setCsvImporting(false);
+    }
+  };
+
+  const openCsvModal = (mode: 'import' | 'export') => {
+    setCsvMode(mode);
+    setCsvFile(null);
+    setCsvResult(null);
+    setCsvError(null);
+    setShowCsvModal(true);
+  };
+
   return (
     <div>
       {/* Header */}
@@ -488,6 +538,24 @@ export default function Contacts() {
               <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
             </svg>
             {isImporting ? 'Importing...' : 'Import Google Contacts'}
+          </button>
+          <button
+            onClick={() => openCsvModal('import')}
+            className="px-3 py-1.5 text-xs bg-white border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            Import CSV
+          </button>
+          <button
+            onClick={() => openCsvModal('export')}
+            className="px-3 py-1.5 text-xs bg-white border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l4 4m0 0l4-4m-4 4V4" />
+            </svg>
+            Export CSV
           </button>
         </div>
         <span className="text-sm text-gray-500">
@@ -686,6 +754,133 @@ export default function Contacts() {
           healthScore={(selectedContact as any).health_score}
           onClose={() => setSelectedContact(null)}
         />
+      )}
+
+      {/* CSV Import/Export Modal */}
+      {showCsvModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <h2 className="text-lg font-semibold text-gray-900">
+                {csvMode === 'import' ? 'Import Contacts from CSV' : 'Export Contacts to CSV'}
+              </h2>
+              <button onClick={() => setShowCsvModal(false)} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+            </div>
+
+            <div className="px-6 py-5">
+              {csvMode === 'export' ? (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600">
+                    Download all {total.toLocaleString()} contacts as a CSV file. This file can also be used as a template for importing new contacts.
+                  </p>
+                  <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">
+                    <strong>Columns:</strong> name, email, company, title, phone, linkedin_url, relationship, relationship_strength, source, notes
+                  </div>
+                  <button
+                    onClick={() => { handleCsvExport(); setShowCsvModal(false); }}
+                    className="w-full px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l4 4m0 0l4-4m-4 4V4" />
+                    </svg>
+                    Download CSV
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600">
+                    Upload a CSV file with contacts. Required column: <strong>name</strong>. Optional: email, company, title, phone, linkedin_url, relationship, relationship_strength, source, notes.
+                  </p>
+
+                  {/* File picker */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">CSV File</label>
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+                      className="block w-full text-sm text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    />
+                  </div>
+
+                  {/* Duplicate handling */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">If a contact with the same email already exists:</label>
+                    <div className="flex gap-4">
+                      <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="csvDuplicates"
+                          value="skip"
+                          checked={csvDuplicates === 'skip'}
+                          onChange={() => setCsvDuplicates('skip')}
+                          className="text-blue-600"
+                        />
+                        Skip duplicates
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="csvDuplicates"
+                          value="overwrite"
+                          checked={csvDuplicates === 'overwrite'}
+                          onChange={() => setCsvDuplicates('overwrite')}
+                          className="text-blue-600"
+                        />
+                        Overwrite existing
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Result banner */}
+                  {csvResult && (
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800">
+                      <strong>{csvResult.imported_count}</strong> imported
+                      {csvResult.updated_count > 0 && <>, <strong>{csvResult.updated_count}</strong> updated</>}
+                      {csvResult.skipped_count > 0 && <>, {csvResult.skipped_count} skipped</>}
+                      {csvResult.error_count > 0 && <>, <span className="text-red-600">{csvResult.error_count} errors</span></>}
+                      {csvResult.errors?.length > 0 && (
+                        <ul className="mt-2 text-xs text-red-600 list-disc list-inside">
+                          {csvResult.errors.slice(0, 5).map((e, i) => (
+                            <li key={i}>Row {e.row}: {e.error}</li>
+                          ))}
+                          {csvResult.errors.length > 5 && <li>...and {csvResult.errors.length - 5} more</li>}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                  {csvError && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{csvError}</div>
+                  )}
+
+                  <button
+                    onClick={handleCsvImport}
+                    disabled={!csvFile || csvImporting}
+                    className="w-full px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {csvImporting ? (
+                      <>
+                        <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Importing...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                        </svg>
+                        Import Contacts
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
