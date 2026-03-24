@@ -1,14 +1,14 @@
 import { handleMessage } from "./messages";
-import { setupAlarms, handleAlarm, runHealthCheck, updateBadge } from "./alarms";
+import { setupAlarms, handleAlarm, runHealthCheck } from "./alarms";
 import { checkAiAvailability, isMcpAvailable } from "./mcpState";
-import { setupNotificationPolling } from "./notifications";
+import { setupNotificationPolling, refreshBadge } from "./notifications";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[SuperTroopers] Extension installed");
   setupAlarms();
   setupNotificationPolling();
   runHealthCheck();
-  updateBadge();
+  refreshBadge();
   checkAiAvailability();
 });
 
@@ -17,7 +17,7 @@ chrome.runtime.onStartup.addListener(() => {
   setupAlarms();
   setupNotificationPolling();
   runHealthCheck();
-  updateBadge();
+  refreshBadge();
   checkAiAvailability();
 });
 

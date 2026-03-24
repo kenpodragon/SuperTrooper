@@ -123,7 +123,7 @@ export async function getUnreadCount(): Promise<number> {
 }
 
 /**
- * Mark a notification as read via the API.
+ * Mark a notification as read via the API and immediately refresh badge.
  */
 export async function markNotificationRead(id: number): Promise<boolean> {
   try {
@@ -138,3 +138,42 @@ export async function markNotificationRead(id: number): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Dismiss a notification via the API and immediately refresh badge.
+ */
+export async function dismissNotification(id: number): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_URL}/notifications/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dismissed: true }),
+    });
+    if (res.ok) await refreshBadge();
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Mark all notifications as read via the API and immediately refresh badge.
+ */
+export async function markAllNotificationsRead(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_URL}/notifications/mark-all-read`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (res.ok) await refreshBadge();
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Force an immediate badge refresh. Exposed for other modules to call
+ * after notification-related actions (e.g. popup dismiss buttons).
+ */
+export { refreshBadge };

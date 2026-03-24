@@ -134,6 +134,29 @@ def mark_read(notification_id):
     return jsonify({"id": notification_id, "read": True}), 200
 
 
+@bp.route("/api/notifications/<int:notification_id>", methods=["PATCH"])
+def update_notification(notification_id):
+    """Update a notification (read, dismissed). Used by the Chrome extension."""
+    data = request.get_json(force=True)
+    sets = []
+    vals = []
+    if data.get("read"):
+        sets.append("read = TRUE")
+    if data.get("dismissed"):
+        sets.append("dismissed = TRUE")
+        sets.append("read = TRUE")
+    if not sets:
+        return jsonify({"error": "Nothing to update"}), 400
+    vals.append(notification_id)
+    count = db.execute(
+        f"UPDATE notifications SET {', '.join(sets)} WHERE id = %s",
+        vals,
+    )
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"id": notification_id, **data}), 200
+
+
 @bp.route("/api/notifications/<int:notification_id>/dismiss", methods=["PUT"])
 def dismiss_notification(notification_id):
     """Mark a notification as dismissed."""
