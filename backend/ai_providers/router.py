@@ -10,7 +10,7 @@ def ai_available() -> bool:
     try:
         from ai_providers import get_provider
         provider = get_provider()
-        return provider is not None and provider.available
+        return provider is not None and provider.is_available()
     except Exception:
         return False
 

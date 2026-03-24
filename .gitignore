@@ -205,6 +205,11 @@ cython_debug/
 
 # Marimo
 marimo/_static/
+
+# Secrets - never commit OAuth credentials or tokens
+secrets/
+!secrets/.gitkeep
+!secrets/**/.gitkeep
 marimo/_lsp/
 __marimo__/
 

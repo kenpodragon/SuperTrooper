@@ -4,6 +4,7 @@ import json
 import re
 from flask import Blueprint, request, jsonify
 import db
+from ai_providers.router import route_inference
 
 bp = Blueprint("gap_analysis", __name__)
 
@@ -270,7 +271,7 @@ def _parse_jd(text: str) -> dict:
             remote_policy = policy
             break
 
-    return {
+    python_result = {
         "required_skills": required_skills,
         "preferred_skills": preferred_skills,
         "years_experience": years_experience,
@@ -281,6 +282,39 @@ def _parse_jd(text: str) -> dict:
         "location": location,
         "remote_policy": remote_policy,
     }
+
+    def _python_parse(ctx):
+        return ctx["python_result"]
+
+    def _ai_parse(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.parse_jd(ctx["jd_text"][:4000])
+        base = ctx["python_result"]
+        # Merge AI results — AI may find skills/details the heuristic missed
+        ai_required = result.get("requirements", [])
+        ai_preferred = result.get("nice_to_haves", [])
+        for s in ai_required:
+            if s.lower() not in {x.lower() for x in base["required_skills"]}:
+                base["required_skills"].append(s)
+        for s in ai_preferred:
+            if s.lower() not in {x.lower() for x in base["preferred_skills"]}:
+                base["preferred_skills"].append(s)
+        if not base["years_experience"] and result.get("experience_years"):
+            base["years_experience"] = result["experience_years"]
+        if not base["salary_range"] and result.get("salary_range"):
+            base["salary_range"] = result["salary_range"]
+        base["ai_title"] = result.get("title", "")
+        base["ai_company"] = result.get("company", "")
+        base["responsibilities"] = result.get("responsibilities", [])
+        return base
+
+    return route_inference(
+        task="parse_jd",
+        context={"python_result": python_result, "jd_text": text},
+        python_fallback=_python_parse,
+        ai_handler=_ai_parse,
+    )
 
 
 # ---------------------------------------------------------------------------

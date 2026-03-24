@@ -1,6 +1,7 @@
 """MCP tools for reference management."""
 
 import db
+from ai_providers.router import route_inference
 
 
 def get_reference_roster():
@@ -42,7 +43,29 @@ def match_references_to_role(role_type: str):
         """,
         [role_type, role_type],
     )
-    return {"role_type": role_type, "matches": rows}
+    python_result = {"role_type": role_type, "matches": rows}
+
+    def _python_ref_match(ctx):
+        return ctx["r"]
+
+    def _ai_ref_match(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        refs = [{"name": r.get("name"), "title": r.get("title"), "company": r.get("company"),
+                 "topics": r.get("reference_topics")} for r in ctx["r"]["matches"][:10]]
+        result = provider.generate_content("reference_matching", {
+            "role_type": ctx["r"]["role_type"], "references": refs,
+        })
+        base = ctx["r"]
+        base["ai_recommendation"] = result.get("content", "")
+        return base
+
+    return route_inference(
+        task="match_references_to_role",
+        context={"r": python_result},
+        python_fallback=_python_ref_match,
+        ai_handler=_ai_ref_match,
+    )
 
 
 def check_reference_warmth():
@@ -75,11 +98,31 @@ def check_reference_warmth():
             row["warmth_status"] = "hot"
             row["needs_checkin"] = False
 
-    return {
+    python_result = {
         "total_references": len(rows),
         "needing_checkin": len(needs_checkin),
         "references": rows,
     }
+
+    def _python_warmth(ctx):
+        return ctx["r"]
+
+    def _ai_warmth(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        cold_refs = [{"name": r["name"], "days": r.get("days_since_contact")}
+                     for r in ctx["r"]["references"] if r.get("needs_checkin")][:5]
+        result = provider.generate_content("reference_warmth", {"cold_references": cold_refs})
+        base = ctx["r"]
+        base["ai_checkin_suggestions"] = result.get("content", "")
+        return base
+
+    return route_inference(
+        task="check_reference_warmth",
+        context={"r": python_result},
+        python_fallback=_python_warmth,
+        ai_handler=_ai_warmth,
+    )
 
 
 def log_reference_use(contact_id: int, application_id: int):

@@ -4,6 +4,7 @@ import json
 import math
 from flask import Blueprint, request, jsonify
 import db
+from ai_providers.router import route_inference
 
 bp = Blueprint("offers", __name__)
 
@@ -255,7 +256,7 @@ def benchmark_offer(offer_id):
             f"Melbourne-equivalent base: ${cola_adjusted_base:,.0f}."
         )
 
-    return jsonify({
+    python_result = {
         "offer_id": offer_id,
         "offer_base": offer_base,
         "benchmark_role": best_match["role_title"] if best_match else None,
@@ -265,7 +266,30 @@ def benchmark_offer(offer_id):
         "cola_adjusted_base": round(cola_adjusted_base, 2),
         "percentile_estimate": percentile,
         "analysis": analysis,
-    }), 200
+    }
+
+    def _python_bench_route(ctx):
+        return ctx["r"]
+
+    def _ai_bench_route(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.benchmark_offer(
+            {"base_salary": ctx["r"]["offer_base"], "role": ctx["r"].get("benchmark_role")},
+            {"range": ctx["r"].get("benchmark_range"), "percentile": ctx["r"].get("percentile_estimate")},
+        )
+        base = ctx["r"]
+        base["ai_negotiation_points"] = result.get("negotiation_points", [])
+        base["ai_counter_suggestion"] = result.get("counter_suggestion", {})
+        return base
+
+    enhanced = route_inference(
+        task="benchmark_offer_route",
+        context={"r": python_result},
+        python_fallback=_python_bench_route,
+        ai_handler=_ai_bench_route,
+    )
+    return jsonify(enhanced), 200
 
 
 # ---------------------------------------------------------------------------

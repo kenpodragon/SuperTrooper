@@ -47,10 +47,46 @@ def run_profile_audit(audit_type: str = "full", target_jd_ids: list | None = Non
         }
 
     audit_ctx = {"audit_type": audit_type, "target_jd_ids": target_jd_ids}
+    def _ai_profile_audit(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        profile = db.query_one("SELECT * FROM candidate_profile ORDER BY id LIMIT 1")
+        target_jds = []
+        if ctx.get("target_jd_ids"):
+            for jd_id in ctx["target_jd_ids"]:
+                job = db.query_one("SELECT title, jd_text FROM saved_jobs WHERE id = %s", (jd_id,))
+                if job and job.get("jd_text"):
+                    target_jds.append({"title": job["title"], "jd_text": job["jd_text"][:2000]})
+        result = provider.audit_profile(
+            profile_data={"audit_type": ctx.get("audit_type"), "profile": profile or {}},
+            target_jds=target_jds,
+        )
+        sections = result.get("sections", [])
+        section_scores = {}
+        recs = []
+        for s in sections:
+            score_val = s.get("score", 0)
+            if isinstance(score_val, float) and score_val <= 1.0:
+                score_val = round(score_val * 100)
+            section_scores[s["name"]] = score_val
+            for sug in s.get("suggestions", []):
+                recs.append({"section": s["name"], "priority": "high" if score_val < 60 else "medium", "suggestion": sug})
+        overall = result.get("overall_score", 0)
+        if isinstance(overall, float) and overall <= 1.0:
+            overall = round(overall * 100)
+        return {
+            "section_scores": section_scores,
+            "overall_score": overall,
+            "recommendations": recs,
+            "match_scores": {},
+            "keyword_gaps": {"missing": result.get("keyword_gaps", []), "section_suggestions": {}},
+        }
+
     audit_result = route_inference(
         task="run_profile_audit",
         context=audit_ctx,
         python_fallback=_python_profile_audit,
+        ai_handler=_ai_profile_audit,
     )
 
     section_scores = audit_result.get("section_scores", {})
@@ -130,10 +166,26 @@ def generate_headline_variants(target_role: str | None = None, count: int = 3) -
         "count": count,
         "current_title": current_title,
     }
+    def _ai_headline_variants(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("headline", ctx)
+        content = result.get("content", "")
+        lines = [l.strip() for l in content.split("\n") if l.strip()]
+        variants = []
+        for i, line in enumerate(lines[:ctx.get("count", 3)]):
+            clean = line.lstrip("0123456789.-) ").strip()
+            if clean:
+                variants.append({"variant": i + 1, "headline": clean, "char_count": len(clean)})
+        if not variants:
+            variants = [{"variant": 1, "headline": content[:120], "char_count": min(len(content), 120)}]
+        return {"variants": variants}
+
     hl_result = route_inference(
         task="generate_headline_variants",
         context=hl_ctx,
         python_fallback=_python_headline_variants,
+        ai_handler=_ai_headline_variants,
     )
     variants = hl_result.get("variants", [])
 
@@ -189,10 +241,17 @@ def generate_linkedin_post(topic: str, theme_pillar_id: int | None = None, style
         "pillar_context": pillar_context,
         "style": style,
     }
+    def _ai_linkedin_post(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("linkedin_post", ctx)
+        return {"content": result.get("content", "")}
+
     post_result = route_inference(
         task="generate_linkedin_post",
         context=post_ctx,
         python_fallback=_python_linkedin_post,
+        ai_handler=_ai_linkedin_post,
     )
     content = post_result.get("content", f"[DRAFT] Topic: {topic}")
 
@@ -249,12 +308,41 @@ def check_linkedin_voice(text: str) -> dict:
                             "rule_text": rule["rule_text"],
                         })
 
-    return {
+    python_result = {
         "text_length": len(text),
         "rules_checked": len(rules),
         "violations": violations,
         "passed": len(violations) == 0,
     }
+
+    def _python_li_voice(ctx):
+        return ctx["python_result"]
+
+    def _ai_li_voice(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        rules_data = [{"rule_text": r["rule_text"], "category": r["category"]} for r in ctx["rules"]]
+        result = provider.check_voice_ai(ctx["text"], rules_data)
+        base = ctx["python_result"]
+        ai_violations = result.get("violations", [])
+        if ai_violations:
+            existing = {v["found"].lower() for v in base["violations"]}
+            for av in ai_violations:
+                if av.get("text", "").lower() not in existing:
+                    base["violations"].append({
+                        "rule_id": None, "category": "ai_detected",
+                        "found": av.get("text", ""), "rule_text": av.get("suggestion", ""),
+                    })
+            base["passed"] = len(base["violations"]) == 0
+        base["ai_voice_score"] = result.get("overall_score", 1.0)
+        return base
+
+    return route_inference(
+        task="check_linkedin_voice",
+        context={"python_result": python_result, "text": text, "rules": rules},
+        python_fallback=_python_li_voice,
+        ai_handler=_ai_li_voice,
+    )
 
 
 def run_skills_audit(target_jd_ids: list | None = None) -> dict:
@@ -274,13 +362,45 @@ def run_skills_audit(target_jd_ids: list | None = None) -> dict:
         for s in (skills[:10] if skills else [])
     ]
 
-    skills_add = [
-        {"skill": "Cloud Architecture", "reason": "Frequently requested in target roles"},
-        {"skill": "AI/ML Strategy", "reason": "Emerging requirement for leadership roles"},
-    ]
+    def _python_skills_audit(ctx):
+        return {
+            "skills_add": [
+                {"skill": "Cloud Architecture", "reason": "Frequently requested in target roles"},
+                {"skill": "AI/ML Strategy", "reason": "Emerging requirement for leadership roles"},
+            ],
+            "skills_remove": [],
+            "skills_reprioritize": [],
+        }
 
-    skills_remove = []
-    skills_reprioritize = []
+    def _ai_skills_audit(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        skill_names = list(ctx["current_skills"].keys())
+        jd_texts = []
+        if ctx.get("target_jd_ids"):
+            for jd_id in ctx["target_jd_ids"]:
+                job = db.query_one("SELECT jd_text FROM saved_jobs WHERE id = %s", (jd_id,))
+                if job and job.get("jd_text"):
+                    jd_texts.append(job["jd_text"][:2000])
+        result = provider.analyze_skills(skill_names, jd_texts or ["general technology leadership"])
+        return {
+            "skills_add": [{"skill": g.get("skill", g) if isinstance(g, dict) else g,
+                            "reason": g.get("recommendation", "AI recommended") if isinstance(g, dict) else "AI recommended"}
+                           for g in result.get("gaps", [])[:10]],
+            "skills_remove": [],
+            "skills_reprioritize": result.get("recommendations", []),
+        }
+
+    audit_result = route_inference(
+        task="linkedin_skills_audit",
+        context={"current_skills": current_skills, "target_jd_ids": target_jd_ids},
+        python_fallback=_python_skills_audit,
+        ai_handler=_ai_skills_audit,
+    )
+
+    skills_add = audit_result.get("skills_add", [])
+    skills_remove = audit_result.get("skills_remove", [])
+    skills_reprioritize = audit_result.get("skills_reprioritize", [])
 
     top_50 = [s["name"] for s in (skills[:50] if skills else [])]
 
@@ -498,6 +618,31 @@ def get_linkedin_profile_scorecard() -> dict:
             "top_50_recommended": (skills_audit.get("top_50_recommended") or [])[:10],
         }
 
+    # AI-enhanced improvement narrative
+    def _python_scorecard_narrative(ctx):
+        return {"narrative": ""}
+
+    def _ai_scorecard_narrative(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("profile_improvement", {
+            "overall_score": ctx["overall_score"],
+            "sections_needing_work": ctx["sections_needing_work"],
+            "keyword_gaps": ctx["keyword_gaps"],
+        })
+        return {"narrative": result.get("content", "")}
+
+    narrative_result = route_inference(
+        task="profile_scorecard_narrative",
+        context={
+            "overall_score": audit.get("overall_score"),
+            "sections_needing_work": sections_needing_work,
+            "keyword_gaps": keyword_gaps.get("missing", []) if isinstance(keyword_gaps, dict) else [],
+        },
+        python_fallback=_python_scorecard_narrative,
+        ai_handler=_ai_scorecard_narrative,
+    )
+
     scorecard = {
         "audit_id": audit["id"],
         "audit_type": audit["audit_type"],
@@ -517,6 +662,7 @@ def get_linkedin_profile_scorecard() -> dict:
         "keyword_gap_by_section": keyword_gaps.get("section_suggestions", {}) if isinstance(keyword_gaps, dict) else {},
         "match_scores": audit.get("match_scores"),
         "skills_gap": skills_gap,
+        "improvement_narrative": narrative_result.get("narrative", ""),
     }
 
     return scorecard

@@ -156,19 +156,6 @@ export default function SettingsPanel() {
         />
       </div>
 
-      {/* Auto-Apply Button */}
-      <div className="border-t border-st-border pt-3">
-        <button
-          disabled
-          className="w-full py-3 rounded text-sm font-bold border-2 border-st-border text-st-muted cursor-not-allowed opacity-60"
-        >
-          Auto Apply — Coming Soon
-        </button>
-        <p className="text-[10px] text-st-muted mt-1.5 text-center">
-          Auto-fill ATS forms on Workday, Greenhouse, Lever, LinkedIn Easy Apply and more
-        </p>
-      </div>
-
       {/* Save / Reset */}
       <div className="flex gap-2">
         <button

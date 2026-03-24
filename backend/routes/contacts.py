@@ -10,17 +10,47 @@ import db
 bp = Blueprint("contacts", __name__)
 
 
+CONTACT_SORT_COLS = {
+    "name": "name", "-name": "name DESC",
+    "company": "company", "-company": "company DESC",
+    "title": "title", "-title": "title DESC",
+    "strength": "relationship_strength", "-strength": "relationship_strength DESC",
+    "last_contact": "last_contact", "-last_contact": "last_contact DESC",
+    "created": "created_at", "-created": "created_at DESC",
+}
+
+
 @bp.route("/api/contacts", methods=["GET"])
 def list_contacts():
-    """List/filter/search contacts."""
+    """List/filter/search contacts with pagination and sorting.
+
+    Query params:
+        q (str): Search name, title, company, or email
+        company (str): Filter by company (ILIKE)
+        relationship (str): Filter by relationship
+        strength (str): Filter by relationship_strength (cold/warm/strong)
+        source (str): Filter by source (manual/linkedin/import)
+        has_email (bool): Filter contacts that have an email
+        has_linkedin (bool): Filter contacts that have a linkedin_url
+        sort (str): Sort column, prefix with - for DESC (default: -last_contact)
+            Options: name, company, title, strength, last_contact, created
+        limit (int): Page size (default 50, max 200)
+        offset (int): Offset for pagination (default 0)
+
+    Returns: {contacts: [...], total: int, limit: int, offset: int}
+    """
     company = request.args.get("company")
     relationship = request.args.get("relationship")
     strength = request.args.get("strength")
+    source = request.args.get("source")
+    has_email = request.args.get("has_email")
+    has_linkedin = request.args.get("has_linkedin")
     q = request.args.get("q")
-    limit = int(request.args.get("limit", 50))
+    sort = request.args.get("sort", "-last_contact")
+    limit = min(int(request.args.get("limit", 50)), 200)
     offset = int(request.args.get("offset", 0))
 
-    clauses, params = [], []
+    clauses, params = ["merged_into_id IS NULL"], []
     if company:
         clauses.append("company ILIKE %s")
         params.append(f"%{company}%")
@@ -30,24 +60,167 @@ def list_contacts():
     if strength:
         clauses.append("relationship_strength = %s")
         params.append(strength)
+    if source:
+        clauses.append("source = %s")
+        params.append(source)
+    if has_email == "true":
+        clauses.append("email IS NOT NULL AND email != ''")
+    if has_linkedin == "true":
+        clauses.append("linkedin_url IS NOT NULL AND linkedin_url != ''")
     if q:
-        clauses.append("(name ILIKE %s OR title ILIKE %s)")
-        params.extend([f"%{q}%", f"%{q}%"])
+        clauses.append("(name ILIKE %s OR title ILIKE %s OR company ILIKE %s OR email ILIKE %s)")
+        params.extend([f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"])
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order_col = CONTACT_SORT_COLS.get(sort, "last_contact DESC NULLS LAST")
+    # Add NULLS LAST for DESC sorts
+    if "DESC" in order_col and "NULLS" not in order_col:
+        order_col += " NULLS LAST"
+    order_by = f"{order_col}, name"
+
+    # Total count
+    count_row = db.query_one(f"SELECT COUNT(*) AS total FROM contacts {where}", params)
+    total = count_row["total"] if count_row else 0
+
     rows = db.query(
         f"""
         SELECT id, name, company, title, relationship, email, phone,
-               linkedin_url, relationship_strength, last_contact, source,
+               linkedin_url, relationship_strength, relationship_stage,
+               last_contact, source, is_reference, health_score,
                notes, created_at, updated_at
         FROM contacts
         {where}
-        ORDER BY last_contact DESC NULLS LAST, name
+        ORDER BY {order_by}
         LIMIT %s OFFSET %s
         """,
         params + [limit, offset],
     )
-    return jsonify(rows), 200
+    return jsonify({"contacts": rows or [], "total": total, "limit": limit, "offset": offset}), 200
+
+
+@bp.route("/api/contacts/import-google", methods=["POST"])
+def import_google_contacts():
+    """Import contacts from Google People API. Dedupes by email, updates existing contacts.
+
+    Body JSON (optional):
+        page_size (int): Contacts per page (default 200, max 1000)
+        page_token (str): Resume from a specific page (for chunked import)
+
+    When a contact already exists (matched by any email), updates empty fields.
+    Additional emails stored in notes.
+    Returns: {imported: int, updated: int, skipped: int, total_fetched: int, next_page_token: str, errors: [...]}
+    """
+    data = request.get_json(force=True) if request.is_json else {}
+    page_size = min(int(data.get("page_size", 200)), 1000)
+    page_token = data.get("page_token", "")
+
+    from integrations import google_client
+
+    imported = 0
+    updated = 0
+    skipped = 0
+    total_fetched = 0
+    errors = []
+
+    # Build email -> contact_id map for dedup
+    existing = db.query(
+        "SELECT id, LOWER(email) AS email, company, title, phone, linkedin_url FROM contacts WHERE email IS NOT NULL AND email != ''"
+    )
+    email_to_contact: dict = {}
+    for r in (existing or []):
+        email_to_contact[r["email"]] = r
+
+    result = google_client.contacts_list(page_size=page_size, page_token=page_token)
+
+    if result.get("error"):
+        return jsonify({"error": result["error"], "setup_required": result.get("setup_required")}), 502
+
+    for c in result.get("contacts", []):
+        total_fetched += 1
+        all_emails = [e.strip().lower() for e in c.get("emails", []) if e.strip()]
+        primary_email = all_emails[0] if all_emails else ""
+
+        # Check if any of the contact's emails match an existing contact
+        matched_contact = None
+        for em in all_emails:
+            if em in email_to_contact:
+                matched_contact = email_to_contact[em]
+                break
+
+        if matched_contact:
+            # Update existing contact with any missing fields
+            updates, params = [], []
+            if not matched_contact.get("company") and c.get("company"):
+                updates.append("company = %s")
+                params.append(c["company"])
+            if not matched_contact.get("title") and c.get("title"):
+                updates.append("title = %s")
+                params.append(c["title"])
+            if not matched_contact.get("phone") and c.get("phone"):
+                updates.append("phone = %s")
+                params.append(c["phone"])
+            if not matched_contact.get("linkedin_url") and c.get("linkedin_url"):
+                updates.append("linkedin_url = %s")
+                params.append(c["linkedin_url"])
+
+            # Append additional emails to notes
+            extra_emails = [e for e in all_emails if e != matched_contact["email"]]
+            if extra_emails:
+                updates.append("notes = CASE WHEN notes IS NULL THEN %s ELSE notes || E'\\n' || %s END")
+                email_note = f"Other emails: {', '.join(extra_emails)}"
+                params.extend([email_note, email_note])
+
+            if updates:
+                params.append(matched_contact["id"])
+                try:
+                    db.execute(
+                        f"UPDATE contacts SET {', '.join(updates)} WHERE id = %s",
+                        params,
+                    )
+                    updated += 1
+                except Exception as e:
+                    errors.append(f"update {c['name']}: {str(e)[:80]}")
+            else:
+                skipped += 1
+            continue
+
+        # New contact — insert
+        try:
+            extra_emails = all_emails[1:] if len(all_emails) > 1 else []
+            notes = f"Other emails: {', '.join(extra_emails)}" if extra_emails else None
+
+            row = db.execute_returning(
+                """
+                INSERT INTO contacts (name, company, title, email, phone, linkedin_url, source, relationship_strength, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, 'google', 'cold', %s)
+                RETURNING id, email
+                """,
+                (
+                    c["name"],
+                    c.get("company") or None,
+                    c.get("title") or None,
+                    primary_email or None,
+                    c.get("phone") or None,
+                    c.get("linkedin_url") or None,
+                    notes,
+                ),
+            )
+            if row and primary_email:
+                email_to_contact[primary_email] = row
+            imported += 1
+        except Exception as e:
+            errors.append(f"{c['name']}: {str(e)[:80]}")
+
+    next_token = result.get("next_page_token", "")
+
+    return jsonify({
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "total_fetched": total_fetched,
+        "next_page_token": next_token,
+        "errors": errors[:20],
+    }), 200
 
 
 @bp.route("/api/contacts", methods=["POST"])

@@ -5,6 +5,7 @@ Standalone functions — orchestrator wires these into mcp_server.py.
 
 import json
 import db
+from ai_providers.router import route_inference
 
 
 def log_offer(application_id: int, base_salary: float = None, signing_bonus: float = None,
@@ -157,7 +158,31 @@ def compare_offers(offer_ids: list):
         r["rank"] = i + 1
         r["delta_from_top"] = round(r["four_year_total"] - top, 2)
 
-    return {"comparisons": results, "count": len(results)}
+    python_result = {"comparisons": results, "count": len(results)}
+
+    def _python_compare(ctx):
+        return ctx["r"]
+
+    def _ai_compare(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        offers_data = [{
+            "company": r["company"], "role": r["role"],
+            "base": r["base_salary"], "four_year": r["four_year_total"],
+            "remote": r.get("remote_policy"), "pto": r.get("pto_days"),
+        } for r in ctx["r"]["comparisons"]]
+        result = provider.compare_offers(offers_data)
+        base = ctx["r"]
+        base["ai_trade_offs"] = result.get("trade_offs", [])
+        base["ai_recommendation"] = result.get("recommendation", "")
+        return base
+
+    return route_inference(
+        task="compare_offers",
+        context={"r": python_result},
+        python_fallback=_python_compare,
+        ai_handler=_ai_compare,
+    )
 
 
 def benchmark_offer(offer_id: int):
@@ -201,7 +226,7 @@ def benchmark_offer(offer_id: int):
     cola_factor = float(cola["cola_factor"]) if cola else 1.0
     cola_adjusted = offer_base * cola_factor
 
-    return {
+    python_result = {
         "offer_id": offer_id,
         "offer_base": offer_base,
         "benchmark_role": best_match["role_title"] if best_match else None,
@@ -210,3 +235,26 @@ def benchmark_offer(offer_id: int):
         "cola_factor": cola_factor,
         "cola_adjusted_base": round(cola_adjusted, 2),
     }
+
+    def _python_bench(ctx):
+        return ctx["r"]
+
+    def _ai_bench(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        offer_data = {"base_salary": ctx["r"]["offer_base"], "role": ctx["r"]["benchmark_role"],
+                      "location": ctx["r"].get("cola_market")}
+        salary_data = {"range": ctx["r"].get("benchmark_range"), "cola_factor": ctx["r"]["cola_factor"]}
+        result = provider.benchmark_offer(offer_data, salary_data)
+        base = ctx["r"]
+        base["ai_assessment"] = result.get("assessment", "")
+        base["ai_negotiation_points"] = result.get("negotiation_points", [])
+        base["ai_counter_suggestion"] = result.get("counter_suggestion", {})
+        return base
+
+    return route_inference(
+        task="benchmark_offer",
+        context={"r": python_result},
+        python_fallback=_python_bench,
+        ai_handler=_ai_bench,
+    )

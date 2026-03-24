@@ -9,6 +9,7 @@ import json
 from collections import Counter
 
 import db
+from ai_providers.router import route_inference
 
 
 def register_skills_dev_tools(mcp):
@@ -75,7 +76,26 @@ def register_skills_dev_tools(mcp):
         covered = sum(1 for r in results if r["category"] == "not_showcased")
         pct = round(covered / total * 100, 1) if total else 0
 
-        return {"gaps": results, "coverage_pct": pct}
+        python_result = {"gaps": results, "coverage_pct": pct}
+
+        def _python_gaps(ctx):
+            return ctx["r"]
+
+        def _ai_gaps(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            gap_names = [g["skill"] for g in ctx["r"]["gaps"][:15]]
+            result = provider.analyze_skills(list(user_skills), [f"Required: {', '.join(gap_names)}"])
+            base = ctx["r"]
+            base["ai_recommendations"] = result.get("recommendations", [])
+            return base
+
+        return route_inference(
+            task="skill_gap_analysis",
+            context={"r": python_result},
+            python_fallback=_python_gaps,
+            ai_handler=_ai_gaps,
+        )
 
     @mcp.tool()
     def get_skill_trends() -> dict:
@@ -120,7 +140,28 @@ def register_skills_dev_tools(mcp):
         have_count = sum(1 for t in trending if t["have"])
         coverage = round(have_count / total * 100, 1) if total else 0
 
-        return {"trending": trending, "rising": rising, "user_coverage_pct": coverage}
+        python_result = {"trending": trending, "rising": rising, "user_coverage_pct": coverage}
+
+        def _python_trends(ctx):
+            return ctx["r"]
+
+        def _ai_trends(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            skill_names = list(user_skills)
+            rising_names = [r["skill"] for r in ctx["r"]["rising"][:10]]
+            result = provider.analyze_skills(skill_names, [f"Trending: {', '.join(rising_names)}"])
+            base = ctx["r"]
+            base["ai_emerging"] = result.get("emerging", [])
+            base["ai_declining"] = result.get("declining", [])
+            return base
+
+        return route_inference(
+            task="skill_trend_analysis",
+            context={"r": python_result},
+            python_fallback=_python_trends,
+            ai_handler=_ai_trends,
+        )
 
     @mcp.tool()
     def certification_roi(role_type: str | None = None) -> dict:
@@ -170,7 +211,29 @@ def register_skills_dev_tools(mcp):
                 "priority": 1 if freq >= 5 and not have else (2 if freq >= 2 and not have else 3),
             })
 
-        return {"recommendations": recs}
+        python_result = {"recommendations": recs}
+
+        def _python_cert(ctx):
+            return ctx["r"]
+
+        def _ai_cert(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            top_certs = [r["cert_name"] for r in ctx["r"]["recommendations"][:10] if not r["have"]]
+            result = provider.generate_content("certification_advice", {
+                "certs_to_evaluate": top_certs,
+                "role_type": ctx.get("role_type"),
+            })
+            base = ctx["r"]
+            base["ai_advice"] = result.get("content", "")
+            return base
+
+        return route_inference(
+            task="certification_roi",
+            context={"r": python_result, "role_type": role_type},
+            python_fallback=_python_cert,
+            ai_handler=_ai_cert,
+        )
 
     @mcp.tool()
     def get_differentiator_analysis() -> dict:
@@ -231,7 +294,28 @@ def register_skills_dev_tools(mcp):
             for s, c in gap_counter.most_common(10)
         ]
 
-        return {"differentiators": differentiators[:15], "gaps_to_unlock": gaps_to_unlock}
+        python_result = {"differentiators": differentiators[:15], "gaps_to_unlock": gaps_to_unlock}
+
+        def _python_diff(ctx):
+            return ctx["r"]
+
+        def _ai_diff(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            result = provider.generate_content("differentiator_analysis", {
+                "differentiators": [d["combo"] for d in ctx["r"]["differentiators"][:5]],
+                "gaps": [g["skill"] for g in ctx["r"]["gaps_to_unlock"][:5]],
+            })
+            base = ctx["r"]
+            base["ai_narrative"] = result.get("content", "")
+            return base
+
+        return route_inference(
+            task="differentiator_analysis",
+            context={"r": python_result},
+            python_fallback=_python_diff,
+            ai_handler=_ai_diff,
+        )
 
     @mcp.tool()
     def get_learning_path(top_n: int = 10) -> dict:
@@ -324,11 +408,33 @@ def register_skills_dev_tools(mcp):
                 "action": "Add to learning plan" if not already_planned else "In progress",
             })
 
-        return {
+        python_result = {
             "learning_path": path,
             "existing_plans": plans,
             "total_gaps_found": len(gap_counter),
         }
+
+        def _python_learn(ctx):
+            return ctx["r"]
+
+        def _ai_learn(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            skills_to_learn = [p["skill"] for p in ctx["r"]["learning_path"][:5]]
+            result = provider.generate_content("learning_path", {
+                "skills_to_learn": skills_to_learn,
+                "existing_skills": list(user_skills)[:20],
+            })
+            base = ctx["r"]
+            base["ai_learning_narrative"] = result.get("content", "")
+            return base
+
+        return route_inference(
+            task="learning_path_generation",
+            context={"r": python_result},
+            python_fallback=_python_learn,
+            ai_handler=_ai_learn,
+        )
 
     @mcp.tool()
     def check_skill_trend_alerts() -> dict:

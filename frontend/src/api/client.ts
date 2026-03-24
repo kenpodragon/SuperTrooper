@@ -236,11 +236,52 @@ export const mockInterviews = {
   evaluate: (id: number) => api.patch<any>(`/mock-interviews/${id}/evaluate`, {}),
 };
 
+export interface OutreachMessage {
+  id: number;
+  contact_id?: number;
+  contact_name?: string;
+  application_id?: number;
+  channel: string;
+  direction: string;
+  subject?: string;
+  body?: string;
+  sent_at?: string;
+  response_received?: boolean;
+  notes?: string;
+  created_at?: string;
+}
+
+export interface ConversationData {
+  messages: OutreachMessage[];
+  touchpoints: Array<{ id: number; type: string; channel?: string; direction?: string; notes?: string; logged_at?: string }>;
+}
+
+export interface SendMessagePayload {
+  contact_id: number;
+  channel: 'gmail' | 'linkedin';
+  action?: 'send' | 'draft';
+  subject?: string;
+  body: string;
+  application_id?: number;
+}
+
 export const crm = {
   relationships: (params = '') => api.get<any>(`/crm/relationships${params}`),
   health: (params = '') => api.get<any>(`/crm/health${params}`),
   tasks: (params = '') => api.get<any[]>(`/crm/networking-tasks${params}`),
   logTouchpoint: (data: any) => api.post<any>('/crm/touchpoints', data),
+  sendMessage: (data: SendMessagePayload) => api.post<{ result: any; outreach: OutreachMessage }>('/crm/send-message', data),
+  updateDraft: (id: number, data: { subject?: string; body: string; action?: 'update' | 'send' }) =>
+    api.put<{ result: any; outreach: OutreachMessage }>(`/crm/drafts/${id}`, data),
+  deleteDraft: (id: number) => api.del<{ deleted: number }>(`/crm/drafts/${id}`),
+  wordsmith: (body: string, contactId?: number, channel = 'linkedin') =>
+    api.post<{ body: string; mode: string }>('/crm/wordsmith', { body, contact_id: contactId, channel }),
+  generateOutreach: (data: {
+    contact_id: number; type?: string; use_ai?: boolean; channel?: string;
+    prompt?: string; existing_subject?: string; existing_body?: string;
+  }) => api.post<{ outreach: { subject: string; body: string; channel: string; mode: string } }>('/crm/generate-outreach', data),
+  conversations: (contactId: number, params = '') =>
+    api.get<ConversationData>(`/crm/conversations/${contactId}${params}`),
 };
 
 export const marketIntel = {

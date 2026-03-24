@@ -317,19 +317,28 @@ def register_resume_gen_tools(mcp):
                 filled += 1
 
             if not output_path:
+                import datetime
+                today = datetime.date.today().isoformat()
+                # Get candidate name from resume_header
+                header = db.query_one("SELECT full_name FROM resume_header LIMIT 1")
+                cand_name = (header.get("full_name") or "Resume").replace(" ", "_").replace("/", "_") if header else "Resume"
+
                 if recipe_row.get("application_id"):
                     app = db.query_one("SELECT company_name, role, date_applied FROM applications WHERE id = %s",
                                        (recipe_row["application_id"],))
                     if app:
-                        import datetime
                         company = (app.get("company_name") or "Unknown").replace(" ", "_").replace("/", "_")
                         role = (app.get("role") or "Role").replace(" ", "_").replace("/", "_")
-                        date = (app.get("date_applied") or datetime.date.today()).isoformat()
-                        output_path = f"Output/{company}_{role}_{date}/resume.docx"
+                        date = (app.get("date_applied") or today)
+                        if hasattr(date, "isoformat"):
+                            date = date.isoformat()
+                        output_path = f"Output/{company}_{role}_{date}/{cand_name}_{role}_{date}.docx"
                     else:
-                        output_path = f"Output/resume_recipe_{recipe_id}.docx"
+                        target = (recipe_row.get("target_role") or "General").replace(" ", "_").replace("/", "_")
+                        output_path = f"Output/{cand_name}_{target}_{today}.docx"
                 else:
-                    output_path = f"Output/resume_recipe_{recipe_id}.docx"
+                    target = (recipe_row.get("target_role") or "General").replace(" ", "_").replace("/", "_")
+                    output_path = f"Output/{cand_name}_{target}_{today}.docx"
             out = Path(output_path)
             out.parent.mkdir(parents=True, exist_ok=True)
             doc.save(str(out))
@@ -484,7 +493,11 @@ def register_resume_gen_tools(mcp):
             filled += 1
 
         if not output_path:
-            output_path = f"Output/resume_{version}_{variant}.docx"
+            import datetime
+            header = db.query_one("SELECT full_name FROM resume_header LIMIT 1")
+            cand_name = (header.get("full_name") or "Resume").replace(" ", "_").replace("/", "_") if header else "Resume"
+            today = datetime.date.today().isoformat()
+            output_path = f"Output/{cand_name}_{version}_{variant}_{today}.docx"
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         doc.save(str(out))

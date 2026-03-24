@@ -1254,3 +1254,41 @@ AI detection findings should feed back into the voice system to prevent future A
 - [ ] Global default settings in platform config
 - [ ] API endpoints for AntiAI configuration CRUD
 - [ ] Settings page section for AntiAI preferences (under existing Settings, see 11.11)
+
+---
+
+## 18. LinkedIn Content Archival
+
+> Full requirements: [linkedin_content_sync.md](linkedin_content_sync.md)
+
+Automated LinkedIn content archival via two strategies: passive capture through the browser extension and scheduled headless scraping. Feeds into existing `scraped_posts`, `scraped_comments`, `scraped_messages` tables.
+
+**Scraper code:** `code/utils/linkedin_scraper/` (copied from `local_code/scrapers/`)
+
+### 18.1 Extension Passive Capture
+- [ ] Content script on `*.linkedin.com/*` pages (separate from job-board content script)
+- [ ] Capture posts, comments from activity feed via MutationObserver
+- [ ] Capture messages from `/messaging/` pages
+- [ ] Capture SSI score from `/sales/ssi` (new `linkedin_ssi_scores` table)
+- [ ] Batch and forward captured data to backend `-live` import endpoints
+- [ ] Incremental dedup: backend skips existing URNs
+
+### 18.2 Session/Cookie Capture
+- [ ] Extension captures `li_at`, `JSESSIONID`, `li_mc` cookies (requires `cookies` permission)
+- [ ] Cookies encrypted with Fernet, stored in `linkedin_sessions` table
+- [ ] Periodic validation (every 4h) with notification on expiry
+- [ ] Manual refresh button in extension Settings
+
+### 18.3 Headless Scheduled Scraping
+- [ ] `--headless --cookies-from-db` mode added to scraper CLI
+- [ ] Scheduler job `linkedin_content_sync` (every 6h, opt-in)
+- [ ] Cookie validation job `linkedin_cookie_check` (every 4h)
+- [ ] Graceful degradation: skip scrape + notify user when cookies expire
+- [ ] `scraper_runs` table for run history and diagnostics
+
+### 18.4 Settings UI
+- [ ] LinkedIn Sync section in extension Settings panel
+- [ ] Session status indicator (active/expiring/expired)
+- [ ] Passive capture toggle (default: off)
+- [ ] Scheduled scraping toggle + frequency selector
+- [ ] Sync history (recent scraper_runs with item counts)

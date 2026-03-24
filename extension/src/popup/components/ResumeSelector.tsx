@@ -59,7 +59,10 @@ export default function ResumeSelector() {
           body: JSON.stringify({}),
         }
       );
-      setGenResult(result.filename || result.output_path || result.message || "Resume generated");
+      const fname = result.filename || result.output_path || result.message || "Resume generated";
+      // Extract just the filename from the path for cleaner display
+      const displayName = fname.includes("/") ? fname.split("/").pop() || fname : fname;
+      setGenResult(displayName);
     } catch (err) {
       setGenResult(err instanceof Error ? err.message : "Generation failed");
     } finally {

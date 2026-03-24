@@ -2,11 +2,15 @@ import { detectPage } from "./detector";
 import { MSG, sendToBackground } from "@shared/messages";
 import type { PageContext } from "@shared/types";
 import { processJobPage, resetProcessedUrl, getCurrentJobData } from "./jobCapture";
+import { checkLinkedInProfile } from "./linkedinMessaging";
 
 let currentContext: PageContext | null = null;
 
 function init() {
   currentContext = detectPage();
+
+  // Check for LinkedIn profile with pending messages (runs on /in/* pages)
+  checkLinkedInProfile();
 
   if (currentContext.type === "unknown") return;
 

@@ -3,6 +3,7 @@
 import json
 from flask import Blueprint, request, jsonify
 import db
+from ai_providers.router import route_inference
 
 bp = Blueprint("linkedin", __name__)
 
@@ -963,14 +964,37 @@ def keyword_gap():
     missing = sorted(jd_keywords - profile_words) if jd_keywords else []
     overlap = sorted(jd_keywords & profile_words) if jd_keywords else []
 
-    return jsonify({
+    python_result = {
         "profile_word_count": len(profile_words),
         "jd_keyword_count": len(jd_keywords),
         "overlap_count": len(overlap),
         "missing_keywords": missing[:50],
         "matching_keywords": overlap[:50],
         "coverage_pct": round(len(overlap) / len(jd_keywords) * 100, 1) if jd_keywords else 0,
-    }), 200
+    }
+
+    def _python_kw_gap(ctx):
+        return ctx["r"]
+
+    def _ai_kw_gap(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.audit_profile(
+            profile_data={"text": ctx["profile_text"][:2000]},
+            target_jds=[{"keywords": ctx["r"]["missing_keywords"][:20]}],
+        )
+        base = ctx["r"]
+        base["ai_headline_suggestions"] = result.get("headline_suggestions", [])
+        base["ai_keyword_gaps"] = result.get("keyword_gaps", [])
+        return base
+
+    enhanced = route_inference(
+        task="linkedin_keyword_gap",
+        context={"r": python_result, "profile_text": profile_text},
+        python_fallback=_python_kw_gap,
+        ai_handler=_ai_kw_gap,
+    )
+    return jsonify(enhanced), 200
 
 
 @bp.route("/api/linkedin/recruiter-search-tips", methods=["GET"])

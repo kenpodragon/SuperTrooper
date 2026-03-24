@@ -39,6 +39,7 @@ from routes.email_intelligence import bp as email_intelligence_bp
 from routes.calendar_intelligence import bp as calendar_intelligence_bp
 from routes.profile import bp as profile_bp
 from routes.jd_fetch import bp as jd_fetch_bp
+from routes.google_oauth import bp as google_oauth_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -80,4 +81,5 @@ ALL_BLUEPRINTS = [
     calendar_intelligence_bp,
     profile_bp,
     jd_fetch_bp,
+    google_oauth_bp,
 ]

@@ -3,6 +3,7 @@
 import json
 from flask import Blueprint, request, jsonify
 import db
+from ai_providers.router import route_inference
 
 bp = Blueprint("workflows", __name__)
 
@@ -453,11 +454,35 @@ def evaluate_workflows():
                 "matched": False,
             })
 
-    return jsonify({
+    python_result = {
         "evaluated": len(workflows),
         "triggered": triggered_count,
         "results": results,
-    }), 200
+    }
+
+    def _python_eval_wf(ctx):
+        return ctx["r"]
+
+    def _ai_eval_wf(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        triggered = [r for r in ctx["r"]["results"] if r.get("matched")]
+        if not triggered:
+            return ctx["r"]
+        result = provider.analyze_strategy({
+            "triggered_workflows": [{"name": t["name"], "result": t.get("action_result")} for t in triggered[:5]],
+        })
+        base = ctx["r"]
+        base["ai_insights"] = result.get("insights", [])
+        return base
+
+    enhanced = route_inference(
+        task="evaluate_workflows",
+        context={"r": python_result},
+        python_fallback=_python_eval_wf,
+        ai_handler=_ai_eval_wf,
+    )
+    return jsonify(enhanced), 200
 
 
 # ---------------------------------------------------------------------------

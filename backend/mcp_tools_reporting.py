@@ -2,6 +2,7 @@
 
 import db
 from datetime import datetime, timezone
+from ai_providers.router import route_inference
 
 
 def get_pipeline_report() -> dict:
@@ -701,4 +702,26 @@ def generate_strategy_recommendations(rollup: dict, pipeline: dict) -> list:
     priority_order = {"high": 0, "medium": 1, "low": 2, "info": 3}
     recommendations.sort(key=lambda r: priority_order.get(r["priority"], 99))
 
-    return recommendations
+    def _python_strategy(ctx):
+        return {"recommendations": ctx["recommendations"]}
+
+    def _ai_strategy(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.analyze_strategy(ctx["rollup_data"])
+        ai_recs = []
+        for rec in result.get("recommendations", []):
+            ai_recs.append({"priority": "medium", "category": "ai_strategy", "action": rec, "reason": "AI-generated"})
+        for act in result.get("priority_actions", []):
+            ai_recs.append({"priority": "high", "category": "ai_priority", "action": act, "reason": "AI-generated"})
+        combined = ctx["recommendations"] + ai_recs
+        combined.sort(key=lambda r: {"high": 0, "medium": 1, "low": 2, "info": 3}.get(r.get("priority", "low"), 99))
+        return {"recommendations": combined, "ai_insights": result.get("insights", []), "ai_risks": result.get("risk_areas", [])}
+
+    enhanced = route_inference(
+        task="strategy_recommendations",
+        context={"recommendations": recommendations, "rollup_data": {**rollup, **pipeline}},
+        python_fallback=_python_strategy,
+        ai_handler=_ai_strategy,
+    )
+    return enhanced.get("recommendations", recommendations)

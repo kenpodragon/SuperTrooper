@@ -326,10 +326,31 @@ def run_gap_analysis(
         "fit_scores": fit_scores,
         "jd_text_snippet": jd_text[:2000],
     }
+    def _ai_gap_recommendation(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        resume_summary = "\n".join(
+            f"- {m['keyword']}" for m in ctx.get("strong_matches", []) + ctx.get("partial_matches", [])
+        )
+        result = provider.semantic_match(
+            resume_text=resume_summary,
+            jd_text=ctx.get("jd_text_snippet", ""),
+        )
+        suggestions = result.get("positioning_suggestions", [])
+        gaps = result.get("gaps", [])
+        score = result.get("match_score", 0)
+        rec = f"Match score: {score:.0%}."
+        if suggestions:
+            rec += " " + suggestions[0]
+        if gaps:
+            rec += f" Key gaps: {', '.join(gaps[:3])}."
+        return {"recommendation": rec}
+
     rec_result = route_inference(
         task="run_gap_analysis_recommendation",
         context=gap_ctx,
         python_fallback=_python_gap_recommendation,
+        ai_handler=_ai_gap_recommendation,
     )
     recommendation = rec_result.get("recommendation", "")
 

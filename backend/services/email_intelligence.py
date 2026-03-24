@@ -5,6 +5,7 @@ and ghosted-application detection.
 """
 
 import db
+from ai_providers.router import route_inference
 
 
 # Maps email scan_status categories to application status + notification config
@@ -137,11 +138,33 @@ def process_email_scan_results():
         )
         notifications_created += 1
 
-    return {
+    python_result = {
         "emails_processed": len(categorized),
         "notifications_created": notifications_created,
         "applications_updated": applications_updated,
     }
+
+    def _python_email_proc(ctx):
+        return ctx["r"]
+
+    def _ai_email_proc(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("email_intelligence_summary", {
+            "processed": ctx["r"]["emails_processed"],
+            "notifications": ctx["r"]["notifications_created"],
+            "updated": ctx["r"]["applications_updated"],
+        })
+        base = ctx["r"]
+        base["ai_summary"] = result.get("content", "")
+        return base
+
+    return route_inference(
+        task="process_email_scan_results",
+        context={"r": python_result},
+        python_fallback=_python_email_proc,
+        ai_handler=_ai_email_proc,
+    )
 
 
 def detect_ghosted_applications():

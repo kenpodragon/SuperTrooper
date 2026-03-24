@@ -2,8 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
+html, body {
   margin: 0;
+  padding: 0;
+  width: 400px;
+  height: 600px;
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 }
 

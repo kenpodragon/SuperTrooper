@@ -1221,17 +1221,27 @@ OUTREACH_TEMPLATES = {
 
 @bp.route("/api/crm/generate-outreach", methods=["POST"])
 def generate_outreach():
-    """Generate a template-based outreach message for a contact.
+    """Generate an outreach message for a contact — template or AI-powered.
 
     Body JSON:
         contact_id (int, required): ID of the contact
         type (str): "cold", "warm", or "follow_up" (default: "cold")
+        use_ai (bool): If true, use AI to generate a personalized message (default: false)
+        channel (str): "gmail" or "linkedin" (default: "gmail") — helps AI tailor length/tone
+        prompt (str): Custom instructions for AI (e.g. "mention the VP Engineering role")
+        existing_subject (str): Current subject line to refine
+        existing_body (str): Current email/message body to refine
 
-    Returns: {outreach: {subject, body, channel}}
+    Returns: {outreach: {subject, body, channel, mode}}
     """
     data = request.get_json(force=True)
     contact_id = data.get("contact_id")
     outreach_type = data.get("type", "cold")
+    use_ai = data.get("use_ai", False)
+    channel = data.get("channel", "gmail")
+    custom_prompt = (data.get("prompt") or "").strip()
+    existing_subject = (data.get("existing_subject") or "").strip()
+    existing_body = (data.get("existing_body") or "").strip()
 
     if not contact_id:
         return jsonify({"error": "contact_id is required"}), 400
@@ -1240,21 +1250,612 @@ def generate_outreach():
         return jsonify({"error": f"Invalid type '{outreach_type}'. Use: cold, warm, follow_up"}), 400
 
     contact = db.query_one(
-        "SELECT id, name, company, title, relationship_stage FROM contacts WHERE id = %s",
+        "SELECT * FROM contacts WHERE id = %s",
         (contact_id,),
     )
     if not contact:
         return jsonify({"error": "Contact not found"}), 404
 
-    name = (contact.get("name") or "there").split()[0]  # first name
+    name = (contact.get("name") or "there").split()[0]
     company = contact.get("company") or "your company"
     role = contact.get("title") or "your team"
 
+    # --- Template fallback (always available) ---
     template = OUTREACH_TEMPLATES[outreach_type]
-    outreach = {
+    template_result = {
         "subject": template["subject"].format(name=name, company=company, role=role),
         "body": template["body"].format(name=name, company=company, role=role),
         "channel": template["channel"],
+        "mode": "template",
     }
 
-    return jsonify({"outreach": outreach}), 200
+    if not use_ai:
+        return jsonify({"outreach": template_result}), 200
+
+    # --- AI generation ---
+    from ai_providers.router import route_inference
+
+    # Gather rich context for AI
+    # Candidate info
+    header = db.query_one("SELECT full_name, email, phone, location, linkedin_url, credentials FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
+    candidate_title = header.get("credentials", "") if header else ""
+
+    # Conversation history
+    past_messages = db.query(
+        """SELECT channel, direction, subject, body, sent_at, status
+        FROM outreach_messages WHERE contact_id = %s
+        ORDER BY COALESCE(sent_at, created_at) DESC LIMIT 10""",
+        (contact_id,),
+    ) or []
+
+    # Company info
+    company_info = None
+    if contact.get("company"):
+        company_info = db.query_one(
+            "SELECT name, sector, hq_location, size, notes FROM companies WHERE name ILIKE %s LIMIT 1",
+            (contact.get("company"),),
+        )
+
+    # Voice rules
+    voice_rules = db.query(
+        "SELECT rule_text FROM voice_rules WHERE category IN ('outreach', 'general', 'stephen_ism') ORDER BY sort_order LIMIT 15"
+    ) or []
+
+    # Applications & saved jobs at this contact's company
+    apps_at_company = []
+    saved_jobs_at_company = []
+    if contact.get("company"):
+        apps_at_company = db.query(
+            """SELECT role, status, date_applied FROM applications
+            WHERE company_name ILIKE %s ORDER BY date_applied DESC LIMIT 5""",
+            (f"%{contact['company']}%",),
+        ) or []
+        saved_jobs_at_company = db.query(
+            """SELECT title, status, fit_score FROM saved_jobs
+            WHERE company ILIKE %s ORDER BY created_at DESC LIMIT 5""",
+            (f"%{contact['company']}%",),
+        ) or []
+
+    # Build instructions
+    base_instructions = (
+        f"Generate a personalized {outreach_type.replace('_', ' ')} outreach message "
+        f"from {candidate_name} to {contact.get('name')} "
+        f"{'via email' if channel == 'gmail' else 'via LinkedIn message'}. "
+        f"{'Include a subject line.' if channel == 'gmail' else 'LinkedIn messages have no subject line. Keep it concise (under 100 words).'} "
+        f"Tone: conversational, direct, no corporate buzzwords. "
+        f"Reference any shared context from conversation history or company info. "
+        f"Follow the voice rules provided. "
+        f"Return JSON: {{\"subject\": \"...\", \"body\": \"...\"}}"
+    )
+
+    if existing_body:
+        base_instructions = (
+            f"IMPORTANT: The user has an existing draft message that they want you to REWRITE. "
+            f"Do NOT generate a new message from scratch. Take the existing draft below and modify it "
+            f"according to the user's instructions.\n\n"
+            f"--- EXISTING SUBJECT ---\n{existing_subject or '(none)'}\n\n"
+            f"--- EXISTING MESSAGE BODY ---\n{existing_body}\n\n"
+            f"--- END OF EXISTING DRAFT ---\n\n"
+            f"Rewrite the above draft from {candidate_name} to {contact.get('name')} "
+            f"{'via email' if channel == 'gmail' else 'via LinkedIn message'}. "
+            f"{'Include a subject line.' if channel == 'gmail' else 'Keep it concise (under 100 words).'} "
+            f"Follow the voice rules provided. "
+            f"Return JSON: {{\"subject\": \"...\", \"body\": \"...\"}}"
+        )
+
+    if custom_prompt:
+        base_instructions += f"\n\nUser's instructions for this rewrite: {custom_prompt}"
+
+    ai_ctx = {
+        "candidate_name": candidate_name,
+        "candidate_title": candidate_title,
+        "contact_name": contact.get("name"),
+        "contact_first_name": name,
+        "contact_company": company,
+        "contact_title": role,
+        "contact_linkedin": contact.get("linkedin_url", ""),
+        "contact_relationship": contact.get("relationship_strength", "unknown"),
+        "contact_stage": contact.get("relationship_stage", "cold"),
+        "contact_notes": contact.get("notes", ""),
+        "message_type": outreach_type,
+        "channel": channel,
+        "existing_subject": existing_subject,
+        "existing_body": existing_body,
+        "conversation_history": [
+            {"direction": m.get("direction"), "subject": m.get("subject"), "body": (m.get("body") or "")[:300], "date": str(m.get("sent_at") or "")}
+            for m in past_messages
+        ],
+        "company_info": {
+            "name": company_info.get("name"), "sector": company_info.get("sector"),
+            "size": company_info.get("size"), "notes": (company_info.get("notes") or "")[:300],
+        } if company_info else None,
+        "applications_at_company": [
+            {"role": a.get("role"), "status": a.get("status"), "date": str(a.get("date_applied") or "")}
+            for a in apps_at_company
+        ],
+        "saved_jobs_at_company": [
+            {"title": j.get("title"), "status": j.get("status"), "fit_score": j.get("fit_score")}
+            for j in saved_jobs_at_company
+        ],
+        "voice_rules": [r["rule_text"] for r in voice_rules],
+        "instructions": base_instructions,
+    }
+
+    def _python_fallback(ctx):
+        return template_result
+
+    def _ai_handler(ctx):
+        import logging
+        log = logging.getLogger(__name__)
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("outreach_compose", ctx)
+        log.info("AI outreach raw result keys: %s", list(result.keys()) if isinstance(result, dict) else type(result))
+
+        # Claude CLI returns {"result": "```json\n{...}\n```", "content": "", ...}
+        # The actual text is in "result", not "content"
+        content = result.get("content") or result.get("result") or result.get("body") or ""
+
+        # Strip markdown code fences if present
+        if isinstance(content, str):
+            import re
+            fence_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+            if fence_match:
+                content = fence_match.group(1).strip()
+
+        # If content is already a dict with subject/body, use it directly
+        if isinstance(content, dict):
+            return {
+                "subject": content.get("subject", ""),
+                "body": content.get("body", ""),
+                "channel": channel,
+            }
+
+        # If result itself has subject/body (Claude parsed the JSON for us)
+        if isinstance(result, dict) and "body" in result and "subject" in result:
+            return {
+                "subject": result.get("subject", ""),
+                "body": result.get("body", ""),
+                "channel": channel,
+            }
+
+        # Try to parse content as JSON string — may be double-encoded
+        if isinstance(content, str) and content.strip():
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    # Check if "content" is itself a JSON string (double-encoded)
+                    inner = parsed.get("content", "")
+                    if isinstance(inner, str) and inner.strip().startswith("{"):
+                        try:
+                            inner_parsed = json.loads(inner)
+                            if isinstance(inner_parsed, dict) and ("body" in inner_parsed or "subject" in inner_parsed):
+                                return {
+                                    "subject": inner_parsed.get("subject", ""),
+                                    "body": inner_parsed.get("body", ""),
+                                    "channel": channel,
+                                }
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    # Direct subject/body in parsed
+                    if "body" in parsed or "subject" in parsed:
+                        return {
+                            "subject": parsed.get("subject", ""),
+                            "body": parsed.get("body", content),
+                            "channel": channel,
+                        }
+                    # Content field is plain text
+                    if inner and not inner.startswith("{"):
+                        return {"subject": parsed.get("subject", ""), "body": inner, "channel": channel}
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # Not JSON — use raw text as body
+            return {"subject": "", "body": content, "channel": channel}
+
+        # Last resort — stringify whatever we got
+        log.warning("AI outreach: unexpected result format: %s", str(result)[:300])
+        fallback_body = str(result.get("content", result))[:2000] if isinstance(result, dict) else str(result)[:2000]
+        return {"subject": "", "body": fallback_body, "channel": channel}
+
+    # If user explicitly asked for AI via prompt/Ask AI, check availability first
+    if custom_prompt or existing_body:
+        from ai_providers.router import ai_available
+        if not ai_available():
+            return jsonify({"error": "AI is not available. Check Settings > AI Provider to configure and enable it."}), 503
+
+    gen_result = route_inference(
+        task="generate_outreach_compose",
+        context=ai_ctx,
+        python_fallback=_python_fallback,
+        ai_handler=_ai_handler,
+    )
+    gen_result["mode"] = gen_result.pop("analysis_mode", "template")
+
+    return jsonify({"outreach": gen_result}), 200
+
+
+# ---------------------------------------------------------------------------
+# Compose & Send Messages (Gmail / LinkedIn)
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/crm/send-message", methods=["POST"])
+def send_message():
+    """Compose and send/draft a message via Gmail or log a LinkedIn outreach.
+
+    Body JSON:
+        contact_id (int, required): ID of the contact
+        channel (str, required): "gmail" or "linkedin"
+        action (str): "send" or "draft" (default: "draft") — Gmail only
+        subject (str): Email subject (Gmail only)
+        body (str, required): Message body
+        application_id (int, optional): Link to an application
+
+    Returns: {result: {...}, outreach: {...}}
+    """
+    data = request.get_json(force=True)
+    contact_id = data.get("contact_id")
+    channel = data.get("channel")
+    body = (data.get("body") or "").strip()
+    subject = (data.get("subject") or "").strip()
+    action = data.get("action", "draft")
+    application_id = data.get("application_id")
+
+    if not contact_id or not channel or not body:
+        return jsonify({"error": "contact_id, channel, and body are required"}), 400
+
+    if channel not in ("gmail", "linkedin"):
+        return jsonify({"error": "channel must be 'gmail' or 'linkedin'"}), 400
+
+    contact = db.query_one(
+        "SELECT id, name, email, linkedin_url, company FROM contacts WHERE id = %s",
+        (contact_id,),
+    )
+    if not contact:
+        return jsonify({"error": "Contact not found"}), 404
+
+    result = {}
+
+    if channel == "gmail":
+        email_addr = contact.get("email")
+        if not email_addr:
+            return jsonify({"error": "Contact has no email address"}), 400
+
+        from integrations import google_client
+
+        if action == "send":
+            result = google_client.gmail_send(email_addr, subject, body)
+        else:
+            result = google_client.gmail_draft(email_addr, subject, body)
+
+        if result.get("error"):
+            return jsonify({"error": result["error"], "setup_required": result.get("setup_required")}), 502
+
+    elif channel == "linkedin":
+        linkedin_url = contact.get("linkedin_url")
+        if not linkedin_url:
+            return jsonify({"error": "Contact has no LinkedIn URL"}), 400
+        # LinkedIn messages are sent via the browser extension.
+        # We log the outreach record; the frontend opens LinkedIn messaging.
+        result = {"status": "logged", "linkedin_url": linkedin_url}
+
+    # Log outreach message
+    is_sent = channel == "gmail" and action == "send"
+    status_val = "sent" if is_sent else "draft"
+    draft_id = result.get("draft_id") if not is_sent else None
+    message_id = result.get("message_id")
+    outreach_row = db.execute_returning(
+        """
+        INSERT INTO outreach_messages
+            (contact_id, application_id, channel, direction, subject, body,
+             sent_at, status, gmail_draft_id, gmail_message_id)
+        VALUES (%s, %s, %s, 'sent', %s, %s, {}, %s, %s, %s)
+        RETURNING *
+        """.format("NOW()" if is_sent else "NULL"),
+        (contact_id, application_id, channel, subject, body,
+         status_val, draft_id, message_id),
+    )
+
+    # Log touchpoint
+    tp_type = "email" if channel == "gmail" else "linkedin_message"
+    db.execute_returning(
+        """
+        INSERT INTO touchpoints (contact_id, type, channel, direction, notes, logged_at)
+        VALUES (%s, %s, %s, 'outbound', %s, NOW())
+        RETURNING id
+        """,
+        (contact_id, tp_type, channel, f"{action}: {subject}" if subject else f"{action}: (no subject)"),
+    )
+
+    # Update last_contact on the contact
+    db.execute(
+        "UPDATE contacts SET last_contact = NOW(), last_touchpoint_at = NOW() WHERE id = %s",
+        (contact_id,),
+    )
+
+    return jsonify({"result": result, "outreach": outreach_row}), 200
+
+
+@bp.route("/api/crm/drafts/<int:outreach_id>", methods=["PUT"])
+def update_draft(outreach_id):
+    """Update an existing draft message (subject/body) and sync to Gmail.
+
+    Body JSON:
+        subject (str): Updated subject
+        body (str): Updated body
+        action (str): "update" (default) or "send" — send promotes draft to sent
+
+    Returns: {result: {...}, outreach: {...}}
+    """
+    data = request.get_json(force=True)
+    subject = (data.get("subject") or "").strip()
+    body = (data.get("body") or "").strip()
+    action = data.get("action", "update")
+
+    if not body:
+        return jsonify({"error": "body is required"}), 400
+
+    row = db.query_one(
+        "SELECT * FROM outreach_messages WHERE id = %s", (outreach_id,),
+    )
+    if not row:
+        return jsonify({"error": "Outreach message not found"}), 404
+
+    if row.get("status") == "sent":
+        return jsonify({"error": "Cannot edit a sent message"}), 400
+
+    result = {}
+    from integrations import google_client
+
+    if row.get("channel") == "gmail":
+        # Need contact email for Gmail draft update
+        contact = db.query_one(
+            "SELECT email FROM contacts WHERE id = %s", (row["contact_id"],),
+        )
+        email_addr = contact.get("email") if contact else None
+
+        if action == "send" and row.get("gmail_draft_id"):
+            # Update the draft content first, then send it
+            if email_addr:
+                google_client.gmail_update_draft(
+                    row["gmail_draft_id"], email_addr, subject, body,
+                )
+            result = google_client.gmail_send_draft(row["gmail_draft_id"])
+        elif row.get("gmail_draft_id") and email_addr:
+            result = google_client.gmail_update_draft(
+                row["gmail_draft_id"], email_addr, subject, body,
+            )
+        elif email_addr:
+            # No draft_id stored — create a new draft
+            result = google_client.gmail_draft(email_addr, subject, body)
+
+        if result.get("error"):
+            return jsonify({"error": result["error"]}), 502
+
+    new_status = "sent" if action == "send" else "draft"
+    new_draft_id = result.get("draft_id") or row.get("gmail_draft_id")
+    new_message_id = result.get("message_id") or row.get("gmail_message_id")
+
+    updated = db.execute_returning(
+        """
+        UPDATE outreach_messages
+        SET subject = %s, body = %s, status = %s,
+            gmail_draft_id = %s, gmail_message_id = %s,
+            sent_at = CASE WHEN %s = 'sent' THEN NOW() ELSE sent_at END
+        WHERE id = %s
+        RETURNING *
+        """,
+        (subject, body, new_status, new_draft_id, new_message_id,
+         new_status, outreach_id),
+    )
+
+    if action == "send":
+        # Log send touchpoint
+        db.execute_returning(
+            """
+            INSERT INTO touchpoints (contact_id, type, channel, direction, notes, logged_at)
+            VALUES (%s, 'email', 'gmail', 'outbound', %s, NOW())
+            RETURNING id
+            """,
+            (row["contact_id"], f"sent: {subject}"),
+        )
+        db.execute(
+            "UPDATE contacts SET last_contact = NOW(), last_touchpoint_at = NOW() WHERE id = %s",
+            (row["contact_id"],),
+        )
+
+    return jsonify({"result": result, "outreach": updated}), 200
+
+
+@bp.route("/api/crm/drafts/<int:outreach_id>", methods=["DELETE"])
+def delete_draft(outreach_id):
+    """Delete a draft message and its Gmail draft if one exists."""
+    row = db.query_one(
+        "SELECT * FROM outreach_messages WHERE id = %s", (outreach_id,),
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+
+    if row.get("status") == "sent":
+        return jsonify({"error": "Cannot delete a sent message"}), 400
+
+    # Delete Gmail draft if it exists
+    if row.get("gmail_draft_id") and row.get("channel") == "gmail":
+        from integrations import google_client
+        result = google_client.gmail_delete_draft(row["gmail_draft_id"])
+        if result.get("error"):
+            # Log but don't block — draft may already be gone from Gmail
+            import logging
+            logging.getLogger(__name__).warning("Gmail draft delete: %s", result["error"])
+
+    db.execute("DELETE FROM outreach_messages WHERE id = %s", (outreach_id,))
+    return jsonify({"deleted": outreach_id}), 200
+
+
+@bp.route("/api/crm/wordsmith", methods=["POST"])
+def wordsmith():
+    """AI-polish a message body. Keeps meaning, improves tone and clarity.
+
+    Body JSON:
+        body (str, required): The message text to polish
+        contact_id (int, optional): Contact for context
+        channel (str): "linkedin" or "gmail" (default: "linkedin")
+
+    Returns: {body: str, mode: str}
+    """
+    data = request.get_json(force=True)
+    body_text = (data.get("body") or "").strip()
+    contact_id = data.get("contact_id")
+    channel = data.get("channel", "linkedin")
+
+    if not body_text:
+        return jsonify({"error": "body is required"}), 400
+
+    from ai_providers.router import route_inference
+
+    # Gather contact context if available
+    contact_ctx = {}
+    if contact_id:
+        contact = db.query_one("SELECT name, company, title, relationship_strength FROM contacts WHERE id = %s", (contact_id,))
+        if contact:
+            contact_ctx = {
+                "contact_name": contact.get("name"),
+                "contact_company": contact.get("company"),
+                "contact_title": contact.get("title"),
+                "relationship": contact.get("relationship_strength"),
+            }
+
+    # Voice rules
+    voice_rules = db.query(
+        "SELECT rule_text FROM voice_rules WHERE category IN ('outreach', 'general', 'stephen_ism') ORDER BY sort_order LIMIT 10"
+    ) or []
+
+    # Candidate name
+    header = db.query_one("SELECT full_name FROM resume_header ORDER BY id LIMIT 1")
+    candidate_name = header["full_name"] if header else "Candidate"
+
+    ai_ctx = {
+        "original_body": body_text,
+        "candidate_name": candidate_name,
+        "channel": channel,
+        "contact": contact_ctx,
+        "voice_rules": [r["rule_text"] for r in voice_rules],
+        "instructions": (
+            f"Rewrite this {channel} message to sound more natural, conversational, and human. "
+            f"Keep the same meaning and key points. Don't make it longer. "
+            f"{'Keep it under 100 words for LinkedIn.' if channel == 'linkedin' else ''} "
+            f"No corporate buzzwords, no em dashes, use ellipses instead. "
+            f"Fifth-grade reading level. Follow the voice rules provided. "
+            f"Return JSON: {{\"body\": \"...\"}}"
+        ),
+    }
+
+    def _fallback(ctx):
+        return {"body": ctx["original_body"]}
+
+    def _ai_handler(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("wordsmith", ctx)
+        content = result.get("content", "")
+        try:
+            parsed = json.loads(content) if isinstance(content, str) else content
+            return {"body": parsed.get("body", content)}
+        except (json.JSONDecodeError, TypeError):
+            return {"body": content}
+
+    gen_result = route_inference(
+        task="wordsmith_message",
+        context=ai_ctx,
+        python_fallback=_fallback,
+        ai_handler=_ai_handler,
+    )
+    gen_result["mode"] = gen_result.pop("analysis_mode", "unchanged")
+
+    return jsonify(gen_result), 200
+
+
+@bp.route("/api/crm/pending-linkedin", methods=["GET"])
+def pending_linkedin():
+    """Find pending LinkedIn draft messages for a contact by LinkedIn URL.
+
+    Query params:
+        linkedin_url (str, required): The LinkedIn profile URL to match
+
+    Returns: {drafts: [...]}
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip().rstrip("/")
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    # Match contact by LinkedIn URL (normalize trailing slashes)
+    rows = db.query(
+        """
+        SELECT om.*, c.name AS contact_name, c.company AS contact_company
+        FROM outreach_messages om
+        JOIN contacts c ON c.id = om.contact_id
+        WHERE om.channel = 'linkedin'
+          AND om.status = 'draft'
+          AND RTRIM(c.linkedin_url, '/') = %s
+        ORDER BY om.created_at DESC
+        LIMIT 5
+        """,
+        (linkedin_url,),
+    )
+    return jsonify({"drafts": rows or []}), 200
+
+
+@bp.route("/api/crm/conversations/<int:contact_id>", methods=["GET"])
+def get_conversations(contact_id):
+    """Get conversation history for a contact (outreach messages + touchpoints).
+
+    Query params:
+        limit (int): Max records (default 50)
+        channel (str): Filter by channel (gmail, linkedin, all)
+
+    Returns: {messages: [...], touchpoints: [...]}
+    """
+    limit = request.args.get("limit", 50, type=int)
+    channel = request.args.get("channel")
+
+    # Outreach messages
+    msg_where = "WHERE om.contact_id = %s"
+    msg_params = [contact_id]
+    if channel and channel != "all":
+        msg_where += " AND om.channel = %s"
+        msg_params.append(channel)
+    msg_params.append(limit)
+
+    messages = db.query(
+        f"""
+        SELECT om.*, ct.name AS contact_name
+        FROM outreach_messages om
+        LEFT JOIN contacts ct ON ct.id = om.contact_id
+        {msg_where}
+        ORDER BY COALESCE(om.sent_at, om.created_at) DESC
+        LIMIT %s
+        """,
+        msg_params,
+    )
+
+    # Touchpoints
+    tp_where = "WHERE t.contact_id = %s"
+    tp_params = [contact_id]
+    if channel and channel != "all":
+        tp_channel = "email" if channel == "gmail" else "linkedin_message"
+        tp_where += " AND t.type = %s"
+        tp_params.append(tp_channel)
+    tp_params.append(limit)
+
+    touchpoints = db.query(
+        f"""
+        SELECT t.*
+        FROM touchpoints t
+        {tp_where}
+        ORDER BY t.logged_at DESC
+        LIMIT %s
+        """,
+        tp_params,
+    )
+
+    return jsonify({"messages": messages or [], "touchpoints": touchpoints or []}), 200

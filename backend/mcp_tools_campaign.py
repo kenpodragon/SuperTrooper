@@ -2,6 +2,7 @@
 
 import json
 import db
+from ai_providers.router import route_inference
 
 
 def convert_saved_job(saved_job_id: int) -> dict:
@@ -208,7 +209,7 @@ def get_campaign_summary() -> dict:
             "success_rate": rate,
         })
 
-    return {
+    python_result = {
         "total_applications": total,
         "by_status": by_status,
         "interviews": interviews,
@@ -221,3 +222,23 @@ def get_campaign_summary() -> dict:
         },
         "top_sources": top_sources,
     }
+
+    def _python_campaign(ctx):
+        return ctx["r"]
+
+    def _ai_campaign(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.analyze_strategy(ctx["r"])
+        base = ctx["r"]
+        base["ai_insights"] = result.get("insights", [])
+        base["ai_recommendations"] = result.get("recommendations", [])
+        base["ai_risk_areas"] = result.get("risk_areas", [])
+        return base
+
+    return route_inference(
+        task="campaign_summary",
+        context={"r": python_result},
+        python_fallback=_python_campaign,
+        ai_handler=_ai_campaign,
+    )

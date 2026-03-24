@@ -1,6 +1,6 @@
 # Database Dictionary — SuperTroopers
 
-**Last updated:** 2026-03-19 (Session 7)
+**Last updated:** 2026-03-23 (Session 8)
 **Database:** PostgreSQL 17 + pgvector 0.8.2
 **Connection:** localhost:5555, db=supertroopers, user=supertroopers
 
@@ -39,9 +39,11 @@
 | follow_ups | 0 | 007 | Follow-up attempts per application |
 | interview_prep | 0 | 007 | Company-specific interview prep materials |
 | interview_debriefs | 0 | 007 | Structured post-interview capture |
-| outreach_messages | 0 | 007 | Sent/received messages across channels |
+| outreach_messages | 7,324 | 007 | Sent/received messages across channels |
 | referrals | 0 | 007 | Contact referrals to jobs |
 | activity_log | 0 | 007 | Action audit trail |
+| linkedin_scraped_posts | 819 | 028 | Scraped LinkedIn posts with engagement metrics |
+| linkedin_scraped_comments | 1,821 | 028 | Stephen's comments on others' LinkedIn posts |
 | schema_migrations | 7 | 001 | Migration version tracking |
 
 ## Views
@@ -592,6 +594,40 @@ Migration version tracking.
 | 5 | 005_template_placeholders | 2026-03-19 | resume_templates.template_map + template_type |
 | 6 | 006_resume_recipes | 2026-03-19 | resume_recipes + career_history.career_links |
 | 7 | 007_platform_tables | 2026-03-19 | 10 new tables (saved_jobs, gap_analyses, application_status_history, generated_materials, follow_ups, interview_prep, interview_debriefs, outreach_messages, referrals, activity_log) + FK columns on contacts (company_id) and applications (saved_job_id, gap_analysis_id) |
+| 28 | 028_linkedin_scraped | 2026-03-23 | linkedin_scraped_posts, linkedin_scraped_comments with URN dedup indexes |
+
+### linkedin_scraped_posts
+Scraped LinkedIn posts from browser scraper. Deduped by URN.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | SERIAL PK | NO | |
+| urn | TEXT | YES | UNIQUE dedup key (urn:li:activity:XXX) |
+| text | TEXT | YES | Post content |
+| post_type | VARCHAR(30) | YES | Default 'text' |
+| likes | INTEGER | YES | Default 0 |
+| comments | INTEGER | YES | Default 0 |
+| reposts | INTEGER | YES | Default 0 |
+| media_files | JSONB | YES | Default '[]' |
+| url | TEXT | YES | LinkedIn post URL |
+| original_author | TEXT | YES | Non-null for reposts |
+| posted_at | TIMESTAMPTZ | YES | |
+| imported_at | TIMESTAMP | YES | Default NOW() |
+
+### linkedin_scraped_comments
+Stephen's comments on others' LinkedIn posts. Deduped by URN.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | SERIAL PK | NO | |
+| original_author | TEXT | YES | Author of the post commented on |
+| original_snippet | TEXT | YES | First ~200 chars of original post |
+| original_post_url | TEXT | YES | |
+| comment_text | TEXT | YES | Stephen's comment |
+| comment_url | TEXT | YES | |
+| urn | TEXT | YES | UNIQUE dedup key |
+| commented_at | TIMESTAMPTZ | YES | |
+| imported_at | TIMESTAMP | YES | Default NOW() |
 
 ---
 
@@ -621,6 +657,8 @@ contacts (1) ──── (N) referrals
 resume_recipes (1) ──── (N) generated_materials
 resume_versions (1) ──── (1) documents
 resume_versions.spec ──→ references career_history, bullets by employer name
+linkedin_scraped_posts ──→ bridged into linkedin_posts (via url = linkedin_url)
+linkedin_scraped_posts ──→ bridged into linkedin_post_engagement (via post_id)
 ```
 
 ## Indexes
@@ -631,3 +669,5 @@ Key indexes beyond primary keys:
 - `voice_rules`: part, category
 - `bullets`: career_history_id, tags (GIN), role_suitability (GIN), industry_suitability (GIN)
 - `emails`: gmail_id (unique), category, date, application_id
+- `linkedin_scraped_posts`: urn (unique), posted_at DESC
+- `linkedin_scraped_comments`: urn (unique), commented_at DESC

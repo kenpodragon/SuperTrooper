@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 
 import db
+from ai_providers.router import route_inference
 
 
 RECRUITER_KEYWORDS = [
@@ -108,12 +109,35 @@ def register_search_intel_tools(mcp):
         total = len(matched) + len(missing)
         score = round((len(matched) / max(total, 1)) * 100)
 
-        return {
+        python_result = {
             "score": score,
             "matched_skills": matched,
             "missing_skills": missing,
             "total_candidate_skills": len(skills),
         }
+
+        def _python_fit(ctx):
+            return ctx["python_result"]
+
+        def _ai_fit(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            skill_names = [s["name"] for s in ctx["skills"]]
+            result = provider.score_fit(skill_names, ctx["jd_text"])
+            return {
+                "score": round(result.get("fit_score", 0) * 100),
+                "matched_skills": [{"skill": s} for s in result.get("matched_skills", [])],
+                "missing_skills": result.get("missing_skills", []),
+                "transferable_skills": result.get("transferable_skills", []),
+                "total_candidate_skills": len(ctx["skills"]),
+            }
+
+        return route_inference(
+            task="quick_fit_score",
+            context={"python_result": python_result, "jd_text": jd_text, "skills": skills},
+            python_fallback=_python_fit,
+            ai_handler=_ai_fit,
+        )
 
     @mcp.tool()
     def analyze_skill_demand() -> dict:
@@ -164,11 +188,35 @@ def register_search_intel_tools(mcp):
 
         missing_top = [d for d in demanded if not d["have"]][:20]
 
-        return {
+        python_result = {
             "total_jds_analyzed": len(jd_texts),
             "demanded": demanded[:50],
             "missing_top": missing_top,
         }
+
+        def _python_demand(ctx):
+            return ctx["python_result"]
+
+        def _ai_demand(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            skill_names = list(ctx["skill_set"].keys())
+            result = provider.analyze_skills(skill_names, ctx["jd_texts"][:5])
+            base = ctx["python_result"]
+            base["ai_insights"] = {
+                "emerging": result.get("emerging", []),
+                "declining": result.get("declining", []),
+                "recommendations": result.get("recommendations", []),
+                "gaps": result.get("gaps", []),
+            }
+            return base
+
+        return route_inference(
+            task="analyze_skill_demand",
+            context={"python_result": python_result, "jd_texts": [jd[:2000] for jd in jd_texts[:5]], "skill_set": {k: True for k in skill_set.keys()}},
+            python_fallback=_python_demand,
+            ai_handler=_ai_demand,
+        )
 
     @mcp.tool()
     def scan_emails_for_status() -> dict:
@@ -215,6 +263,33 @@ def register_search_intel_tools(mcp):
                     if confidence > best_confidence:
                         best_confidence = confidence
                         best_category = category
+
+            # AI-enhanced categorization if pattern matching is uncertain
+            if best_confidence < 0.5:
+                def _python_email_cat(ctx):
+                    return {"intent": ctx["category"], "confidence": ctx["confidence"]}
+
+                def _ai_email_cat(ctx):
+                    from ai_providers import get_provider
+                    provider = get_provider()
+                    result = provider.analyze_email(ctx["email_text"][:2000])
+                    intent_map = {
+                        "recruiter_outreach": "unknown", "rejection": "rejection",
+                        "offer": "offer", "interview_invite": "interview",
+                        "follow_up": "confirmation", "status_update": "confirmation",
+                    }
+                    mapped = intent_map.get(result.get("intent", ""), "unknown")
+                    return {"intent": mapped, "confidence": result.get("confidence", 0.5)}
+
+                ai_result = route_inference(
+                    task="email_categorization",
+                    context={"email_text": text, "category": best_category, "confidence": best_confidence},
+                    python_fallback=_python_email_cat,
+                    ai_handler=_ai_email_cat,
+                )
+                if ai_result.get("confidence", 0) > best_confidence:
+                    best_category = ai_result["intent"]
+                    best_confidence = ai_result["confidence"]
 
             app_id = email.get("application_id")
             if not app_id:
@@ -280,6 +355,28 @@ def register_search_intel_tools(mcp):
             ])).lower()
 
             hits = sum(1 for kw in RECRUITER_KEYWORDS if kw in text)
+
+            # AI-enhanced recruiter detection for borderline cases
+            if hits < 3 and hits >= 1:
+                def _python_detect(ctx):
+                    return {"is_recruiter": False}
+
+                def _ai_detect(ctx):
+                    from ai_providers import get_provider
+                    provider = get_provider()
+                    result = provider.analyze_email(ctx["email_text"][:2000])
+                    is_rec = result.get("intent") == "recruiter_outreach" and result.get("confidence", 0) > 0.6
+                    return {"is_recruiter": is_rec, "entities": result.get("entities", {})}
+
+                detect_result = route_inference(
+                    task="recruiter_detection",
+                    context={"email_text": text},
+                    python_fallback=_python_detect,
+                    ai_handler=_ai_detect,
+                )
+                if detect_result.get("is_recruiter"):
+                    hits = 3  # Promote to detected
+
             if hits < 3:
                 continue
 

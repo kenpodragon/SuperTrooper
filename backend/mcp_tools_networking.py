@@ -6,6 +6,7 @@ Orchestrator note: call register_networking_tools(mcp) in mcp_server.py.
 from __future__ import annotations
 
 import db
+from ai_providers.router import route_inference
 
 
 def register_networking_tools(mcp):
@@ -68,13 +69,37 @@ def register_networking_tools(mcp):
             s = c.get("relationship_strength", "")
             score += 1.5 if s == "strong" else 1 if s == "warm" else 0.5
 
-        return {
+        python_result = {
             "company": company_name,
             "sector": sector,
             "direct": direct,
             "same_sector": same_sector,
             "warm_path_score": score,
         }
+
+        def _python_warm(ctx):
+            return ctx["r"]
+
+        def _ai_warm(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            contacts = [{"name": c["name"], "title": c.get("title"), "strength": c.get("relationship_strength")}
+                        for c in (ctx["r"]["direct"] + ctx["r"]["same_sector"])[:8]]
+            result = provider.generate_content("networking_strategy", {
+                "target_company": ctx["r"]["company"],
+                "sector": ctx["r"]["sector"],
+                "contacts": contacts,
+            })
+            base = ctx["r"]
+            base["ai_approach_strategy"] = result.get("content", "")
+            return base
+
+        return route_inference(
+            task="find_warm_paths",
+            context={"r": python_result},
+            python_fallback=_python_warm,
+            ai_handler=_ai_warm,
+        )
 
     @mcp.tool()
     def import_linkedin_connections(connections: list) -> dict:

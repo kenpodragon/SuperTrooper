@@ -13,6 +13,7 @@ from collections import Counter
 from pathlib import Path
 
 import db
+from ai_providers.router import route_inference
 
 
 def register_knowledge_tools(mcp):
@@ -195,13 +196,34 @@ def register_knowledge_tools(mcp):
         covered = {b["matched_keyword"] for b in matched_bullets} | {s["matched_keyword"] for s in matched_skills}
         gaps = [kw for kw in top_keywords if kw not in covered]
 
-        return {
+        python_result = {
             "jd_keywords": top_keywords,
             "matched_bullets": matched_bullets[:30],
             "matched_skills": matched_skills,
             "gaps": gaps,
             "coverage_pct": round(len(covered) / max(len(top_keywords), 1) * 100, 1),
         }
+
+        def _python_match(ctx):
+            return ctx["python_result"]
+
+        def _ai_match(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            resume_text = "\n".join(b["text"] for b in ctx["python_result"]["matched_bullets"][:10])
+            result = provider.semantic_match(resume_text=resume_text, jd_text=ctx["jd_text"][:3000])
+            base = ctx["python_result"]
+            base["semantic_score"] = result.get("match_score", 0)
+            base["aligned_themes"] = result.get("aligned_themes", [])
+            base["positioning_suggestions"] = result.get("positioning_suggestions", [])
+            return base
+
+        return route_inference(
+            task="match_jd_semantic",
+            context={"python_result": python_result, "jd_text": jd_text},
+            python_fallback=_python_match,
+            ai_handler=_ai_match,
+        )
 
     @mcp.tool()
     def get_candidate_profile(section: str = "", format: str = "sections") -> dict:
@@ -310,12 +332,45 @@ def register_knowledge_tools(mcp):
                     "explanation": bc["explanation"],
                 })
 
-        return {
+        python_result = {
             "text_length": len(text),
             "violations": violations,
             "violation_count": len(violations),
             "clean": len(violations) == 0,
         }
+
+        def _python_voice(ctx):
+            return ctx["python_result"]
+
+        def _ai_voice(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            rules_list = [{"rule_text": v["match"], "category": v["type"]} for v in ctx["python_result"]["violations"]]
+            all_rules = db.query("SELECT rule_text, category FROM voice_rules WHERE category IN ('banned_word', 'banned_construction') LIMIT 50")
+            result = provider.check_voice_ai(ctx["text"], [{"rule_text": r["rule_text"], "category": r["category"]} for r in all_rules])
+            base = ctx["python_result"]
+            ai_violations = result.get("violations", [])
+            if ai_violations:
+                existing_matches = {v["match"].lower() for v in base["violations"]}
+                for av in ai_violations:
+                    if av.get("text", "").lower() not in existing_matches:
+                        base["violations"].append({
+                            "type": "ai_detected",
+                            "match": av.get("text", ""),
+                            "subcategory": av.get("rule", ""),
+                            "suggestion": av.get("suggestion", ""),
+                        })
+                base["violation_count"] = len(base["violations"])
+                base["clean"] = len(base["violations"]) == 0
+            base["ai_voice_score"] = result.get("overall_score", 1.0)
+            return base
+
+        return route_inference(
+            task="check_voice_ai",
+            context={"python_result": python_result, "text": text},
+            python_fallback=_python_voice,
+            ai_handler=_ai_voice,
+        )
 
     @mcp.tool()
     def get_salary_data(role: str = "", tier: int = 0) -> dict:

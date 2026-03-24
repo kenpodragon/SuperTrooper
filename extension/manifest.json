@@ -33,6 +33,7 @@
       "matches": [
         "*://*.indeed.com/*",
         "*://*.linkedin.com/jobs/*",
+        "*://*.linkedin.com/in/*",
         "*://*.glassdoor.com/job-listing/*",
         "*://*.glassdoor.com/Job/*",
         "*://*.ziprecruiter.com/jobs/*",

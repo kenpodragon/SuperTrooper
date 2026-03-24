@@ -26,6 +26,96 @@ class AIProvider(ABC):
         Returns: {"action": "keep_a"|"keep_b"|"merge", "result": str, "reason": str}
         """
 
+    @abstractmethod
+    def ats_analysis(self, resume_text: str, jd_text: str) -> dict:
+        """ATS scoring with strengths/weaknesses/suggestions.
+        Returns: {"score": int, "strengths": [], "weaknesses": [], "suggestions": [], "keyword_matches": [], "missing_keywords": []}
+        """
+
+    @abstractmethod
+    def score_answer(self, question: str, answer: str, suggested_answer: str) -> dict:
+        """Evaluate a mock interview answer against a suggested answer.
+        Returns: {"score": int, "feedback": str, "strengths": [], "improvements": [], "revised_answer": str}
+        """
+
+    @abstractmethod
+    def build_suggested_answer(self, question: str, context: dict) -> dict:
+        """Generate a model STAR answer for an interview question.
+        Returns: {"suggested_answer": str, "key_points": [], "star_breakdown": {"situation": str, "task": str, "action": str, "result": str}}
+        """
+
+    @abstractmethod
+    def analyze_strategy(self, rollup_data: dict) -> dict:
+        """Generate campaign strategy recommendations from weekly rollup data.
+        Returns: {"recommendations": [], "priority_actions": [], "insights": [], "risk_areas": []}
+        """
+
+    @abstractmethod
+    def semantic_match(self, resume_text: str, jd_text: str) -> dict:
+        """Semantic JD matching beyond keywords.
+        Returns: {"match_score": float, "aligned_themes": [], "gaps": [], "positioning_suggestions": []}
+        """
+
+    @abstractmethod
+    def check_voice_ai(self, text: str, rules: list) -> dict:
+        """Detect subtle voice violations that rule-based checks miss.
+        Returns: {"violations": [{"text": str, "rule": str, "suggestion": str}], "overall_score": float, "passes": bool}
+        """
+
+    @abstractmethod
+    def score_fit(self, skills: list, jd_text: str) -> dict:
+        """Semantic fit scoring between candidate skills and a JD.
+        Returns: {"fit_score": float, "matched_skills": [], "missing_skills": [], "transferable_skills": []}
+        """
+
+    @abstractmethod
+    def analyze_email(self, email_text: str) -> dict:
+        """Categorize email intent (recruiter outreach, rejection, offer, follow-up, etc.).
+        Returns: {"intent": str, "confidence": float, "entities": {"company": str, "role": str, "sender_type": str}, "suggested_action": str}
+        """
+
+    @abstractmethod
+    def generate_content(self, task_type: str, context: dict) -> dict:
+        """Generate content: cover_letter, thank_you, outreach, linkedin_post, headline.
+        Returns: {"content": str, "metadata": dict}
+        """
+
+    @abstractmethod
+    def audit_profile(self, profile_data: dict, target_jds: list) -> dict:
+        """LinkedIn profile audit against target JDs.
+        Returns: {"overall_score": float, "sections": [{"name": str, "score": float, "suggestions": []}], "keyword_gaps": [], "headline_suggestions": []}
+        """
+
+    @abstractmethod
+    def parse_jd(self, jd_text: str) -> dict:
+        """Parse a job description into structured fields.
+        Returns: {"title": str, "company": str, "requirements": [], "nice_to_haves": [], "responsibilities": [], "skills": [], "experience_years": int, "education": str, "salary_range": str}
+        """
+
+    @abstractmethod
+    def analyze_skills(self, skills: list, jd_texts: list) -> dict:
+        """Skill demand/gap/trend analysis across multiple JDs.
+        Returns: {"in_demand": [], "gaps": [], "emerging": [], "declining": [], "recommendations": []}
+        """
+
+    @abstractmethod
+    def compare_offers(self, offers: list) -> dict:
+        """Compare multiple job offers with qualitative analysis.
+        Returns: {"ranking": [], "comparison_matrix": [], "trade_offs": [], "recommendation": str}
+        """
+
+    @abstractmethod
+    def benchmark_offer(self, offer: dict, salary_data: dict) -> dict:
+        """Benchmark an offer against market data and generate negotiation points.
+        Returns: {"assessment": str, "percentile": float, "negotiation_points": [], "counter_suggestion": dict}
+        """
+
+    @abstractmethod
+    def summarize_market(self, signals: list) -> dict:
+        """Generate a market intelligence narrative from signals.
+        Returns: {"summary": str, "trends": [], "opportunities": [], "threats": [], "action_items": []}
+        """
+
     def generate(self, prompt: str, response_format: str = "json") -> "str | dict":
         """Generic prompt — send any prompt and get a response back.
         Args:

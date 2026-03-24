@@ -89,7 +89,7 @@ interface ScheduledPost {
   theme_pillar_name?: string;
 }
 
-type Tab = 'scorecard' | 'content' | 'skills' | 'endorsements' | 'schedule' | 'voice';
+type Tab = 'scorecard' | 'content' | 'skills' | 'endorsements' | 'schedule' | 'voice' | 'import';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'scorecard', label: 'Profile Scorecard' },
@@ -98,6 +98,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'endorsements', label: 'Endorsements' },
   { key: 'schedule', label: 'Schedule' },
   { key: 'voice', label: 'Voice Guide' },
+  { key: 'import', label: 'Import' },
 ];
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -1091,6 +1092,336 @@ function PostSchedule() {
   );
 }
 
+// ── Import Tab ────────────────────────────────────────────────────────────
+
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+interface ZipImportResult {
+  zip_saved: string;
+  connections: { imported: number; skipped: number; companies_linked: number };
+  profile: { positions_added: number; bullets_extracted: number; skills_added: number };
+  messages: { imported: number; linked_to_contacts: number };
+  applications: { imported: number; skipped: number };
+}
+
+interface ScrapedImportResult {
+  posts: { found: boolean; total_lines: number; imported: number; updated: number };
+  comments: { found: boolean; total_lines: number; imported: number; updated: number };
+  bridged_to_hub: number;
+}
+
+interface ScrapedStatus {
+  posts: { exists: boolean; lines: number };
+  comments: { exists: boolean; lines: number };
+  messages: { exists: boolean; conversations: number };
+}
+
+function ImportTab() {
+  const [dragOver, setDragOver] = useState(false);
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipUploading, setZipUploading] = useState(false);
+  const [zipResult, setZipResult] = useState<ZipImportResult | null>(null);
+  const [zipError, setZipError] = useState<string | null>(null);
+
+  const [scrapeImporting, setScrapeImporting] = useState(false);
+  const [scrapeResult, setScrapeResult] = useState<ScrapedImportResult | null>(null);
+  const [scrapeError, setScrapeError] = useState<string | null>(null);
+
+  const [scraperGuideOpen, setScraperGuideOpen] = useState(false);
+
+  const scrapeStatus = useQuery({
+    queryKey: ['linkedin-scraped-status'],
+    queryFn: () => api.get<ScrapedStatus>('/import/linkedin-scraped/status'),
+    retry: false,
+  });
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.name.toLowerCase().endsWith('.zip')) {
+      setZipFile(file);
+      setZipError(null);
+    } else {
+      setZipError('Please drop a .zip file.');
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setZipFile(file);
+      setZipError(null);
+    }
+  };
+
+  const uploadZip = async () => {
+    if (!zipFile) return;
+    setZipUploading(true);
+    setZipError(null);
+    setZipResult(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', zipFile);
+      const res = await fetch(`${API_BASE}/import/linkedin-zip`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || res.statusText);
+      }
+      const data: ZipImportResult = await res.json();
+      setZipResult(data);
+    } catch (err: unknown) {
+      setZipError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setZipUploading(false);
+    }
+  };
+
+  const importScrape = async () => {
+    setScrapeImporting(true);
+    setScrapeError(null);
+    setScrapeResult(null);
+    try {
+      const data = await api.post<ScrapedImportResult>('/import/linkedin-scraped', {});
+      setScrapeResult(data);
+    } catch (err: unknown) {
+      setScrapeError(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setScrapeImporting(false);
+    }
+  };
+
+  const statusData = scrapeStatus.data;
+
+  return (
+    <div className="space-y-6">
+      {/* Section 1: Import LinkedIn Data Export */}
+      <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
+        <h3 className="text-base font-semibold text-white mb-2">Import LinkedIn Data Export</h3>
+        <p className="text-sm text-gray-400 mb-4">
+          To get your data: Sign in to LinkedIn &rarr; Click your profile icon (Me) &rarr; Settings &amp; Privacy &rarr; Data Privacy &rarr; Get a copy of your data &rarr; Download larger data archive &rarr; Request archive. LinkedIn will email you when it's ready (can take up to 24 hours). Download the ZIP and upload it here.
+        </p>
+
+        {/* Drop zone */}
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
+            dragOver
+              ? 'border-blue-500 bg-blue-500/10'
+              : zipFile
+              ? 'border-green-500/50 bg-green-500/5'
+              : 'border-gray-600 hover:border-gray-500'
+          }`}
+          onClick={() => document.getElementById('zip-file-input')?.click()}
+        >
+          <input
+            id="zip-file-input"
+            type="file"
+            accept=".zip"
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+          {zipFile ? (
+            <div>
+              <p className="text-green-400 text-sm font-medium">{zipFile.name}</p>
+              <p className="text-xs text-gray-500 mt-1">
+                {(zipFile.size / 1024 / 1024).toFixed(1)} MB - Click or drop to replace
+              </p>
+            </div>
+          ) : (
+            <div>
+              <p className="text-gray-400 text-sm">Drag and drop your LinkedIn ZIP here</p>
+              <p className="text-xs text-gray-500 mt-1">or click to browse</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3 mt-4">
+          <button
+            onClick={uploadZip}
+            disabled={!zipFile || zipUploading}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
+          >
+            {zipUploading ? 'Uploading & Importing...' : 'Upload & Import'}
+          </button>
+          {zipFile && !zipUploading && (
+            <button
+              onClick={() => { setZipFile(null); setZipResult(null); setZipError(null); }}
+              className="text-xs text-gray-400 hover:text-gray-300"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        {zipError && (
+          <div className="mt-3 bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+            <p className="text-sm text-red-400">{zipError}</p>
+          </div>
+        )}
+
+        {zipResult && (
+          <div className="mt-4 bg-green-500/5 border border-green-500/30 rounded-lg p-4">
+            <h4 className="text-sm font-semibold text-green-400 mb-3">Import Complete</h4>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-gray-400">Connections</p>
+                <p className="text-white">{zipResult.connections.imported} imported, {zipResult.connections.skipped} skipped</p>
+              </div>
+              <div>
+                <p className="text-gray-400">Profile</p>
+                <p className="text-white">{zipResult.profile.positions_added} positions, {zipResult.profile.skills_added} skills</p>
+              </div>
+              <div>
+                <p className="text-gray-400">Messages</p>
+                <p className="text-white">{zipResult.messages.imported} imported, {zipResult.messages.linked_to_contacts} linked</p>
+              </div>
+              <div>
+                <p className="text-gray-400">Applications</p>
+                <p className="text-white">{zipResult.applications.imported} imported, {zipResult.applications.skipped} skipped</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Section 2: Update from Scraper */}
+      <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
+        <h3 className="text-base font-semibold text-white mb-2">Update from Scraper</h3>
+        <p className="text-sm text-gray-400 mb-4">
+          Run the LinkedIn scraper first (<code className="text-xs bg-gray-700 px-1.5 py-0.5 rounded">python local_code/linkedin_scraper.py</code>), then click to import the results.
+        </p>
+
+        {/* Status of available files */}
+        {statusData && (
+          <div className="flex gap-4 mb-4">
+            <div className={`flex items-center gap-2 text-sm px-3 py-1.5 rounded-lg ${
+              statusData.posts.exists ? 'bg-green-500/10 text-green-400' : 'bg-gray-700 text-gray-500'
+            }`}>
+              <span>{statusData.posts.exists ? '\u2713' : '\u2717'}</span>
+              <span>posts.jsonl{statusData.posts.exists ? ` (${statusData.posts.lines} lines)` : ' - not found'}</span>
+            </div>
+            <div className={`flex items-center gap-2 text-sm px-3 py-1.5 rounded-lg ${
+              statusData.comments.exists ? 'bg-green-500/10 text-green-400' : 'bg-gray-700 text-gray-500'
+            }`}>
+              <span>{statusData.comments.exists ? '\u2713' : '\u2717'}</span>
+              <span>comments.jsonl{statusData.comments.exists ? ` (${statusData.comments.lines} lines)` : ' - not found'}</span>
+            </div>
+            <div className={`flex items-center gap-2 text-sm px-3 py-1.5 rounded-lg ${
+              statusData.messages.exists ? 'bg-green-500/10 text-green-400' : 'bg-gray-700 text-gray-500'
+            }`}>
+              <span>{statusData.messages.exists ? '\u2713' : '\u2717'}</span>
+              <span>messages/{statusData.messages.exists ? ` (${statusData.messages.conversations} conversations)` : ' - not found'}</span>
+            </div>
+          </div>
+        )}
+
+        <button
+          onClick={importScrape}
+          disabled={scrapeImporting}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50"
+        >
+          {scrapeImporting ? 'Importing...' : 'Import Latest Scrape'}
+        </button>
+
+        {scrapeError && (
+          <div className="mt-3 bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+            <p className="text-sm text-red-400">{scrapeError}</p>
+          </div>
+        )}
+
+        {scrapeResult && (
+          <div className="mt-4 bg-green-500/5 border border-green-500/30 rounded-lg p-4">
+            <h4 className="text-sm font-semibold text-green-400 mb-3">Scrape Import Complete</h4>
+            <div className="grid grid-cols-3 gap-3 text-sm">
+              <div>
+                <p className="text-gray-400">Posts</p>
+                <p className="text-white">
+                  {scrapeResult.posts.imported} new, {scrapeResult.posts.updated} updated
+                </p>
+              </div>
+              <div>
+                <p className="text-gray-400">Comments</p>
+                <p className="text-white">
+                  {scrapeResult.comments.imported} new, {scrapeResult.comments.updated} updated
+                </p>
+              </div>
+              <div>
+                <p className="text-gray-400">Bridged to Hub</p>
+                <p className="text-white">{scrapeResult.bridged_to_hub} posts</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Section 3: Scraper Setup Guide */}
+      <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+        <button
+          onClick={() => setScraperGuideOpen(!scraperGuideOpen)}
+          className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-750"
+        >
+          <h3 className="text-base font-semibold text-white">Scraper Setup Guide</h3>
+          <span className="text-gray-400 text-sm">{scraperGuideOpen ? '\u25BE' : '\u25B8'}</span>
+        </button>
+        {scraperGuideOpen && (
+          <div className="border-t border-gray-700 px-6 py-4 space-y-4 text-sm text-gray-300">
+            <div>
+              <h4 className="text-white font-medium mb-1">1. Installation</h4>
+              <code className="block bg-gray-900 rounded p-2 text-xs text-green-400">
+                pip install playwright && playwright install chromium
+              </code>
+            </div>
+            <div>
+              <h4 className="text-white font-medium mb-1">2. First Run</h4>
+              <p className="text-gray-400 mb-1">A Chrome window will open. Log in to LinkedIn when prompted.</p>
+              <code className="block bg-gray-900 rounded p-2 text-xs text-green-400">
+                cd local_code && python linkedin_scraper.py
+              </code>
+            </div>
+            <div>
+              <h4 className="text-white font-medium mb-1">3. Subsequent Runs</h4>
+              <p className="text-gray-400 mb-1">Just re-run the command. It resumes where it left off.</p>
+              <code className="block bg-gray-900 rounded p-2 text-xs text-green-400">
+                python local_code/linkedin_scraper.py
+              </code>
+            </div>
+            <div>
+              <h4 className="text-white font-medium mb-1">4. Modes</h4>
+              <p className="text-gray-400 mb-2">Run specific scrape modes:</p>
+              <div className="space-y-1">
+                {[
+                  { mode: '--mode posts', desc: 'Scrape your published posts' },
+                  { mode: '--mode comments', desc: 'Scrape your comments on others\' posts' },
+                  { mode: '--mode media', desc: 'Download media attachments' },
+                  { mode: '--mode messages', desc: 'Scrape LinkedIn messages' },
+                ].map((item) => (
+                  <div key={item.mode} className="flex items-center gap-3">
+                    <code className="bg-gray-900 rounded px-2 py-0.5 text-xs text-green-400 whitespace-nowrap">{item.mode}</code>
+                    <span className="text-gray-500 text-xs">{item.desc}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h4 className="text-white font-medium mb-1">5. Output Location</h4>
+              <p className="text-gray-400">
+                Scraped data is saved to <code className="bg-gray-900 px-1.5 py-0.5 rounded text-xs text-green-400">Originals/LinkedIn/</code> as JSONL files.
+                Click "Import Latest Scrape" above to bring data into the database.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Hub Component ─────────────────────────────────────────────────────
 
 export default function LinkedInHub() {
@@ -1124,6 +1455,7 @@ export default function LinkedInHub() {
       {activeTab === 'endorsements' && <EndorsementStrategy />}
       {activeTab === 'schedule' && <PostSchedule />}
       {activeTab === 'voice' && <VoiceGuide />}
+      {activeTab === 'import' && <ImportTab />}
     </div>
   );
 }

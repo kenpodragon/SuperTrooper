@@ -13,6 +13,7 @@ ALLOWED_FIELDS = {
     "default_template_id",
     "duplicate_threshold",
     "preferences",
+    "integrations",
 }
 
 
@@ -559,42 +560,144 @@ def import_settings():
 
 
 # ---------------------------------------------------------------------------
-# Integrations Status
+# Integrations — List, Test, Configure
 # ---------------------------------------------------------------------------
 
-@bp.route("/api/settings/integrations", methods=["GET"])
+def _get_integrations_config():
+    """Load integrations JSONB from settings row."""
+    row = db.query_one("SELECT integrations FROM settings WHERE id = 1")
+    cfg = (row.get("integrations") or {}) if row else {}
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg)
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
+    return cfg
+
+
+@bp.route("/api/integrations", methods=["GET"])
 def list_integrations():
-    """List available integrations and their connection status."""
-    import os
+    """List all integrations with live connection status."""
+    from integrations import google_client, antiai_client, indeed_client
+    from ai_providers import get_provider, list_providers
+
+    cfg = _get_integrations_config()
+    google_cfg = cfg.get("google", {})
+    antiai_cfg = cfg.get("antiai", {})
+    indeed_cfg = cfg.get("indeed", {})
+
+    # AI Provider status
+    provider = get_provider()
+    ai_status = "connected" if provider and provider.is_available() else "disconnected"
+    ai_info = provider.health_check() if provider else {}
 
     integrations = [
         {
-            "name": "Gmail",
-            "key": "gmail",
-            "description": "Email search and recruiter detection",
-            "connected": bool(os.environ.get("GMAIL_TOKEN") or os.environ.get("GOOGLE_TOKEN")),
-            "icon": "mail",
+            "name": "ai_provider",
+            "label": "AI Provider",
+            "description": "Claude, Gemini, or OpenAI for AI-enhanced features",
+            "status": ai_status,
+            "enabled": bool(db.query_one("SELECT ai_enabled FROM settings WHERE id = 1").get("ai_enabled")),
+            "setup_required": ai_status == "disconnected",
+            "config": {
+                "provider": ai_info.get("provider", "none"),
+                "version": ai_info.get("version"),
+                "model": ai_info.get("model"),
+            },
+            "providers": list_providers(),
         },
         {
-            "name": "Google Calendar",
-            "key": "google_calendar",
-            "description": "Interview scheduling and event tracking",
-            "connected": bool(os.environ.get("GCAL_TOKEN") or os.environ.get("GOOGLE_TOKEN")),
-            "icon": "calendar",
+            "name": "google",
+            "label": "Google Workspace",
+            "description": "Gmail, Calendar, Drive access",
+            "status": "connected" if google_client.is_configured() else "setup_required",
+            "enabled": google_cfg.get("enabled", False),
+            "setup_required": not google_client.is_configured(),
+            "services": google_cfg.get("scopes", ["gmail", "calendar", "drive"]),
+            "config": {
+                "credentials_stored": bool(google_cfg.get("credentials")),
+                "token_stored": bool(google_cfg.get("token")),
+            },
         },
         {
-            "name": "Indeed",
-            "key": "indeed",
-            "description": "Job search and company data",
-            "connected": bool(os.environ.get("INDEED_API_KEY") or os.environ.get("INDEED_TOKEN")),
-            "icon": "briefcase",
+            "name": "antiai",
+            "label": "AntiAI / GhostBusters",
+            "description": "AI detection scanning and text humanization",
+            "status": "connected" if antiai_client.is_configured() else "not_configured",
+            "enabled": antiai_cfg.get("enabled", False),
+            "setup_required": not antiai_client.is_configured(),
+            "config": {
+                "api_url": antiai_cfg.get("api_url", ""),
+                "mcp_url": antiai_cfg.get("mcp_url", ""),
+            },
         },
         {
-            "name": "LinkedIn",
-            "key": "linkedin",
-            "description": "Profile import, connection sync, and content",
-            "connected": bool(os.environ.get("LINKEDIN_TOKEN") or os.environ.get("LINKEDIN_COOKIE")),
-            "icon": "users",
+            "name": "indeed",
+            "label": "Indeed",
+            "description": "Job search and company data (via AI Provider)",
+            "status": "available" if indeed_client.is_available() else "unavailable",
+            "enabled": indeed_cfg.get("enabled", True),
+            "setup_required": not indeed_client.is_available(),
+            "config": {
+                "method": "claude_cli",
+                "cli_available": indeed_client.is_available(),
+            },
         },
     ]
+
     return jsonify({"integrations": integrations}), 200
+
+
+@bp.route("/api/integrations/<name>/test", methods=["POST"])
+def test_integration(name):
+    """Test connection for a specific integration."""
+    from integrations import google_client, antiai_client, indeed_client
+
+    if name == "google":
+        result = google_client.health_check()
+    elif name == "antiai":
+        result = antiai_client.health_check()
+    elif name == "indeed":
+        result = indeed_client.health_check()
+    elif name == "ai_provider":
+        from ai_providers import get_provider, list_providers
+        provider = get_provider()
+        if not provider:
+            result = {"status": "disabled", "message": "No AI provider configured", "providers": list_providers()}
+        else:
+            health = provider.health_check()
+            result = {
+                "status": "connected" if health.get("available") else "error",
+                "provider": provider.name,
+                "health": health,
+                "providers": list_providers(),
+            }
+    else:
+        return jsonify({"error": f"Unknown integration: {name}"}), 404
+
+    return jsonify(result), 200
+
+
+@bp.route("/api/integrations/<name>/config", methods=["PUT"])
+def update_integration_config(name):
+    """Update configuration for a specific integration.
+
+    Body (JSON): integration-specific config fields.
+    """
+    valid_names = {"google", "antiai", "indeed"}
+    if name not in valid_names:
+        return jsonify({"error": f"Unknown integration: {name}. Valid: {', '.join(valid_names)}"}), 404
+
+    data = request.get_json(force=True)
+
+    cfg = _get_integrations_config()
+    current = cfg.get(name, {})
+    current.update(data)
+    cfg[name] = current
+
+    db.execute(
+        "UPDATE settings SET integrations = %s::jsonb, updated_at = NOW() WHERE id = 1",
+        (json.dumps(cfg),),
+    )
+
+    return jsonify({"integration": name, "config": current, "status": "updated"}), 200

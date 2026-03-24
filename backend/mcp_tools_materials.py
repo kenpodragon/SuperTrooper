@@ -107,10 +107,17 @@ def generate_cover_letter(
         "generation_context": generation_context,
     }
 
+    def _ai_cover_letter(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("cover_letter", ctx)
+        return {"content": result.get("content", "")}
+
     gen_result = route_inference(
         task="generate_cover_letter",
         context=ai_ctx,
         python_fallback=_python_cover_letter,
+        ai_handler=_ai_cover_letter,
     )
     content = gen_result.get("content", "")
 
@@ -217,10 +224,17 @@ def generate_thank_you(
         "generation_context": generation_context,
     }
 
+    def _ai_thank_you(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("thank_you", ctx)
+        return {"content": result.get("content", "")}
+
     gen_result = route_inference(
         task="generate_thank_you",
         context=ai_ctx,
         python_fallback=_python_thank_you,
+        ai_handler=_ai_thank_you,
     )
     content = gen_result.get("content", "")
 
@@ -334,10 +348,17 @@ def generate_outreach(
         "personalization_context": personalization_context,
     }
 
+    def _ai_outreach(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("outreach", ctx)
+        return {"body": result.get("content", "")}
+
     gen_result = route_inference(
         task="generate_outreach",
         context=ai_ctx,
         python_fallback=_python_outreach,
+        ai_handler=_ai_outreach,
     )
     body = gen_result.get("body", "")
 
@@ -442,10 +463,17 @@ def batch_outreach(
             "message_type": message_type,
             "personalization_context": personalization_context,
         }
+        def _ai_batch_outreach(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            result = provider.generate_content("outreach", ctx)
+            return {"body": result.get("content", "")}
+
         _gen = route_inference(
             task="generate_outreach_batch",
             context=_batch_ctx,
             python_fallback=_python_batch_outreach,
+            ai_handler=_ai_batch_outreach,
         )
         body = _gen.get("body", "")
 

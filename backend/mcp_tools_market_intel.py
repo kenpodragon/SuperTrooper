@@ -6,6 +6,7 @@ Orchestrator note: call register_market_intel_tools(mcp) in mcp_server.py.
 from __future__ import annotations
 
 import json
+from ai_providers.router import route_inference
 
 import db
 
@@ -140,10 +141,32 @@ def register_market_intel_tools(mcp):
         )
         total = db.query_one("SELECT COUNT(*) AS total FROM market_signals")
 
-        return {
+        python_result = {
             "total": total["total"] if total else 0,
             "by_source": by_source,
             "by_signal_type": by_type,
             "by_severity": by_severity,
             "recent_highlights": recent_highlights,
         }
+
+        def _python_market(ctx):
+            return ctx["r"]
+
+        def _ai_market(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            signals = [{"title": h.get("title"), "type": h.get("signal_type"), "severity": h.get("severity")}
+                       for h in ctx["r"]["recent_highlights"][:10]]
+            result = provider.summarize_market(signals)
+            base = ctx["r"]
+            base["ai_summary"] = result.get("summary", "")
+            base["ai_trends"] = result.get("trends", [])
+            base["ai_action_items"] = result.get("action_items", [])
+            return base
+
+        return route_inference(
+            task="market_summary",
+            context={"r": python_result},
+            python_fallback=_python_market,
+            ai_handler=_ai_market,
+        )

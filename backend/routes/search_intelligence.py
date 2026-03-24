@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 import db
+from ai_providers.router import route_inference
 
 bp = Blueprint("search_intelligence", __name__)
 
@@ -364,7 +365,7 @@ def run_saved_search(search_id):
 # ---------------------------------------------------------------------------
 
 def _compute_fit_score(jd_text: str) -> float | None:
-    """Keyword-based fit score for a JD against candidate skills. Returns 0-100 or None."""
+    """Fit score for a JD against candidate skills. AI-enhanced when available, keyword fallback otherwise."""
     if not jd_text:
         return None
     skills = db.query("SELECT name FROM skills")
@@ -385,7 +386,27 @@ def _compute_fit_score(jd_text: str) -> float | None:
     total_relevant = sum(1 for kw in all_skills if kw in jd_lower)
     if total_relevant == 0:
         return None
-    return round((matched / total_relevant) * 100, 1)
+    python_score = round((matched / total_relevant) * 100, 1)
+
+    def _python_fit(ctx):
+        return {"score": ctx["python_score"]}
+
+    def _ai_fit(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.score_fit(list(ctx["candidate_skills"]), ctx["jd_text"][:3000])
+        ai_score = result.get("fit_score", 0)
+        if isinstance(ai_score, float) and ai_score <= 1.0:
+            ai_score = round(ai_score * 100, 1)
+        return {"score": ai_score}
+
+    result = route_inference(
+        task="compute_fit_score",
+        context={"python_score": python_score, "candidate_skills": list(candidate_skills), "jd_text": jd_text},
+        python_fallback=_python_fit,
+        ai_handler=_ai_fit,
+    )
+    return result.get("score", python_score)
 
 
 @bp.route("/api/fresh-jobs/<int:job_id>/score", methods=["POST"])
@@ -522,6 +543,47 @@ def check_duplicate_job(job_id):
                 "company": candidate["company"],
                 "title_similarity": similarity,
             })
+
+    # AI-enhanced: check borderline non-matches (different company but similar title)
+    if not matches:
+        def _python_dedup(ctx):
+            return {"matches": []}
+
+        def _ai_dedup(ctx):
+            from ai_providers import get_provider
+            provider = get_provider()
+            jd = db.query_one("SELECT jd_full FROM fresh_jobs WHERE id = %s", (ctx["job_id"],))
+            jd_text = (jd.get("jd_full") or ctx["title"])[:1000] if jd else ctx["title"]
+            similar = db.query(
+                "SELECT id, title, company FROM saved_jobs ORDER BY created_at DESC LIMIT 20"
+            )
+            if not similar:
+                return {"matches": []}
+            candidates_text = "\n".join(f"{s['id']}: {s['company']} - {s['title']}" for s in similar)
+            result = provider.generate(
+                f"Is this job a duplicate of any in the list? Job: {ctx['company']} - {ctx['title']}\n\nList:\n{candidates_text}\n\n"
+                f"Return JSON: {{\"duplicates\": [{{\"id\": int, \"confidence\": 0.0-1.0}}]}} or {{\"duplicates\": []}}",
+                response_format="json",
+            )
+            ai_matches = []
+            for dup in (result.get("duplicates", []) if isinstance(result, dict) else []):
+                if dup.get("confidence", 0) >= 0.7:
+                    match_row = next((s for s in similar if s["id"] == dup["id"]), None)
+                    if match_row:
+                        ai_matches.append({
+                            "id": match_row["id"], "source_table": "saved_job",
+                            "title": match_row["title"], "company": match_row["company"],
+                            "title_similarity": dup["confidence"],
+                        })
+            return {"matches": ai_matches}
+
+        ai_result = route_inference(
+            task="check_duplicate_semantic",
+            context={"job_id": job_id, "title": job["title"], "company": job["company"]},
+            python_fallback=_python_dedup,
+            ai_handler=_ai_dedup,
+        )
+        matches = ai_result.get("matches", [])
 
     matches.sort(key=lambda x: -x["title_similarity"])
     is_duplicate = len(matches) > 0

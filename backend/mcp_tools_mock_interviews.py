@@ -117,13 +117,30 @@ def _pick_questions(qtype: str, count: int, difficulty: str) -> list[tuple[str, 
 
 
 def _build_suggested_answer(question_text: str, key_points: str, difficulty: str) -> str:
-    """Build a suggested answer template from key points."""
-    intro = {
-        "easy": "A strong answer covers: ",
-        "medium": "An ideal response demonstrates: ",
-        "hard": "A compelling answer at this level integrates: ",
-    }.get(difficulty, "Key elements: ")
-    return f"{intro}{key_points} — Use the STAR format (Situation, Task, Action, Result) with concrete metrics."
+    """Build a suggested answer template from key points. AI-enhanced when available."""
+    def _python_suggested(ctx):
+        intro = {
+            "easy": "A strong answer covers: ",
+            "medium": "An ideal response demonstrates: ",
+            "hard": "A compelling answer at this level integrates: ",
+        }.get(ctx["difficulty"], "Key elements: ")
+        return {"answer": f"{intro}{ctx['key_points']} — Use the STAR format (Situation, Task, Action, Result) with concrete metrics."}
+
+    def _ai_suggested(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.build_suggested_answer(ctx["question"], {
+            "key_points": ctx["key_points"], "difficulty": ctx["difficulty"],
+        })
+        return {"answer": result.get("suggested_answer", "")}
+
+    result = route_inference(
+        task="build_suggested_answer",
+        context={"question": question_text, "key_points": key_points, "difficulty": difficulty},
+        python_fallback=_python_suggested,
+        ai_handler=_ai_suggested,
+    )
+    return result.get("answer", "")
 
 
 def _generate_questions(
@@ -165,45 +182,52 @@ def _generate_questions(
 
 
 def _score_answer(user_answer: str, suggested_answer: str) -> tuple[int, str]:
-    """Simple keyword-coverage scoring. Returns (score 1-10, feedback str)."""
+    """Score an interview answer. AI-enhanced semantic evaluation when available, keyword fallback otherwise."""
     if not user_answer or not user_answer.strip():
         return 0, "No answer provided."
 
-    # Extract meaningful keywords from the suggested answer (skip stop words)
-    stop = {"a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-            "of", "with", "is", "are", "was", "were", "be", "been", "use", "using",
-            "your", "you", "this", "that", "how", "what", "when", "where", "why"}
-    keywords = [
-        w.lower().strip(".,;:()-")
-        for w in suggested_answer.split()
-        if len(w) > 3 and w.lower() not in stop
-    ]
-    keywords = list(set(keywords))
+    def _python_score(ctx):
+        stop = {"a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+                "of", "with", "is", "are", "was", "were", "be", "been", "use", "using",
+                "your", "you", "this", "that", "how", "what", "when", "where", "why"}
+        keywords = [
+            w.lower().strip(".,;:()-")
+            for w in ctx["suggested"].split()
+            if len(w) > 3 and w.lower() not in stop
+        ]
+        keywords = list(set(keywords))
+        if not keywords:
+            return {"score": 5, "feedback": "Answer received. Unable to score automatically — review manually."}
+        answer_lower = ctx["answer"].lower()
+        hits = sum(1 for kw in keywords if kw in answer_lower)
+        coverage = hits / len(keywords)
+        word_count = len(ctx["answer"].split())
+        length_factor = min(1.0, word_count / 80)
+        raw = (coverage * 0.7 + length_factor * 0.3) * 10
+        s = max(1, min(10, round(raw)))
+        if s >= 8:
+            fb = "Strong answer — covers the key themes with depth. Ensure you quantify the outcome explicitly."
+        elif s >= 6:
+            fb = "Solid answer. Strengthen it by adding specific metrics and a clearer result statement."
+        elif s >= 4:
+            fb = "Partial answer. Missing several key themes. Use the STAR framework: Situation, Task, Action, Result."
+        else:
+            fb = "Answer needs significant development. Review the suggested answer and rebuild using STAR format with concrete examples."
+        return {"score": s, "feedback": fb}
 
-    if not keywords:
-        return 5, "Answer received. Unable to score automatically — review manually."
+    def _ai_score(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.score_answer(ctx.get("question", ""), ctx["answer"], ctx["suggested"])
+        return {"score": max(1, min(10, result.get("score", 5))), "feedback": result.get("feedback", "")}
 
-    answer_lower = user_answer.lower()
-    hits = sum(1 for kw in keywords if kw in answer_lower)
-    coverage = hits / len(keywords)
-
-    # Length bonus: penalize very short answers
-    word_count = len(user_answer.split())
-    length_factor = min(1.0, word_count / 80)  # 80 words = full length credit
-
-    raw = (coverage * 0.7 + length_factor * 0.3) * 10
-    score = max(1, min(10, round(raw)))
-
-    if score >= 8:
-        feedback = "Strong answer — covers the key themes with depth. Ensure you quantify the outcome explicitly."
-    elif score >= 6:
-        feedback = "Solid answer. Strengthen it by adding specific metrics and a clearer result statement."
-    elif score >= 4:
-        feedback = "Partial answer. Missing several key themes. Use the STAR framework: Situation, Task, Action, Result."
-    else:
-        feedback = "Answer needs significant development. Review the suggested answer and rebuild using STAR format with concrete examples."
-
-    return score, feedback
+    result = route_inference(
+        task="score_answer",
+        context={"answer": user_answer, "suggested": suggested_answer, "question": ""},
+        python_fallback=_python_score,
+        ai_handler=_ai_score,
+    )
+    return result.get("score", 5), result.get("feedback", "")
 
 
 # ---------------------------------------------------------------------------
@@ -347,10 +371,17 @@ def evaluate_mock_interview(interview_id: int, answers: dict) -> dict:
         "interview_type": interview.get("interview_type"),
         "role": interview.get("role"),
     }
+    def _ai_interview_feedback(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        result = provider.generate_content("interview_feedback", ctx)
+        return {"overall_feedback": result.get("content", "")}
+
     fb_result = route_inference(
         task="evaluate_mock_interview_feedback",
         context=feedback_ctx,
         python_fallback=_python_interview_feedback,
+        ai_handler=_ai_interview_feedback,
     )
     overall_feedback = fb_result.get("overall_feedback", "")
 

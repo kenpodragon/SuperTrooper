@@ -1226,7 +1226,15 @@ def onboard_checklist():
                 r = db.query_one("SELECT COUNT(*) AS cnt FROM contacts")
                 completed = (r and r["cnt"] > 0)
             elif key == "connect_integrations":
-                completed = bool(os.environ.get("GMAIL_TOKEN") or os.environ.get("GOOGLE_TOKEN"))
+                # Check DB-stored integrations (Google token or AntiAI configured)
+                intg_row = db.query_one("SELECT integrations FROM settings WHERE id = 1")
+                intg = (intg_row.get("integrations") or {}) if intg_row else {}
+                if isinstance(intg, str):
+                    import json as _json
+                    intg = _json.loads(intg)
+                google_cfg = intg.get("google", {})
+                antiai_cfg = intg.get("antiai", {})
+                completed = bool(google_cfg.get("token")) or bool(antiai_cfg.get("enabled") and antiai_cfg.get("api_url"))
             elif key == "first_application":
                 r = db.query_one("SELECT COUNT(*) AS cnt FROM applications")
                 completed = (r and r["cnt"] > 0)

@@ -45,6 +45,8 @@ services:
       - ./utils:/app/utils
       # AI CLI credentials (mount host config into container)
       - ${USERPROFILE:-.}/.claude:/root/.claude
+      # Google OAuth credentials (optional — for Google Workspace MCP)
+      - ./secrets/google:/app/secrets/google:ro
 
   frontend:
     build:
