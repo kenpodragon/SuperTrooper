@@ -1,7 +1,8 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, recipes, bullets } from '../../api/client';
-import type { Recipe, Bullet } from '../../api/client';
+import { api, recipes } from '../../api/client';
+import type { Recipe } from '../../api/client';
 
 interface RecipeDetail {
   id: number;
@@ -52,6 +53,7 @@ interface AtsScoreResult {
 
 export default function Resumes() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [view, setView] = useState<'list' | 'detail'>('list');
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -66,10 +68,6 @@ export default function Resumes() {
     queryKey: ['recipes'],
     queryFn: () => recipes.list(),
   });
-  const { data: bulletList, isLoading: loadingBullets } = useQuery({
-    queryKey: ['bullets'],
-    queryFn: () => bullets.list('?limit=20'),
-  });
 
   const recipeDetail = useQuery({
     queryKey: ['recipe-detail', selectedId],
@@ -78,7 +76,6 @@ export default function Resumes() {
   });
 
   const recipeItems: Recipe[] = Array.isArray(recipeList) ? recipeList : (recipeList as unknown as { recipes?: Recipe[] })?.recipes ?? [];
-  const bulletItems: Bullet[] = Array.isArray(bulletList) ? bulletList : [];
 
   const createRecipe = useMutation({
     mutationFn: (data: typeof createForm) => api.post<Recipe>('/resume/recipes', data),
@@ -242,12 +239,20 @@ export default function Resumes() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Resume Builder</h1>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700"
-        >
-          + New Recipe
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => navigate('/resume-builder')}
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+          >
+            Build New
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700"
+          >
+            + New Recipe
+          </button>
+        </div>
       </div>
 
       {/* Create Form */}
@@ -298,65 +303,44 @@ export default function Resumes() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Recipes */}
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h2 className="text-lg font-semibold text-gray-900 mb-3">Recipes</h2>
-          {loadingRecipes && <p className="text-sm text-gray-400">Loading...</p>}
-          {recipeItems.map((r: Recipe) => (
-            <div key={r.id} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
-              <div
-                className="cursor-pointer hover:text-blue-600"
-                onClick={() => { setSelectedId(r.id); setView('detail'); }}
-              >
-                <p className="text-sm font-medium text-gray-900">{r.name}</p>
-                <p className="text-xs text-gray-400">{r.description || 'No description'}</p>
-              </div>
-              <div className="flex gap-2 items-center">
-                {r.is_active && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Active</span>}
-                <button
-                  onClick={() => generateResume.mutate(r.id)}
-                  disabled={generateResume.isPending}
-                  className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded hover:bg-blue-100"
-                >
-                  Generate
-                </button>
-                <button
-                  onClick={() => cloneRecipe.mutate(r.id)}
-                  className="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100"
-                >
-                  Clone
-                </button>
-                <button
-                  onClick={() => { if (confirm('Delete?')) deleteRecipe.mutate(r.id); }}
-                  className="text-xs bg-red-50 text-red-500 px-2 py-1 rounded hover:bg-red-100"
-                >
-                  Del
-                </button>
-              </div>
+      {/* Recipes */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <h2 className="text-lg font-semibold text-gray-900 mb-3">Recipes</h2>
+        {loadingRecipes && <p className="text-sm text-gray-400">Loading...</p>}
+        {recipeItems.map((r: Recipe) => (
+          <div key={r.id} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
+            <div
+              className="cursor-pointer hover:text-blue-600"
+              onClick={() => navigate(`/resume-builder/${r.id}`)}
+            >
+              <p className="text-sm font-medium text-gray-900">{r.name}</p>
+              <p className="text-xs text-gray-400">{r.description || 'No description'}</p>
             </div>
-          ))}
-          {!loadingRecipes && recipeItems.length === 0 && <p className="text-sm text-gray-400">No recipes found</p>}
-        </div>
-
-        {/* Bullet Browser */}
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h2 className="text-lg font-semibold text-gray-900 mb-3">Bullet Browser</h2>
-          {loadingBullets && <p className="text-sm text-gray-400">Loading...</p>}
-          <div className="space-y-2 max-h-96 overflow-y-auto">
-            {bulletItems.map((b: Bullet) => (
-              <div key={b.id} className="py-2 border-b border-gray-100 last:border-0">
-                <p className="text-sm text-gray-700">{b.text}</p>
-                <div className="flex gap-2 mt-1">
-                  <span className="text-xs text-gray-400">{b.employer}</span>
-                  {b.tags?.slice(0, 3).map(t => (
-                    <span key={t} className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{t}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
+            <div className="flex gap-2 items-center">
+              {r.is_active && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Active</span>}
+              <button
+                onClick={() => generateResume.mutate(r.id)}
+                disabled={generateResume.isPending}
+                className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded hover:bg-blue-100"
+              >
+                Generate
+              </button>
+              <button
+                onClick={() => cloneRecipe.mutate(r.id)}
+                className="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100"
+              >
+                Clone
+              </button>
+              <button
+                onClick={() => { if (confirm('Delete?')) deleteRecipe.mutate(r.id); }}
+                className="text-xs bg-red-50 text-red-500 px-2 py-1 rounded hover:bg-red-100"
+              >
+                Del
+              </button>
+            </div>
           </div>
-        </div>
+        ))}
+        {!loadingRecipes && recipeItems.length === 0 && <p className="text-sm text-gray-400">No recipes found</p>}
       </div>
 
       {/* ATS Score Tool */}

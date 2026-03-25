@@ -19,6 +19,7 @@ import MarketIntel from './pages/market/MarketIntel';
 import LinkedInHub from './pages/linkedin/LinkedInHub';
 import Profile from './pages/profile/Profile';
 import BulletBrowser from './pages/bullets/BulletBrowser';
+import ResumeBuilder from './pages/resume-builder/ResumeBuilder';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -36,6 +37,8 @@ export default function App() {
             <Route path="applications" element={<Applications />} />
             <Route path="jobs" element={<SavedJobs />} />
             <Route path="resumes" element={<Resumes />} />
+            <Route path="resume-builder" element={<ResumeBuilder />} />
+            <Route path="resume-builder/:id" element={<ResumeBuilder />} />
             <Route path="bullets" element={<BulletBrowser />} />
             <Route path="contacts" element={<Contacts />} />
             <Route path="interviews" element={<Interviews />} />

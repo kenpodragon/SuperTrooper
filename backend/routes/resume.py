@@ -48,7 +48,7 @@ def get_recipe(recipe_id):
         recipe_json = row["recipe"]
         if isinstance(recipe_json, str):
             recipe_json = json.loads(recipe_json)
-        resolved = _resolve_recipe_db(recipe_json)
+        resolved = _resolve_recipe_db(recipe_json, recipe_version=row.get("recipe_version", 1))
         if row.get("headline"):
             resolved["HEADLINE"] = row["headline"]
         row["resolved_preview"] = resolved
@@ -68,6 +68,39 @@ def validate_recipe(recipe_id):
     recipe_json = row["recipe"]
     if isinstance(recipe_json, str):
         recipe_json = json.loads(recipe_json)
+
+    recipe_version = row.get("recipe_version", 1)
+    if recipe_version >= 2:
+        ALLOWED_V2 = {"bullets", "career_history", "skills", "summary_variants",
+                       "education", "certifications", "resume_header"}
+        errors = []
+        # Check single-item refs
+        for key in ("header", "headline", "summary"):
+            if key in recipe_json and isinstance(recipe_json[key], dict):
+                ref = recipe_json[key]
+                if "ref" in ref:
+                    table = ref["ref"]
+                    if table not in ALLOWED_V2:
+                        errors.append({"section": key, "error": f"Table '{table}' not allowed"})
+                    else:
+                        row_id = ref.get("id", 1)
+                        found = db.query_one(f"SELECT id FROM {table} WHERE id = %s", (row_id,))
+                        if not found:
+                            errors.append({"section": key, "table": table, "id": row_id, "error": "Not found"})
+
+        # Check experience array
+        for job_idx, job in enumerate(recipe_json.get("experience", [])):
+            if "ref" in job and job["ref"] == "career_history":
+                found = db.query_one("SELECT id FROM career_history WHERE id = %s", (job.get("id"),))
+                if not found:
+                    errors.append({"section": f"experience[{job_idx}]", "table": "career_history", "id": job.get("id"), "error": "Not found"})
+            for b_idx, bullet in enumerate(job.get("bullets", [])):
+                if "ref" in bullet and bullet["ref"] in ALLOWED_V2:
+                    found = db.query_one(f"SELECT id FROM {bullet['ref']} WHERE id = %s", (bullet.get("id"),))
+                    if not found:
+                        errors.append({"section": f"experience[{job_idx}].bullets[{b_idx}]", "table": bullet["ref"], "id": bullet.get("id"), "error": "Not found"})
+
+        return jsonify({"valid": len(errors) == 0, "errors": errors, "recipe_version": 2})
 
     errors = []
     db_refs = 0
@@ -203,6 +236,125 @@ def clone_recipe(recipe_id):
     return jsonify(row), 201
 
 
+@bp.route("/api/resume/recipes/<int:recipe_id>/clone-item", methods=["POST"])
+def clone_recipe_item(recipe_id):
+    """Clone a DB record. Frontend swaps the recipe ref and autosaves.
+    Body: {"table": "bullets", "id": 26}
+    Returns: {"id": 142, "table": "bullets", "text": "..."}
+    """
+    ALLOWED_CLONE = {"bullets", "summary_variants", "education", "certifications"}
+
+    recipe = db.query_one("SELECT id FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not recipe:
+        return jsonify({"error": f"Recipe {recipe_id} not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    table = data.get("table")
+    source_id = data.get("id")
+
+    if not table or not source_id:
+        return jsonify({"error": "table and id required"}), 400
+    if table not in ALLOWED_CLONE:
+        return jsonify({"error": f"Cannot clone from table '{table}'"}), 400
+
+    original = db.query_one(f"SELECT * FROM {table} WHERE id = %s", (source_id,))
+    if not original:
+        return jsonify({"error": f"{table} id={source_id} not found"}), 404
+
+    # Clone based on table type — append ' [copy]' to text fields with unique constraints
+    if table == "bullets":
+        clone = db.execute_returning(
+            """INSERT INTO bullets (career_history_id, text, type, star_situation,
+               star_task, star_action, star_result, tags, role_suitability,
+               industry_suitability, display_order)
+               SELECT career_history_id, text || ' [copy]', type, star_situation,
+               star_task, star_action, star_result, tags, role_suitability,
+               industry_suitability, display_order
+               FROM bullets WHERE id = %s RETURNING *""",
+            (source_id,),
+        )
+    elif table == "summary_variants":
+        clone = db.execute_returning(
+            """INSERT INTO summary_variants (role_type, text)
+               SELECT role_type || ' (copy)', text
+               FROM summary_variants WHERE id = %s RETURNING *""",
+            (source_id,),
+        )
+    elif table == "education":
+        clone = db.execute_returning(
+            """INSERT INTO education (degree, field, institution, location, type, sort_order)
+               SELECT degree, field, institution, location, type, sort_order
+               FROM education WHERE id = %s RETURNING *""",
+            (source_id,),
+        )
+    elif table == "certifications":
+        clone = db.execute_returning(
+            """INSERT INTO certifications (name, issuer, is_active, sort_order)
+               SELECT name || ' (copy)', issuer, is_active, sort_order
+               FROM certifications WHERE id = %s RETURNING *""",
+            (source_id,),
+        )
+
+    if not clone:
+        return jsonify({"error": "Clone failed"}), 500
+
+    display_col = {"bullets": "text", "summary_variants": "text",
+                   "education": "degree", "certifications": "name"}
+    text = clone.get(display_col.get(table, "id"), "")
+
+    return jsonify({"id": clone["id"], "table": table, "text": text}), 201
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/autosave", methods=["PUT"])
+def autosave_recipe(recipe_id):
+    """Debounced save of full recipe JSON + theme.
+    Body: {"recipe": {...v2 JSON...}, "theme": {...theme JSON...}}
+    """
+    existing = db.query_one("SELECT id FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not existing:
+        return jsonify({"error": f"Recipe {recipe_id} not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    recipe_json = data.get("recipe")
+    theme = data.get("theme")
+
+    updates = ["updated_at = NOW()"]
+    params = []
+
+    if recipe_json is not None:
+        updates.append("recipe = %s")
+        params.append(json.dumps(recipe_json))
+        # Only stamp as v2 if the recipe has v2 structure
+        if isinstance(recipe_json.get("experience"), list) or "header" in recipe_json:
+            updates.append("recipe_version = 2")
+
+    if theme is not None:
+        updates.append("theme = %s")
+        params.append(json.dumps(theme))
+
+    params.append(recipe_id)
+    row = db.execute_returning(
+        f"UPDATE resume_recipes SET {', '.join(updates)} WHERE id = %s RETURNING updated_at",
+        tuple(params),
+    )
+
+    # Validation warnings
+    warnings = []
+    if recipe_json:
+        REQUIRED = {"header", "headline", "summary", "experience"}
+        for section in REQUIRED:
+            if section not in recipe_json:
+                warnings.append({"section": section, "message": f"{section.title()} section is missing"})
+            elif isinstance(recipe_json[section], list) and len(recipe_json[section]) == 0:
+                warnings.append({"section": section, "message": f"{section.title()} section is empty"})
+
+    return jsonify({
+        "saved": True,
+        "warnings": warnings,
+        "updated_at": row["updated_at"].isoformat() if row else None,
+    })
+
+
 @bp.route("/api/resume/recipes/<int:recipe_id>/generate", methods=["POST"])
 def generate_from_recipe(recipe_id):
     """Generate a .docx resume from a recipe. Returns file download."""
@@ -225,7 +377,7 @@ def generate_from_recipe(recipe_id):
     if isinstance(recipe_json, str):
         recipe_json = json.loads(recipe_json)
 
-    resolved_content = _resolve_recipe_db(recipe_json)
+    resolved_content = _resolve_recipe_db(recipe_json, recipe_version=recipe_row.get("recipe_version", 1))
     if recipe_row.get("headline"):
         resolved_content["HEADLINE"] = recipe_row["headline"]
 
@@ -265,6 +417,11 @@ def generate_from_recipe(recipe_id):
         ai_handler=_ai_recipe_content,
     )
     content = gen_result["content"]
+
+    # If v2 recipe, flatten resolved dict to placeholder map
+    recipe_version = recipe_row.get("recipe_version", 1)
+    if recipe_version >= 2 and isinstance(content, dict) and any(k in content for k in ("experience", "header", "highlights")):
+        content = _flatten_v2_for_template(content)
 
     # Build slot info
     slot_info = {}
@@ -642,6 +799,78 @@ BOLD_SEPARATORS = {
     "ref_link": " | ",
     "job_header": ", ",
 }
+
+
+def _flatten_v2_for_template(resolved: dict) -> dict:
+    """Convert v2 resolved content to flat placeholder->text map for .docx filling."""
+    flat = {}
+
+    # Header
+    if "header" in resolved and isinstance(resolved["header"], dict):
+        h = resolved["header"]
+        flat["HEADER_NAME"] = f"{h.get('full_name', '')}, {h.get('credentials', '')}"
+        parts = [h.get("location", "")]
+        if h.get("location_note"):
+            parts[0] += f" ({h['location_note']})"
+        parts.extend([h.get("email", ""), h.get("phone", "")])
+        if h.get("linkedin_url"):
+            parts.append(h["linkedin_url"])
+        flat["HEADER_CONTACT"] = " \u2022 ".join(p for p in parts if p)
+
+    # Single text slots
+    for key in ("headline", "summary"):
+        if key in resolved:
+            flat[key.upper()] = resolved[key] if isinstance(resolved[key], str) else str(resolved[key])
+
+    # Highlights
+    if "highlights" in resolved:
+        for i, h in enumerate(resolved["highlights"]):
+            flat[f"HIGHLIGHT_{i+1}"] = h if isinstance(h, str) else str(h)
+
+    # Experience
+    if "experience" in resolved:
+        for i, job in enumerate(resolved["experience"]):
+            n = i + 1
+            if isinstance(job, dict):
+                flat[f"JOB_{n}_HEADER"] = job.get("employer", "")
+                flat[f"JOB_{n}_TITLE"] = job.get("title", "")
+                dates = f"{job.get('start_date', '')} - {job.get('end_date', 'Present')}"
+                flat[f"JOB_{n}_DATES"] = dates
+                flat[f"JOB_{n}_INTRO"] = job.get("synopsis", "")
+                for j, bullet in enumerate(job.get("bullets", [])):
+                    flat[f"JOB_{n}_BULLET_{j+1}"] = bullet if isinstance(bullet, str) else str(bullet)
+
+    # Skills
+    if "skills" in resolved:
+        skills_list = resolved["skills"]
+        if isinstance(skills_list, list):
+            # Try to fill TECH_SKILLS and OTHER_SKILLS_N and KEYWORDS_N
+            flat["TECH_SKILLS"] = ", ".join(str(s) for s in skills_list if s)
+            for i, s in enumerate(skills_list):
+                flat[f"OTHER_SKILLS_{i+1}"] = str(s) if s else ""
+                flat[f"KEYWORDS_{i+1}"] = str(s) if s else ""
+
+    # Education
+    if "education" in resolved:
+        for i, edu in enumerate(resolved["education"]):
+            flat[f"EDUCATION_{i+1}"] = edu if isinstance(edu, str) else str(edu)
+
+    # Certifications
+    if "certifications" in resolved:
+        for i, cert in enumerate(resolved["certifications"]):
+            flat[f"CERT_{i+1}"] = cert if isinstance(cert, str) else str(cert)
+
+    # Additional experience
+    if "additional_experience" in resolved:
+        for i, ae in enumerate(resolved["additional_experience"]):
+            flat[f"ADDL_EXP_{i+1}"] = ae if isinstance(ae, str) else str(ae)
+
+    # Custom catch-all
+    if "custom" in resolved:
+        for k, v in resolved["custom"].items():
+            flat[k] = v if isinstance(v, str) else str(v)
+
+    return flat
 
 
 def _fill_simple(paragraph, text):

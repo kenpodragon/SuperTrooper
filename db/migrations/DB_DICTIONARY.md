@@ -1,6 +1,6 @@
 # Database Dictionary — SuperTroopers
 
-**Last updated:** 2026-03-23 (Session 8)
+**Last updated:** 2026-03-25 (Session 24)
 **Database:** PostgreSQL 17 + pgvector 0.8.2
 **Connection:** localhost:5555, db=supertroopers, user=supertroopers
 
@@ -31,7 +31,7 @@
 | resume_header | 1 | 004 | Candidate contact info for resume headers |
 | education | 4 | 004 | Degree and certificate entries |
 | certifications | 8 | 004 | Professional certifications |
-| resume_recipes | 5 | 006 | Recipe-based resume assembly (slot -> {table,id,column}) |
+| resume_recipes | 10 | 006+030 | Recipe-based resume assembly. V2 format: array-based sections (migration 030) |
 | saved_jobs | 0 | 007 | Job evaluation queue before applying |
 | gap_analyses | 0 | 007 | Persisted gap analysis results |
 | application_status_history | 0 | 007 | Auto-logged status transitions |
@@ -313,6 +313,9 @@ Stores .docx template blobs for resume generation.
 | template_blob | BYTEA | NO | Raw .docx file |
 | description | TEXT | YES | |
 | is_active | BOOLEAN | YES | Default TRUE |
+| template_map | JSONB | YES | Section definitions for placeholder-based generation (migration 005) |
+| template_type | VARCHAR(20) | YES | 'full' or 'placeholder' (migration 005) |
+| preview_blob | BYTEA | YES | Cached PNG preview thumbnail (migration 030) |
 | created_at | TIMESTAMP | YES | |
 | updated_at | TIMESTAMP | YES | |
 
@@ -595,6 +598,8 @@ Migration version tracking.
 | 6 | 006_resume_recipes | 2026-03-19 | resume_recipes + career_history.career_links |
 | 7 | 007_platform_tables | 2026-03-19 | 10 new tables (saved_jobs, gap_analyses, application_status_history, generated_materials, follow_ups, interview_prep, interview_debriefs, outreach_messages, referrals, activity_log) + FK columns on contacts (company_id) and applications (saved_job_id, gap_analysis_id) |
 | 28 | 028_linkedin_scraped | 2026-03-23 | linkedin_scraped_posts, linkedin_scraped_comments with URN dedup indexes |
+| 29 | 029_bullet_browser | 2026-03-24 | bullets: display_order, ai_analysis, content_hash, is_default, updated_at. career_history: metadata, date normalization |
+| 30 | 030_resume_builder | 2026-03-25 | resume_recipes: recipe_version, theme (JSONB), recipe_v1_backup (JSONB). resume_templates: preview_blob (BYTEA) |
 
 ### linkedin_scraped_posts
 Scraped LinkedIn posts from browser scraper. Deduped by URN.

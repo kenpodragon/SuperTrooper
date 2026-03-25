@@ -651,11 +651,188 @@ def register_resume_gen_tools(mcp):
         return _process_file(filename, file_bytes, file_ext)
 
 
-def _resolve_recipe_db(recipe_json: dict) -> dict:
+_V2_ALLOWED_TABLES = {
+    "bullets", "career_history", "skills", "summary_variants",
+    "education", "certifications", "resume_header",
+}
+
+_V2_DEFAULT_COLUMNS = {
+    "bullets": "text",
+    "skills": "name",
+    "summary_variants": "text",
+    "education": "description",
+    "certifications": "name",
+}
+
+
+def _resolve_single_ref(ref: dict):
+    """Resolve one v2 ref dict to its display value.
+
+    Handles: literal, resume_header (full row), career_history (full row),
+    ids (plural), and standard table+id lookups.
+    """
+    # Literal text — return directly
+    if "literal" in ref:
+        return ref["literal"]
+
+    table = ref.get("ref") or ref.get("table")
+    if not table:
+        return None
+
+    if table not in _V2_ALLOWED_TABLES:
+        return f"[blocked table: {table}]"
+
+    # Plural ids — resolve each individually
+    if "ids" in ref:
+        column = _V2_DEFAULT_COLUMNS.get(table, "name")
+        ids = ref["ids"]
+        rows = db.query(
+            f"SELECT id, {column} FROM {table} WHERE id = ANY(%s)",
+            (ids,),
+        )
+        by_id = {r["id"]: r[column] for r in rows}
+        return [by_id.get(i, "") for i in ids]
+
+    row_id = ref.get("id", 1)
+
+    # Special case: resume_header → full dict
+    if table == "resume_header":
+        h = db.query_one("SELECT * FROM resume_header WHERE id = %s", (row_id,))
+        if not h:
+            return {}
+        return {
+            "full_name": h.get("full_name", ""),
+            "credentials": h.get("credentials", ""),
+            "location": h.get("location", ""),
+            "location_note": h.get("location_note", ""),
+            "email": h.get("email", ""),
+            "phone": h.get("phone", ""),
+            "linkedin_url": h.get("linkedin_url", ""),
+        }
+
+    # Special case: career_history → full dict
+    if table == "career_history":
+        r = db.query_one("SELECT * FROM career_history WHERE id = %s", (row_id,))
+        if not r:
+            return {}
+        return {
+            "id": r["id"],
+            "employer": r.get("employer", ""),
+            "title": r.get("title", ""),
+            "start_date": r.get("start_date"),
+            "end_date": r.get("end_date"),
+            "location": r.get("location", ""),
+            "industry": r.get("industry", ""),
+            "synopsis": r.get("intro_text", ""),
+        }
+
+    # Standard table lookup with default column
+    column = _V2_DEFAULT_COLUMNS.get(table, "name")
+    row = db.query_one(f"SELECT {column} FROM {table} WHERE id = %s", (row_id,))
+    return row[column] if row and row.get(column) else ""
+
+
+def _resolve_recipe_v2(recipe_json: dict) -> dict:
+    """Walk a v2 recipe structure and resolve all refs to display values."""
+    resolved = {}
+
+    # Single-item slots
+    for key in ("header", "headline", "summary"):
+        if key in recipe_json:
+            ref = recipe_json[key]
+            if isinstance(ref, dict):
+                resolved[key] = _resolve_single_ref(ref)
+            else:
+                resolved[key] = ref
+
+    # Experience array — each entry may have:
+    #   - top-level ref/table (career_history ref) OR sub-fields (header, title, synopsis)
+    #   - bullets array
+    if "experience" in recipe_json:
+        exp_list = []
+        for entry in recipe_json["experience"]:
+            exp_item = {}
+
+            # Case 1: top-level career_history ref (spec format)
+            if "ref" in entry and entry["ref"] == "career_history":
+                job_data = _resolve_single_ref(entry)
+                if isinstance(job_data, dict):
+                    exp_item.update(job_data)
+            # Case 2: sub-fields from migration (header, title as separate literals/refs)
+            elif "header" in entry or "title" in entry:
+                if "header" in entry:
+                    h = _resolve_single_ref(entry["header"]) if isinstance(entry["header"], dict) else entry["header"]
+                    exp_item["employer"] = h if isinstance(h, str) else (h.get("employer", "") if isinstance(h, dict) else str(h))
+                if "title" in entry:
+                    t = _resolve_single_ref(entry["title"]) if isinstance(entry["title"], dict) else entry["title"]
+                    exp_item["title"] = t if isinstance(t, str) else str(t)
+                if "titles" in entry:
+                    titles = [_resolve_single_ref(t) if isinstance(t, dict) else t for t in entry["titles"]]
+                    exp_item["title"] = " / ".join(str(t) for t in titles if t)
+                if "subtitle" in entry:
+                    s = _resolve_single_ref(entry["subtitle"]) if isinstance(entry["subtitle"], dict) else entry["subtitle"]
+                    exp_item["subtitle"] = s if isinstance(s, str) else str(s)
+                if "subtitles" in entry:
+                    subs = [_resolve_single_ref(s) if isinstance(s, dict) else s for s in entry["subtitles"]]
+                    exp_item["subtitle"] = " / ".join(str(s) for s in subs if s)
+
+            # Synopsis — may resolve to a career_history dict; extract just the text
+            if "synopsis" in entry:
+                syn = entry["synopsis"]
+                resolved_syn = _resolve_single_ref(syn) if isinstance(syn, dict) else syn
+                if isinstance(resolved_syn, dict):
+                    exp_item["synopsis"] = resolved_syn.get("synopsis", "") or resolved_syn.get("intro_text", "")
+                else:
+                    exp_item["synopsis"] = resolved_syn
+
+            # Bullets
+            if "bullets" in entry:
+                bullet_ref = entry["bullets"]
+                if isinstance(bullet_ref, dict):
+                    resolved_bullets = _resolve_single_ref(bullet_ref)
+                    exp_item["bullets"] = resolved_bullets if isinstance(resolved_bullets, list) else [resolved_bullets]
+                elif isinstance(bullet_ref, list):
+                    exp_item["bullets"] = [
+                        _resolve_single_ref(b) if isinstance(b, dict) else b
+                        for b in bullet_ref
+                    ]
+
+            exp_list.append(exp_item)
+        resolved["experience"] = exp_list
+
+    # Array slots
+    for key in ("skills", "education", "certifications", "highlights", "additional_experience"):
+        if key in recipe_json:
+            items = recipe_json[key]
+            if isinstance(items, list):
+                resolved[key] = [
+                    _resolve_single_ref(item) if isinstance(item, dict) else item
+                    for item in items
+                ]
+            elif isinstance(items, dict):
+                resolved[key] = _resolve_single_ref(items)
+
+    # Custom slot — dict of key→ref
+    if "custom" in recipe_json:
+        custom = recipe_json["custom"]
+        if isinstance(custom, dict):
+            resolved["custom"] = {
+                k: _resolve_single_ref(v) if isinstance(v, dict) else v
+                for k, v in custom.items()
+            }
+
+    return resolved
+
+
+def _resolve_recipe_db(recipe_json: dict, recipe_version: int = 1) -> dict:
     """Resolve a recipe JSON into a content_map using db module.
 
     Shared helper for MCP tool and Flask route.
+    Dispatches to v2 resolver when recipe_version >= 2.
     """
+    if recipe_version >= 2:
+        return _resolve_recipe_v2(recipe_json)
+
     ALLOWED = {"bullets", "career_history", "skills", "summary_variants",
                "education", "certifications", "resume_header"}
     content = {}
