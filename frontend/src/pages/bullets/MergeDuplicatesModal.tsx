@@ -46,10 +46,14 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
   // Manual company merge state
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
   const [companySearch, setCompanySearch] = useState('');
+  const [companyKeepChoice, setCompanyKeepChoice] = useState<string | null>(null); // which name to keep
+  const [showCompanyPicker, setShowCompanyPicker] = useState(false);
 
   // Manual role merge state
   const [roleChecked, setRoleChecked] = useState<Set<number>>(new Set());
   const [roleSearch, setRoleSearch] = useState('');
+  const [roleKeepChoice, setRoleKeepChoice] = useState<number | null>(null);
+  const [showRolePicker, setShowRolePicker] = useState(false);
 
   const { data: allJobs = [] } = useQuery<CareerJob[]>({
     queryKey: ['career-history'],
@@ -129,14 +133,15 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
     });
   };
 
-  const stageCompanyMerge = () => {
+  const startCompanyMerge = () => {
+    if (companyChecked.size < 2) return;
+    setCompanyKeepChoice(Array.from(companyChecked)[0]);
+    setShowCompanyPicker(true);
+  };
+
+  const confirmCompanyMerge = () => {
+    if (!companyKeepChoice) return;
     const names = Array.from(companyChecked);
-    if (names.length < 2) { alert('Select at least 2 companies to merge.'); return; }
-
-    const keepName = prompt(`Which company name to keep?\n\n${names.map((n, i) => `  ${i + 1}. ${n}`).join('\n')}\n\nType the name:`, names[0]);
-    if (!keepName) return;
-
-    // Find all job IDs across selected companies
     const allIds: number[] = [];
     for (const name of names) {
       const group = employerGroups.find((g) => g.employer === name);
@@ -145,10 +150,12 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
     if (allIds.length < 2) return;
 
     setStagedMerges((prev) => [...prev, {
-      keep_id: allIds[0], merge_ids: allIds.slice(1), new_employer: keepName.trim(),
-      label: `Companies: ${names.map((n) => `"${n}"`).join(' + ')} → "${keepName.trim()}"`,
+      keep_id: allIds[0], merge_ids: allIds.slice(1), new_employer: companyKeepChoice,
+      label: `Companies: ${names.map((n) => `"${n}"`).join(' + ')} → "${companyKeepChoice}"`,
     }]);
     setCompanyChecked(new Set());
+    setShowCompanyPicker(false);
+    setCompanyKeepChoice(null);
   };
 
   // --- Manual role merge ---
@@ -160,19 +167,26 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
     });
   };
 
-  const stageRoleMerge = () => {
-    const ids = Array.from(roleChecked);
-    if (ids.length < 2) { alert('Select at least 2 roles to merge.'); return; }
+  const startRoleMerge = () => {
+    if (roleChecked.size < 2) return;
+    setRoleKeepChoice(Array.from(roleChecked)[0]);
+    setShowRolePicker(true);
+  };
 
+  const confirmRoleMerge = () => {
+    if (!roleKeepChoice) return;
+    const ids = Array.from(roleChecked);
     const jobs = ids.map((id) => allJobs.find((j) => j.id === id)).filter(Boolean) as CareerJob[];
-    const keepTitle = prompt(`Title for the merged role:`, jobs[0].title);
-    if (keepTitle === null) return;
+    const keepJob = allJobs.find((j) => j.id === roleKeepChoice);
+    const mergeIds = ids.filter((id) => id !== roleKeepChoice);
 
     setStagedMerges((prev) => [...prev, {
-      keep_id: ids[0], merge_ids: ids.slice(1), new_title: keepTitle || undefined,
-      label: `Roles: ${jobs.map((j) => `"${j.title}"`).join(' + ')} → "${keepTitle || jobs[0].title}"`,
+      keep_id: roleKeepChoice, merge_ids: mergeIds, new_title: keepJob?.title,
+      label: `Roles: ${jobs.map((j) => `"${j.title}"`).join(' + ')} → "${keepJob?.title || ''}"`,
     }]);
     setRoleChecked(new Set());
+    setShowRolePicker(false);
+    setRoleKeepChoice(null);
   };
 
   const removeStagedMerge = (idx: number) => setStagedMerges((prev) => prev.filter((_, i) => i !== idx));
@@ -325,23 +339,54 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
           {/* Manual Step 1: Companies */}
           {step === 'manual-companies' && (
             <div className="space-y-3">
-              <p className="text-xs text-gray-500">Check 2+ companies with the same/similar name, click "Merge Selected Companies". Repeat as needed, then proceed to Step 2.</p>
+              <p className="text-xs text-gray-500">Check 2+ companies with the same/similar name, then pick which name to keep.</p>
               <div className="flex items-center gap-3">
                 <input type="text" value={companySearch} onChange={(e) => setCompanySearch(e.target.value)}
                   placeholder="Search companies..." className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:border-blue-400 focus:outline-none" />
-                <button onClick={stageCompanyMerge} disabled={companyChecked.size < 2}
-                  className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded disabled:opacity-50 whitespace-nowrap">
-                  Merge {companyChecked.size} Companies
-                </button>
+                {!showCompanyPicker && (
+                  <button onClick={startCompanyMerge} disabled={companyChecked.size < 2}
+                    className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded disabled:opacity-50 whitespace-nowrap">
+                    Merge {companyChecked.size} Companies
+                  </button>
+                )}
               </div>
-              <div className="max-h-[45vh] overflow-y-auto border border-gray-700 rounded-lg">
+
+              {/* Inline picker: which company name to keep */}
+              {showCompanyPicker && (
+                <div className="border border-yellow-600/50 rounded-lg p-4 bg-yellow-900/10 space-y-2">
+                  <div className="text-xs font-semibold text-yellow-300">Which company name to keep?</div>
+                  {Array.from(companyChecked).map((name) => (
+                    <label key={name} className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                      <input type="radio" name="companyKeep" checked={companyKeepChoice === name}
+                        onChange={() => setCompanyKeepChoice(name)} className="accent-yellow-400" />
+                      {name}
+                      <span className="text-xs text-gray-500 ml-auto">
+                        {employerGroups.find((g) => g.employer === name)?.jobs.length || 0} roles
+                      </span>
+                    </label>
+                  ))}
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={confirmCompanyMerge} disabled={!companyKeepChoice}
+                      className="px-3 py-1 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded disabled:opacity-50">
+                      Stage Merge
+                    </button>
+                    <button onClick={() => { setShowCompanyPicker(false); setCompanyKeepChoice(null); }}
+                      className="px-3 py-1 bg-gray-700 text-gray-300 text-xs rounded">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="max-h-[40vh] overflow-y-auto border border-gray-700 rounded-lg">
                 {filteredCompanies.map((group) => (
                   <label key={group.employer}
                     className={`flex items-center gap-3 px-4 py-2.5 border-b border-gray-800 last:border-b-0 cursor-pointer hover:bg-gray-800/30 ${
                       companyChecked.has(group.employer) ? 'bg-yellow-900/20' : ''
                     }`}>
                     <input type="checkbox" checked={companyChecked.has(group.employer)}
-                      onChange={() => toggleCompany(group.employer)} className="accent-yellow-400 w-4 h-4 shrink-0" />
+                      onChange={() => toggleCompany(group.employer)} disabled={showCompanyPicker}
+                      className="accent-yellow-400 w-4 h-4 shrink-0" />
                     <div className="flex-1 min-w-0">
                       <span className="text-sm text-gray-200">{group.employer}</span>
                       <span className="text-xs text-gray-500 ml-2">{group.jobs.length} role{group.jobs.length > 1 ? 's' : ''}</span>
@@ -351,7 +396,7 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
               </div>
               <div className="flex justify-between pt-2">
                 <button onClick={() => setStep('choose')} className="text-sm text-gray-400 hover:text-gray-300">← Back</button>
-                <button onClick={() => { setStep('manual-roles'); setRoleChecked(new Set()); }}
+                <button onClick={() => { setStep('manual-roles'); setRoleChecked(new Set()); setShowRolePicker(false); }}
                   className="text-sm text-blue-400 hover:text-blue-300">Step 2: Merge Roles →</button>
               </div>
             </div>
@@ -360,16 +405,50 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
           {/* Manual Step 2: Roles */}
           {step === 'manual-roles' && (
             <div className="space-y-3">
-              <p className="text-xs text-gray-500">Within each company, check 2+ roles to merge together. Their bullets will be combined.</p>
+              <p className="text-xs text-gray-500">Within each company, check 2+ roles to merge. Pick which title to keep.</p>
               <div className="flex items-center gap-3">
                 <input type="text" value={roleSearch} onChange={(e) => setRoleSearch(e.target.value)}
                   placeholder="Search companies or roles..." className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:border-blue-400 focus:outline-none" />
-                <button onClick={stageRoleMerge} disabled={roleChecked.size < 2}
-                  className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded disabled:opacity-50 whitespace-nowrap">
-                  Merge {roleChecked.size} Roles
-                </button>
+                {!showRolePicker && (
+                  <button onClick={startRoleMerge} disabled={roleChecked.size < 2}
+                    className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded disabled:opacity-50 whitespace-nowrap">
+                    Merge {roleChecked.size} Roles
+                  </button>
+                )}
               </div>
-              <div className="max-h-[45vh] overflow-y-auto border border-gray-700 rounded-lg">
+
+              {/* Inline picker: which role title to keep */}
+              {showRolePicker && (
+                <div className="border border-yellow-600/50 rounded-lg p-4 bg-yellow-900/10 space-y-2">
+                  <div className="text-xs font-semibold text-yellow-300">Which role to keep?</div>
+                  {Array.from(roleChecked).map((id) => {
+                    const job = allJobs.find((j) => j.id === id);
+                    if (!job) return null;
+                    return (
+                      <label key={id} className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                        <input type="radio" name="roleKeep" checked={roleKeepChoice === id}
+                          onChange={() => setRoleKeepChoice(id)} className="accent-yellow-400" />
+                        {job.title}
+                        <span className="text-xs text-gray-500 ml-auto">
+                          {yearOf(job.start_date)}{job.end_date ? `–${yearOf(job.end_date)}` : '–now'}
+                        </span>
+                      </label>
+                    );
+                  })}
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={confirmRoleMerge} disabled={!roleKeepChoice}
+                      className="px-3 py-1 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded disabled:opacity-50">
+                      Stage Merge
+                    </button>
+                    <button onClick={() => { setShowRolePicker(false); setRoleKeepChoice(null); }}
+                      className="px-3 py-1 bg-gray-700 text-gray-300 text-xs rounded">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="max-h-[40vh] overflow-y-auto border border-gray-700 rounded-lg">
                 {companiesForRoles.map((group) => (
                   <div key={group.employer} className="border-b border-gray-800 last:border-b-0">
                     <div className="px-4 py-2 bg-gray-800/50 text-sm font-semibold text-gray-300">{group.employer}</div>
@@ -382,7 +461,8 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
                             roleChecked.has(job.id) ? 'bg-yellow-900/20' : ''
                           }`}>
                           <input type="checkbox" checked={roleChecked.has(job.id)}
-                            onChange={() => toggleRole(job.id)} className="accent-yellow-400 w-4 h-4 shrink-0" />
+                            onChange={() => toggleRole(job.id)} disabled={showRolePicker}
+                            className="accent-yellow-400 w-4 h-4 shrink-0" />
                           <span className="flex-1 text-sm text-gray-200 truncate">{job.title}</span>
                           <span className="text-xs text-gray-500 shrink-0">
                             {yearOf(job.start_date)}{job.end_date ? `–${yearOf(job.end_date)}` : '–now'}
