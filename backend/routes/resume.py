@@ -1652,3 +1652,189 @@ Missing keywords: {", ".join(ctx["python_result"]["missing_keywords"][:15])}"""
 
     result = route_inference("recipe_ats_score", ai_context, _python_fallback, _ai_handler)
     return jsonify(result), 200
+
+
+# ---------------------------------------------------------------------------
+# AI Review (generic quality + target-role fit)
+# ---------------------------------------------------------------------------
+
+_METRICS_RE = re.compile(
+    r"\$[\d,.]+[MmKkBb]?"
+    r"|[\d,.]+%"
+    r"|[\d,.]+[Xx]"
+    r"|\d+\+?\s*(?:users|employees|team|members|clients|customers|reports|engineers|people)",
+    re.IGNORECASE,
+)
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/ai-review", methods=["POST"])
+def recipe_ai_review(recipe_id):
+    """Two-layer AI review: generic quality + target-role fit scoring."""
+    from mcp_tools_resume_gen import _resolve_recipe_db
+
+    recipe_row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not recipe_row:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    recipe_json = recipe_row["recipe"]
+    if isinstance(recipe_json, str):
+        recipe_json = json.loads(recipe_json)
+
+    resolved = _resolve_recipe_db(recipe_json, recipe_version=recipe_row.get("recipe_version", 1))
+    resume_text = _resolved_to_text(resolved)
+
+    # --- Layer 1: Generic quality review (rule-based) ---
+    feedback = []
+    strengths = []
+    score = 70
+
+    # Bullet count per job
+    experience = resolved.get("experience", [])
+    if isinstance(experience, list):
+        for i, job in enumerate(experience):
+            job_label = f"Job {i + 1}"
+            if isinstance(job, dict):
+                employer = job.get("employer", job_label)
+                job_label = employer if employer else job_label
+                bullets = job.get("bullets", [])
+            elif isinstance(job, list):
+                bullets = job
+            else:
+                bullets = []
+            n = len(bullets)
+            if n < 3:
+                feedback.append({"section": job_label, "issue": f"Only {n} bullets — aim for 3-6", "severity": "medium"})
+                score -= 3
+            elif n > 8:
+                feedback.append({"section": job_label, "issue": f"{n} bullets may be too many — trim to 5-6", "severity": "low"})
+                score -= 1
+            else:
+                strengths.append(f"Good bullet count ({n}) for {job_label}")
+                score += 2
+
+            # Metrics scan per job
+            if bullets:
+                bullet_texts = [b if isinstance(b, str) else b.get("text", str(b)) for b in bullets]
+                metrics_count = sum(1 for b in bullet_texts if _METRICS_RE.search(b))
+                pct = metrics_count / len(bullet_texts) if bullet_texts else 0
+                if pct < 0.5:
+                    feedback.append({
+                        "section": job_label,
+                        "issue": f"Only {metrics_count}/{len(bullet_texts)} bullets have metrics — aim for 50%+",
+                        "severity": "high",
+                    })
+                    score -= 5
+                else:
+                    strengths.append(f"Strong metrics in {job_label} ({metrics_count}/{len(bullet_texts)})")
+                    score += 2
+
+    # Summary length
+    summary = resolved.get("summary", "")
+    if isinstance(summary, str):
+        slen = len(summary)
+        if slen < 50:
+            feedback.append({"section": "summary", "issue": "Summary is too short — flesh it out", "severity": "medium"})
+            score -= 3
+        elif slen > 500:
+            feedback.append({"section": "summary", "issue": "Summary is too long — trim to 2-3 sentences", "severity": "medium"})
+            score -= 3
+        elif slen > 0:
+            strengths.append("Summary length is appropriate")
+            score += 2
+
+    # Total word count
+    word_count = len(resume_text.split())
+    if word_count > 800:
+        feedback.append({"section": "overall", "issue": f"Resume is {word_count} words — consider trimming", "severity": "low"})
+        score -= 1
+
+    score = max(0, min(100, score))
+
+    generic_result = {
+        "score": score,
+        "feedback": feedback,
+        "strengths": strengths,
+    }
+
+    # --- Layer 2: Target role fit ---
+    target_roles = []
+    try:
+        settings_row = db.query_one("SELECT preferences FROM settings WHERE id = 1")
+        if settings_row and settings_row.get("preferences"):
+            prefs = settings_row["preferences"]
+            if isinstance(prefs, str):
+                prefs = json.loads(prefs)
+            target_roles = prefs.get("target_roles", [])
+    except Exception:
+        pass
+
+    resume_words = set(resume_text.lower().split())
+    target_role_results = []
+    for role in target_roles:
+        role_name = role if isinstance(role, str) else role.get("title", str(role))
+        role_words = set(role_name.lower().split())
+        overlap = role_words & resume_words
+        role_score = min(100, 50 + len(overlap) * 15)
+        target_role_results.append({
+            "role": role_name,
+            "score": role_score,
+            "gaps": [],
+            "suggestions": [],
+        })
+
+    python_result = {
+        "generic": generic_result,
+        "target_roles": target_role_results,
+        "analysis_mode": "rule_based",
+    }
+
+    # AI enhancement
+    ai_context = {
+        "resume_text": resume_text[:4000],
+        "target_roles": target_roles,
+        "python_result": python_result,
+    }
+
+    def _python_fallback(ctx):
+        return ctx["python_result"]
+
+    def _ai_handler(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        roles_str = ", ".join(
+            r if isinstance(r, str) else r.get("title", str(r))
+            for r in ctx["target_roles"]
+        ) if ctx["target_roles"] else "general tech leadership"
+
+        prompt = f"""Review this resume and provide structured feedback.
+
+Return a JSON object with exactly these keys:
+- "generic": object with "score" (0-100), "feedback" (array of objects with "section", "issue", "severity"), "strengths" (array of strings)
+- "target_roles": array of objects with "role", "score" (0-100), "gaps" (array of strings), "suggestions" (array of strings)
+
+Target roles to evaluate against: {roles_str}
+
+RESUME TEXT (first 4000 chars):
+{ctx["resume_text"]}
+
+Be specific and actionable. Severity must be "high", "medium", or "low"."""
+
+        try:
+            ai_result = provider.generate(prompt, response_format="json")
+            if isinstance(ai_result, dict):
+                result = {"analysis_mode": "ai"}
+                if "generic" in ai_result:
+                    result["generic"] = ai_result["generic"]
+                else:
+                    result["generic"] = ctx["python_result"]["generic"]
+                if "target_roles" in ai_result:
+                    result["target_roles"] = ai_result["target_roles"]
+                else:
+                    result["target_roles"] = ctx["python_result"]["target_roles"]
+                return result
+        except Exception as exc:
+            logger.warning("AI review failed, using rule-based: %s", exc)
+        return ctx["python_result"]
+
+    result = route_inference("recipe_ai_review", ai_context, _python_fallback, _ai_handler)
+    return jsonify(result), 200

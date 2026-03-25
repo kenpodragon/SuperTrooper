@@ -262,6 +262,35 @@ export async function recipeAtsScore(
   });
 }
 
+// --- AI Review for Recipes ---
+
+export interface AiReviewFeedbackItem {
+  section: string;
+  issue: string;
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface AiReviewTargetRole {
+  role: string;
+  score: number;
+  gaps: string[];
+  suggestions: string[];
+}
+
+export interface AiReviewResult {
+  generic: {
+    score: number;
+    feedback: AiReviewFeedbackItem[];
+    strengths: string[];
+  };
+  target_roles: AiReviewTargetRole[];
+  analysis_mode: 'ai' | 'rule_based';
+}
+
+export async function recipeAiReview(recipeId: number): Promise<AiReviewResult> {
+  return api.post<AiReviewResult>(`/resume/recipes/${recipeId}/ai-review`, {});
+}
+
 export const staleApps = {
   list: (days = 14) => api.get<Application[]>(`/applications/stale?days=${days}`),
 };

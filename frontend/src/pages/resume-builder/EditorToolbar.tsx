@@ -25,7 +25,7 @@ export default function EditorToolbar({
       </div>
       <div className="flex items-center gap-2">
         <button onClick={onToggleTheme} className="px-3 py-1.5 text-sm bg-gray-800 rounded hover:bg-gray-700">Theme</button>
-        <button onClick={onAiReview} className="px-3 py-1.5 text-sm bg-gray-800 rounded hover:bg-gray-700 opacity-50" title="Coming soon">AI Review</button>
+        <button onClick={onAiReview} className="px-3 py-1.5 text-sm bg-gray-800 rounded hover:bg-gray-700">AI Review</button>
         <button onClick={onAtsScore} className="px-3 py-1.5 text-sm bg-gray-800 rounded hover:bg-gray-700">ATS Score</button>
         <button onClick={onGenerate} disabled={generating} className="px-3 py-1.5 text-sm bg-blue-600 rounded hover:bg-blue-500 disabled:opacity-50">
           {generating ? 'Generating...' : 'Generate .docx'}

@@ -9,6 +9,7 @@ import SkillTagsBlock from './blocks/SkillTagsBlock';
 import LiteralListBlock from './blocks/LiteralListBlock';
 import ThemePanel from './ThemePanel';
 import AtsScoreModal from './AtsScoreModal';
+import AiReviewPanel from './AiReviewPanel';
 import ContentPickerModal from './ContentPickerModal';
 import type { BulletRef, SkillRef, RecipeV2, ResolvedV2, ThemeSettings } from './types';
 
@@ -27,6 +28,7 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'unsaved'>('saved');
   const [showTheme, setShowTheme] = useState(false);
   const [showAtsScore, setShowAtsScore] = useState(false);
+  const [showAiReview, setShowAiReview] = useState(false);
   const [pickerState, setPickerState] = useState<{
     mode: 'bullets' | 'jobs' | 'summaries';
     jobIndex?: number;
@@ -135,7 +137,7 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
         recipeName={recipeName}
         saveState={saveState}
         onGenerate={() => generateMutation.mutate()}
-        onAiReview={() => {/* Phase 4 */}}
+        onAiReview={() => setShowAiReview(true)}
         onAtsScore={() => setShowAtsScore(true)}
         onToggleTheme={() => setShowTheme(!showTheme)}
         generating={generateMutation.isPending}
@@ -275,6 +277,12 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
           recipeId={recipeId}
           applicationId={recipe?.application_id}
           onClose={() => setShowAtsScore(false)}
+        />
+      )}
+      {showAiReview && (
+        <AiReviewPanel
+          recipeId={recipeId}
+          onClose={() => setShowAiReview(false)}
         />
       )}
     </div>
