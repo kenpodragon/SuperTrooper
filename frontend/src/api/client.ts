@@ -102,12 +102,39 @@ export interface CareerHistory {
 
 export interface Bullet {
   id: number;
-  career_history_id?: number;
+  career_history_id: number;
   text: string;
-  type?: string;
+  type: string;
   tags?: string[];
+  display_order: number;
+  ai_analysis?: {
+    strength: 'strong' | 'moderate' | 'weak';
+    star_check?: Record<string, boolean>;
+    feedback?: string;
+    suggested_skills?: string[];
+    content_hash_at_analysis?: string;
+  };
+  ai_analyzed_at?: string;
+  content_hash?: string;
+  is_default?: boolean;
+  updated_at?: string;
+  created_at?: string;
   role_suitability?: string[];
   employer?: string;
+}
+
+export interface CareerHistoryJob {
+  id: number;
+  employer: string;
+  title: string;
+  location?: string;
+  start_date?: string;
+  end_date?: string;
+  start_date_raw?: string;
+  end_date_raw?: string;
+  start_date_iso?: string;
+  end_date_iso?: string;
+  metadata?: Record<string, string>;
 }
 
 export interface Recipe {

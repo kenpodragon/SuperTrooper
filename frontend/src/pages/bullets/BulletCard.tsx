@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import AiInstructionModal from './AiInstructionModal';
+import DuplicateWarning from './DuplicateWarning';
 
 export interface Bullet {
   id: number;
@@ -11,13 +13,31 @@ export interface Bullet {
   display_order: number;
   ai_analysis?: {
     strength: 'strong' | 'moderate' | 'weak';
+    star_check?: Record<string, boolean>;
     feedback?: string;
     suggested_skills?: string[];
     content_hash_at_analysis?: string;
   };
+  ai_analyzed_at?: string;
   content_hash?: string;
   is_default?: boolean;
   updated_at?: string;
+  created_at?: string;
+}
+
+interface DuplicateMatch {
+  id: number;
+  text: string;
+  similarity: number;
+  employer?: string;
+  title?: string;
+}
+
+interface DuplicateCheckResult {
+  has_duplicates: boolean;
+  within_job: DuplicateMatch[];
+  cross_job: DuplicateMatch[];
+  summary?: string;
 }
 
 interface BulletCardProps {
@@ -45,6 +65,12 @@ export default function BulletCard({
 }: BulletCardProps) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState('');
+  const [aiModal, setAiModal] = useState<{ open: boolean; action: string; title: string; placeholder: string }>({
+    open: false, action: '', title: '', placeholder: '',
+  });
+  const [dupWarning, setDupWarning] = useState<{
+    open: boolean; withinJob: DuplicateMatch[]; crossJob: DuplicateMatch[]; pendingText?: string;
+  }>({ open: false, withinJob: [], crossJob: [] });
   const queryClient = useQueryClient();
 
   const isStale =
@@ -52,23 +78,32 @@ export default function BulletCard({
     bullet.content_hash &&
     bullet.content_hash !== bullet.ai_analysis.content_hash_at_analysis;
 
+  const checkDuplicates = async (text: string) => {
+    try {
+      const result = await api.post<DuplicateCheckResult>(
+        `/bullets/${bullet.id}/check-duplicates`,
+        {}
+      );
+      if (result.has_duplicates && (result.within_job?.length > 0 || result.cross_job?.length > 0)) {
+        setDupWarning({
+          open: true,
+          withinJob: result.within_job || [],
+          crossJob: result.cross_job || [],
+          pendingText: text,
+        });
+        return;
+      }
+    } catch {
+      // Duplicate check is optional
+    }
+    onRefresh();
+  };
+
   const updateMutation = useMutation({
     mutationFn: (text: string) => api.patch(`/bullets/${bullet.id}`, { text }),
-    onSuccess: async () => {
+    onSuccess: async (_data, text) => {
       setEditing(false);
-      onRefresh();
-      // Check duplicates
-      try {
-        const result = await api.post<{ has_duplicates: boolean; summary?: string }>(
-          `/bullets/${bullet.id}/check-duplicates`,
-          {}
-        );
-        if (result.has_duplicates) {
-          window.confirm(`Duplicate detected: ${result.summary || 'Similar bullet exists.'}`);
-        }
-      } catch {
-        // Duplicate check is optional
-      }
+      await checkDuplicates(text);
     },
   });
 
@@ -86,19 +121,31 @@ export default function BulletCard({
   });
 
   const wordsmithMutation = useMutation({
-    mutationFn: () => api.post(`/bullets/${bullet.id}/wordsmith`, {}),
-    onSuccess: () => onRefresh(),
+    mutationFn: (instruction: string) => api.post(`/bullets/${bullet.id}/wordsmith`, { instruction }),
+    onSuccess: () => { setAiModal((s) => ({ ...s, open: false })); onRefresh(); },
   });
 
   const variantMutation = useMutation({
-    mutationFn: () => api.post(`/bullets/${bullet.id}/variant`, {}),
-    onSuccess: () => onRefresh(),
+    mutationFn: (instruction: string) => api.post(`/bullets/${bullet.id}/variant`, { instruction }),
+    onSuccess: () => { setAiModal((s) => ({ ...s, open: false })); onRefresh(); },
   });
 
   const strengthenMutation = useMutation({
-    mutationFn: () => api.post(`/bullets/${bullet.id}/strengthen`, {}),
-    onSuccess: () => onRefresh(),
+    mutationFn: (instruction: string) => api.post(`/bullets/${bullet.id}/strengthen`, { instruction }),
+    onSuccess: () => { setAiModal((s) => ({ ...s, open: false })); onRefresh(); },
   });
+
+  const openAiModal = (action: string, title: string, placeholder: string) => {
+    setAiModal({ open: true, action, title, placeholder });
+  };
+
+  const handleAiSubmit = (instruction: string) => {
+    if (aiModal.action === 'wordsmith') wordsmithMutation.mutate(instruction);
+    else if (aiModal.action === 'variant') variantMutation.mutate(instruction);
+    else if (aiModal.action === 'strengthen') strengthenMutation.mutate(instruction);
+  };
+
+  const aiLoading = wordsmithMutation.isPending || variantMutation.isPending || strengthenMutation.isPending;
 
   const startEdit = () => {
     setEditText(bullet.text);
@@ -230,7 +277,7 @@ export default function BulletCard({
               {aiEnabled && (
                 <>
                   <button
-                    onClick={() => wordsmithMutation.mutate()}
+                    onClick={() => openAiModal('wordsmith', 'Wordsmith', 'How should this bullet be reworded?')}
                     disabled={wordsmithMutation.isPending}
                     className="text-xs text-gray-400 hover:text-purple-300 disabled:opacity-50"
                     title="Wordsmith"
@@ -238,7 +285,7 @@ export default function BulletCard({
                     🤖
                   </button>
                   <button
-                    onClick={() => variantMutation.mutate()}
+                    onClick={() => openAiModal('variant', 'Create Variant', 'What angle should this variant take?')}
                     disabled={variantMutation.isPending}
                     className="text-xs text-gray-400 hover:text-purple-300 disabled:opacity-50"
                     title="Variant"
@@ -247,7 +294,7 @@ export default function BulletCard({
                   </button>
                   {bullet.ai_analysis?.strength === 'weak' && (
                     <button
-                      onClick={() => strengthenMutation.mutate()}
+                      onClick={() => openAiModal('strengthen', 'Strengthen Bullet', 'What metrics or context should be added?')}
                       disabled={strengthenMutation.isPending}
                       className="text-xs text-gray-400 hover:text-green-300 disabled:opacity-50"
                       title="Strengthen"
@@ -261,6 +308,28 @@ export default function BulletCard({
           )}
         </div>
       </div>
+
+      {/* AI Instruction Modal */}
+      <AiInstructionModal
+        isOpen={aiModal.open}
+        onClose={() => setAiModal((s) => ({ ...s, open: false }))}
+        onSubmit={handleAiSubmit}
+        title={aiModal.title}
+        placeholder={aiModal.placeholder}
+        loading={aiLoading}
+      />
+
+      {/* Duplicate Warning Modal */}
+      <DuplicateWarning
+        isOpen={dupWarning.open}
+        onClose={() => setDupWarning((s) => ({ ...s, open: false }))}
+        onContinue={() => {
+          setDupWarning((s) => ({ ...s, open: false }));
+          onRefresh();
+        }}
+        withinJob={dupWarning.withinJob}
+        crossJob={dupWarning.crossJob}
+      />
     </div>
   );
 }

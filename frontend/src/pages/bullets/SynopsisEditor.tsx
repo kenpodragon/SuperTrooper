@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import AiInstructionModal from './AiInstructionModal';
 
 interface Synopsis {
   id: number;
@@ -20,8 +21,8 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
   const [activeTab, setActiveTab] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState('');
-  const [generatePrompt, setGeneratePrompt] = useState('');
-  const [showGenerate, setShowGenerate] = useState(false);
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [showWordsmithModal, setShowWordsmithModal] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: synopses = [], isLoading } = useQuery<Synopsis[]>({
@@ -51,11 +52,6 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
     },
   });
 
-  const wordsmithMutation = useMutation({
-    mutationFn: (id: number) => api.post(`/bullets/${id}/wordsmith`, {}),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['synopses', jobId] }),
-  });
-
   const generateMutation = useMutation({
     mutationFn: (prompt: string) =>
       api.post('/bullets/generate', {
@@ -65,8 +61,16 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['synopses', jobId] });
-      setShowGenerate(false);
-      setGeneratePrompt('');
+      setShowGenerateModal(false);
+    },
+  });
+
+  const wordsmithWithInstructionMutation = useMutation({
+    mutationFn: ({ id, instruction }: { id: number; instruction: string }) =>
+      api.post(`/bullets/${id}/wordsmith`, { instruction }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['synopses', jobId] });
+      setShowWordsmithModal(false);
     },
   });
 
@@ -106,7 +110,7 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
         <div className="flex-1" />
         {aiEnabled && (
           <button
-            onClick={() => setShowGenerate(!showGenerate)}
+            onClick={() => setShowGenerateModal(true)}
             className="text-xs px-2 py-1 bg-purple-600/30 text-purple-300 hover:bg-purple-600/50 rounded"
           >
             Generate
@@ -121,24 +125,27 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
         </button>
       </div>
 
-      {/* Generate prompt */}
-      {showGenerate && (
-        <div className="px-4 py-2 border-b border-blue-800/50 flex gap-2">
-          <input
-            value={generatePrompt}
-            onChange={(e) => setGeneratePrompt(e.target.value)}
-            placeholder="Instruction for AI generation..."
-            className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
-          />
-          <button
-            onClick={() => generateMutation.mutate(generatePrompt)}
-            disabled={generateMutation.isPending}
-            className="text-xs px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded disabled:opacity-50"
-          >
-            {generateMutation.isPending ? 'Generating...' : 'Go'}
-          </button>
-        </div>
-      )}
+      {/* Generate Modal */}
+      <AiInstructionModal
+        isOpen={showGenerateModal}
+        onClose={() => setShowGenerateModal(false)}
+        onSubmit={(instruction) => generateMutation.mutate(instruction)}
+        title="Generate Synopsis"
+        placeholder="Describe the synopsis you want generated..."
+        loading={generateMutation.isPending}
+      />
+
+      {/* Wordsmith Modal */}
+      <AiInstructionModal
+        isOpen={showWordsmithModal}
+        onClose={() => setShowWordsmithModal(false)}
+        onSubmit={(instruction) => {
+          if (active) wordsmithWithInstructionMutation.mutate({ id: active.id, instruction });
+        }}
+        title="Wordsmith Synopsis"
+        placeholder="How should this synopsis be reworded?"
+        loading={wordsmithWithInstructionMutation.isPending}
+      />
 
       {synopses.length === 0 ? (
         <div className="px-4 py-6 text-center text-gray-500 text-sm">
@@ -208,8 +215,8 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
                     </button>
                     {aiEnabled && (
                       <button
-                        onClick={() => wordsmithMutation.mutate(active.id)}
-                        disabled={wordsmithMutation.isPending}
+                        onClick={() => setShowWordsmithModal(true)}
+                        disabled={wordsmithWithInstructionMutation.isPending}
                         className="text-xs text-purple-400 hover:text-purple-300 disabled:opacity-50"
                       >
                         ✨ Wordsmith

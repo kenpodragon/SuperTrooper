@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import BulletCard, { type Bullet } from './BulletCard';
+import AiInstructionModal from './AiInstructionModal';
 
 interface BulletListProps {
   jobId: number;
@@ -19,6 +20,7 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [sortMode, setSortMode] = useState<SortMode>('order');
   const [dragId, setDragId] = useState<number | null>(null);
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: bullets = [], isLoading } = useQuery<Bullet[]>({
@@ -50,6 +52,19 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
         display_order: bullets.length,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['bullets', jobId] }),
+  });
+
+  const generateMutation = useMutation({
+    mutationFn: (instruction: string) =>
+      api.post('/bullets/generate', {
+        career_history_id: jobId,
+        type: 'achievement',
+        instruction,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['bullets', jobId] });
+      setShowGenerateModal(false);
+    },
   });
 
   const reorderMutation = useMutation({
@@ -187,7 +202,10 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
         </button>
 
         <button
-          onClick={() => addMutation.mutate()}
+          onClick={() => {
+            if (aiEnabled) setShowGenerateModal(true);
+            else addMutation.mutate();
+          }}
           disabled={addMutation.isPending}
           className="text-xs px-2 py-1 bg-blue-600/30 text-blue-300 hover:bg-blue-600/50 rounded"
         >
@@ -248,6 +266,16 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
           ))
         )}
       </div>
+
+      {/* AI Generate Modal */}
+      <AiInstructionModal
+        isOpen={showGenerateModal}
+        onClose={() => setShowGenerateModal(false)}
+        onSubmit={(instruction) => generateMutation.mutate(instruction)}
+        title="Generate New Bullet"
+        placeholder="Create a bullet about cloud migration savings..."
+        loading={generateMutation.isPending}
+      />
     </div>
   );
 }
