@@ -7,9 +7,13 @@ interface RoleDuplicate { employer: string; group: number[]; titles: string[]; }
 interface DuplicatesData { company_duplicates: CompanyDuplicate[]; role_duplicates: RoleDuplicate[]; }
 
 interface StagedMerge {
-  keep_id: number;
-  merge_ids: number[];
-  new_employer?: string;
+  mergeType: 'company' | 'role';
+  // Company merge: just rename
+  employer_names?: string[];
+  keep_name?: string;
+  // Role merge: consolidate jobs
+  keep_id?: number;
+  merge_ids?: number[];
   new_title?: string;
   label: string;
 }
@@ -78,15 +82,15 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
   const stagedCompanyNames = useMemo(() => {
     const names = new Set<string>();
     for (const m of stagedMerges) {
-      if (m.new_employer) {
-        // The merge_ids companies are consumed — find their names
-        for (const g of employerGroups) {
-          if (g.jobs.some((j) => m.merge_ids.includes(j.id))) names.add(g.employer);
+      if (m.mergeType === 'company' && m.employer_names) {
+        // All names in this merge group are consumed (they'll become keep_name)
+        for (const n of m.employer_names) {
+          if (n !== m.keep_name) names.add(n);
         }
       }
     }
     return names;
-  }, [stagedMerges, employerGroups]);
+  }, [stagedMerges]);
 
   const stagedRoleIds = useMemo(() => {
     const ids = new Set<number>();
@@ -143,13 +147,14 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
       const dup = autoData.company_duplicates[idx];
       const keepName = dup.names[autoSelections[key] ?? 0];
       setStagedMerges((prev) => [...prev, {
-        keep_id: dup.group[0], merge_ids: dup.group.slice(1), new_employer: keepName,
+        mergeType: 'company', employer_names: dup.names, keep_name: keepName,
         label: `Companies: ${dup.names.map((n) => `"${n}"`).join(' + ')} → "${keepName}"`,
       }]);
     } else {
       const dup = autoData.role_duplicates[idx];
       const si = autoSelections[key] ?? 0;
       setStagedMerges((prev) => [...prev, {
+        mergeType: 'role',
         keep_id: dup.group[si], merge_ids: dup.group.filter((_, i) => i !== si),
         new_title: dup.titles[si],
         label: `Roles at "${dup.employer}": ${dup.titles.map((t) => `"${t}"`).join(' + ')} → "${dup.titles[si]}"`,
@@ -176,15 +181,9 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
   const confirmCompanyMerge = () => {
     if (!companyKeepChoice) return;
     const names = Array.from(companyChecked);
-    const allIds: number[] = [];
-    for (const name of names) {
-      const group = employerGroups.find((g) => g.employer === name);
-      if (group) allIds.push(...group.jobs.map((j) => j.id));
-    }
-    if (allIds.length < 2) return;
 
     setStagedMerges((prev) => [...prev, {
-      keep_id: allIds[0], merge_ids: allIds.slice(1), new_employer: companyKeepChoice,
+      mergeType: 'company', employer_names: names, keep_name: companyKeepChoice,
       label: `Companies: ${names.map((n) => `"${n}"`).join(' + ')} → "${companyKeepChoice}"`,
     }]);
     setCompanyChecked(new Set());
@@ -215,6 +214,7 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
     const mergeIds = ids.filter((id) => id !== roleKeepChoice);
 
     setStagedMerges((prev) => [...prev, {
+      mergeType: 'role',
       keep_id: roleKeepChoice, merge_ids: mergeIds, new_title: keepJob?.title,
       label: `Roles: ${jobs.map((j) => `"${j.title}"`).join(' + ')} → "${keepJob?.title || ''}"`,
     }]);
@@ -230,14 +230,23 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
     if (stagedMerges.length === 0) { alert('No merges staged.'); return; }
     setSaving(true); setError(null);
     for (let i = 0; i < stagedMerges.length; i++) {
+      const merge = stagedMerges[i];
       setSaveProgress(`Executing ${i + 1} of ${stagedMerges.length}...`);
       try {
-        await api.post('/career-history/merge', {
-          keep_id: stagedMerges[i].keep_id,
-          merge_ids: stagedMerges[i].merge_ids,
-          new_employer: stagedMerges[i].new_employer,
-          new_title: stagedMerges[i].new_title,
-        });
+        if (merge.mergeType === 'company') {
+          // Company merge: just rename employers, keep all jobs separate
+          await api.post('/career-history/merge-companies', {
+            employer_names: merge.employer_names,
+            keep_name: merge.keep_name,
+          });
+        } else {
+          // Role merge: consolidate jobs, move bullets
+          await api.post('/career-history/merge', {
+            keep_id: merge.keep_id,
+            merge_ids: merge.merge_ids,
+            new_title: merge.new_title,
+          });
+        }
       } catch (e) {
         setError(`Merge ${i + 1} failed: ${(e as Error).message}`);
         setSaving(false); return;

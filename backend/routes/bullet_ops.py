@@ -896,6 +896,42 @@ def merge_jobs():
 
 
 # ---------------------------------------------------------------------------
+# POST /api/career-history/merge-companies — rename employer across jobs
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/career-history/merge-companies", methods=["POST"])
+def merge_companies():
+    """Merge companies by renaming employer on all jobs. Does NOT consolidate roles.
+
+    Body: {employer_names: [str], keep_name: str}
+    Renames all career_history rows whose employer matches any of employer_names
+    to keep_name. Jobs and bullets remain separate.
+    """
+    data = request.get_json(force=True) or {}
+    employer_names = data.get("employer_names", [])
+    keep_name = data.get("keep_name", "").strip()
+
+    if not employer_names or not keep_name:
+        return jsonify({"error": "employer_names and keep_name are required"}), 400
+
+    # Rename all matching employers to keep_name
+    total_updated = 0
+    for name in employer_names:
+        if name == keep_name:
+            continue
+        count = db.execute(
+            "UPDATE career_history SET employer = %s WHERE employer = %s",
+            (keep_name, name),
+        )
+        total_updated += count
+
+    return jsonify({
+        "keep_name": keep_name,
+        "jobs_renamed": total_updated,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
 # POST /api/skills/sync-from-tags  — sync bullet tags to skills table
 # ---------------------------------------------------------------------------
 
