@@ -5,11 +5,12 @@ interface Props {
   onAiReview: () => void;
   onAtsScore: () => void;
   onToggleTheme: () => void;
+  onAiGenerate: () => void;
   generating?: boolean;
 }
 
 export default function EditorToolbar({
-  recipeName, saveState, onGenerate, onAiReview, onAtsScore, onToggleTheme, generating,
+  recipeName, saveState, onGenerate, onAiReview, onAtsScore, onToggleTheme, onAiGenerate, generating,
 }: Props) {
   return (
     <div className="sticky top-0 z-20 bg-gray-900 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
@@ -25,6 +26,7 @@ export default function EditorToolbar({
       </div>
       <div className="flex items-center gap-2">
         <button onClick={onToggleTheme} className="px-3 py-1.5 text-sm bg-gray-800 rounded hover:bg-gray-700">Theme</button>
+        <button onClick={onAiGenerate} className="px-3 py-1.5 text-sm bg-purple-700 rounded hover:bg-purple-600">AI Generate</button>
         <button onClick={onAiReview} className="px-3 py-1.5 text-sm bg-gray-800 rounded hover:bg-gray-700">AI Review</button>
         <button onClick={onAtsScore} className="px-3 py-1.5 text-sm bg-gray-800 rounded hover:bg-gray-700">ATS Score</button>
         <button onClick={onGenerate} disabled={generating} className="px-3 py-1.5 text-sm bg-blue-600 rounded hover:bg-blue-500 disabled:opacity-50">

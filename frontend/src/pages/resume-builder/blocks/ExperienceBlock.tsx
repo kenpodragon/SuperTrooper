@@ -36,10 +36,11 @@ interface Props {
   onRecipeChange: (updatedExperience: JobEntry[]) => void;
   onPickBullet?: (jobIndex: number) => void;
   onAddJob?: () => void;
+  onAiGenerate?: (jobIndex: number) => void;
 }
 
 export default function ExperienceBlock({
-  jobs, resolvedJobs, recipeId, onRecipeChange, onPickBullet, onAddJob,
+  jobs, resolvedJobs, recipeId, onRecipeChange, onPickBullet, onAddJob, onAiGenerate,
 }: Props) {
   const qc = useQueryClient();
 
@@ -138,9 +139,14 @@ export default function ExperienceBlock({
               </ul>
             </SortableContext>
           </DndContext>
-          <button onClick={() => onPickBullet?.(jobIdx)} className="text-xs text-blue-400 hover:text-blue-300 mt-2 ml-6">
-            + Add bullet
-          </button>
+          <div className="flex items-center gap-3 mt-2 ml-6">
+            <button onClick={() => onPickBullet?.(jobIdx)} className="text-xs text-blue-400 hover:text-blue-300">
+              + Add bullet
+            </button>
+            <button onClick={() => onAiGenerate?.(jobIdx)} className="text-xs text-purple-400 hover:text-purple-300">
+              AI Generate
+            </button>
+          </div>
         </div>
       ))}
       <button onClick={onAddJob} className="text-sm text-blue-400 hover:text-blue-300 mt-4">

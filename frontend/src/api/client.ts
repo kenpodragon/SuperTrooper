@@ -228,6 +228,38 @@ export const activity = {
   list: (params = '') => api.get<ActivityItem[]>(`/activity${params}`),
 };
 
+// --- AI Generate Slot ---
+
+export interface GenerateSlotSuggestion {
+  text: string;
+  confidence: number;
+  source: string;
+  bullet_id?: number;
+}
+
+export interface GenerateSlotResult {
+  suggestions: GenerateSlotSuggestion[];
+  analysis_mode: string;
+}
+
+export interface GenerateSlotContext {
+  job_id?: number;
+  existing_bullets?: string[];
+  target_role?: string;
+  instructions?: string;
+}
+
+export function recipeGenerateSlot(
+  recipeId: number,
+  slotType: string,
+  context: GenerateSlotContext,
+): Promise<GenerateSlotResult> {
+  return api.post<GenerateSlotResult>(
+    `/resume/recipes/${recipeId}/ai-generate-slot`,
+    { slot_type: slotType, context },
+  );
+}
+
 export const analytics = {
   funnel: () => api.get<Record<string, unknown>[]>('/analytics/funnel'),
 };

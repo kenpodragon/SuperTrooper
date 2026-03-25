@@ -10,6 +10,7 @@ import LiteralListBlock from './blocks/LiteralListBlock';
 import ThemePanel from './ThemePanel';
 import AtsScoreModal from './AtsScoreModal';
 import AiReviewPanel from './AiReviewPanel';
+import AiGenerateModal from './AiGenerateModal';
 import ContentPickerModal from './ContentPickerModal';
 import type { BulletRef, SkillRef, RecipeV2, ResolvedV2, ThemeSettings } from './types';
 
@@ -33,6 +34,12 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
     mode: 'bullets' | 'jobs' | 'summaries';
     jobIndex?: number;
     filterEmployer?: string;
+  } | null>(null);
+  const [generateState, setGenerateState] = useState<{
+    slotType: string;
+    jobId?: number;
+    jobIndex?: number;
+    existingBullets?: string[];
   } | null>(null);
 
   // Sync resolved when initial data changes (e.g. after query refetch)
@@ -140,6 +147,7 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
         onAiReview={() => setShowAiReview(true)}
         onAtsScore={() => setShowAtsScore(true)}
         onToggleTheme={() => setShowTheme(!showTheme)}
+        onAiGenerate={() => setGenerateState({ slotType: 'bullet' })}
         generating={generateMutation.isPending}
       />
 
@@ -194,6 +202,16 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
                   filterEmployer: resolved.experience?.[jobIdx]?.employer,
                 })}
                 onAddJob={() => setPickerState({ mode: 'jobs' })}
+                onAiGenerate={(jobIdx) => {
+                  const job = recipe.experience?.[jobIdx];
+                  const rJob = resolved.experience?.[jobIdx];
+                  setGenerateState({
+                    slotType: 'bullet',
+                    jobId: job?.id,
+                    jobIndex: jobIdx,
+                    existingBullets: rJob?.bullets ?? [],
+                  });
+                }}
               />
             )}
 
@@ -283,6 +301,41 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
         <AiReviewPanel
           recipeId={recipeId}
           onClose={() => setShowAiReview(false)}
+        />
+      )}
+      {generateState && (
+        <AiGenerateModal
+          recipeId={recipeId}
+          slotType={generateState.slotType}
+          jobId={generateState.jobId}
+          existingBullets={generateState.existingBullets}
+          onSelect={(text) => {
+            if (generateState.slotType === 'bullet' && generateState.jobIndex != null) {
+              updateRecipe(r => {
+                const exp = [...(r.experience ?? [])];
+                exp[generateState.jobIndex!] = {
+                  ...exp[generateState.jobIndex!],
+                  bullets: [...exp[generateState.jobIndex!].bullets, { literal: text }],
+                };
+                return { ...r, experience: exp };
+              });
+            } else if (generateState.slotType === 'summary') {
+              updateRecipe(r => ({ ...r, summary: { literal: text } }));
+            } else if (generateState.slotType === 'highlight') {
+              updateRecipe(r => ({
+                ...r,
+                highlights: [...(r.highlights ?? []), { literal: text }],
+              }));
+            } else if (generateState.slotType === 'bullet') {
+              // Generic bullet from toolbar (no job context) - add as highlight
+              updateRecipe(r => ({
+                ...r,
+                highlights: [...(r.highlights ?? []), { literal: text }],
+              }));
+            }
+            setGenerateState(null);
+          }}
+          onClose={() => setGenerateState(null)}
         />
       )}
     </div>

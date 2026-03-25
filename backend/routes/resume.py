@@ -1838,3 +1838,171 @@ Be specific and actionable. Severity must be "high", "medium", or "low"."""
 
     result = route_inference("recipe_ai_review", ai_context, _python_fallback, _ai_handler)
     return jsonify(result), 200
+
+
+# ---------------------------------------------------------------------------
+# AI Generate Slot
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/ai-generate-slot", methods=["POST"])
+def ai_generate_slot(recipe_id):
+    """Generate content suggestions for a recipe slot (bullet, summary, highlight, job_intro).
+
+    Uses route_inference: AI when available, Python fallback otherwise.
+    """
+    row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not row:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    data = request.get_json(force=True) or {}
+    slot_type = data.get("slot_type", "bullet")
+    ctx = data.get("context", {})
+    job_id = ctx.get("job_id")
+    existing_bullets = ctx.get("existing_bullets", [])
+    target_role = ctx.get("target_role", "")
+    instructions = ctx.get("instructions", "")
+
+    # Build context for route_inference
+    ai_context = {
+        "slot_type": slot_type,
+        "job_id": job_id,
+        "existing_bullets": existing_bullets,
+        "target_role": target_role,
+        "instructions": instructions,
+        "recipe_id": recipe_id,
+    }
+
+    def _python_fallback(ctx):
+        suggestions = []
+        st = ctx["slot_type"]
+        jid = ctx["job_id"]
+        existing = set(ctx["existing_bullets"])
+
+        if st == "bullet" and jid:
+            rows = db.query(
+                "SELECT id, text FROM bullets WHERE career_history_id = %s ORDER BY display_order",
+                (jid,),
+            )
+            for r in rows:
+                if r["text"] not in existing:
+                    suggestions.append({
+                        "text": r["text"],
+                        "confidence": 0.7,
+                        "source": "existing_bullet",
+                        "bullet_id": r["id"],
+                    })
+
+        elif st == "summary":
+            rows = db.query(
+                "SELECT id, text, role_type FROM summary_variants ORDER BY id"
+            )
+            for r in rows:
+                suggestions.append({
+                    "text": r["text"],
+                    "confidence": 0.7,
+                    "source": f"summary_{r.get('role_type', 'base')}",
+                })
+
+        elif st == "highlight":
+            rows = db.query(
+                """SELECT b.id, b.text, ch.employer
+                   FROM bullets b
+                   JOIN career_history ch ON ch.id = b.career_history_id
+                   WHERE b.text ~ %s
+                   ORDER BY b.display_order""",
+                (r"\$[\d,.]+|\d+%|\d+x",),
+            )
+            for r in rows:
+                suggestions.append({
+                    "text": r["text"],
+                    "confidence": 0.7,
+                    "source": f"metric_bullet_{r.get('employer', '')}",
+                    "bullet_id": r["id"],
+                })
+
+        elif st == "job_intro" and jid:
+            ch = db.query_one(
+                "SELECT intro_text FROM career_history WHERE id = %s",
+                (jid,),
+            )
+            if ch and ch.get("intro_text"):
+                intro = ch["intro_text"]
+                if isinstance(intro, dict):
+                    intro = intro.get("text", str(intro))
+                suggestions.append({
+                    "text": str(intro),
+                    "confidence": 0.8,
+                    "source": "career_history_intro",
+                })
+
+        return {"suggestions": suggestions, "analysis_mode": "rule_based"}
+
+    def _ai_handler(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+
+        st = ctx["slot_type"]
+        jid = ctx["job_id"]
+
+        # Build job context
+        job_context = ""
+        if jid:
+            ch = db.query_one(
+                "SELECT employer, title FROM career_history WHERE id = %s",
+                (jid,),
+            )
+            if ch:
+                job_context = f"Company: {ch['employer']}, Title: {ch['title']}"
+
+        # Load voice rules
+        voice_rows = db.query(
+            "SELECT rule_text FROM voice_rules WHERE is_active = true AND category = 'resume_rule' LIMIT 10"
+        )
+        voice_rules = "\n".join(r["rule_text"] for r in voice_rows)
+
+        # Load banned words
+        banned_rows = db.query(
+            "SELECT rule_text FROM voice_rules WHERE is_active = true AND category = 'banned_word'"
+        )
+        banned_words = [r["rule_text"].lower() for r in banned_rows]
+
+        existing_str = "\n".join(f"- {b}" for b in ctx["existing_bullets"]) if ctx["existing_bullets"] else "None"
+        target = ctx["target_role"] or "general tech leadership"
+        instr = ctx["instructions"] or "No special instructions"
+
+        prompt = f"""Generate 3-5 resume {st} suggestions for a {target} role.
+
+{f"Job context: {job_context}" if job_context else ""}
+Target role: {target}
+Special instructions: {instr}
+
+Existing content (do NOT duplicate):
+{existing_str}
+
+Voice rules to follow:
+{voice_rules}
+
+Each suggestion MUST include a concrete metric or measurable outcome.
+Return a JSON object with key "suggestions" containing an array of objects with "text" and "confidence" (0.0-1.0).
+"""
+        try:
+            ai_result = provider.generate(prompt, response_format="json")
+            if isinstance(ai_result, dict) and "suggestions" in ai_result:
+                filtered = []
+                for s in ai_result["suggestions"]:
+                    text = s.get("text", "")
+                    text_lower = text.lower()
+                    if not any(bw in text_lower for bw in banned_words):
+                        filtered.append({
+                            "text": text,
+                            "confidence": s.get("confidence", 0.8),
+                            "source": "ai_generated",
+                        })
+                return {"suggestions": filtered, "analysis_mode": "ai"}
+        except Exception as exc:
+            logger.warning("AI generate-slot failed, using fallback: %s", exc)
+
+        return _python_fallback(ctx)
+
+    result = route_inference("recipe_ai_generate_slot", ai_context, _python_fallback, _ai_handler)
+    return jsonify(result), 200
