@@ -74,17 +74,51 @@ export default function MergeDuplicatesModal({ isOpen, onClose, onComplete }: Pr
       .sort((a, b) => a.employer.localeCompare(b.employer));
   }, [allJobs]);
 
-  const filteredCompanies = useMemo(() => {
-    if (!companySearch.trim()) return employerGroups;
-    const q = companySearch.toLowerCase();
-    return employerGroups.filter((g) => g.employer.toLowerCase().includes(q));
-  }, [employerGroups, companySearch]);
+  // Companies already staged for merge — hide from list
+  const stagedCompanyNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const m of stagedMerges) {
+      if (m.new_employer) {
+        // The merge_ids companies are consumed — find their names
+        for (const g of employerGroups) {
+          if (g.jobs.some((j) => m.merge_ids.includes(j.id))) names.add(g.employer);
+        }
+      }
+    }
+    return names;
+  }, [stagedMerges, employerGroups]);
 
-  // For role step: only show companies with 2+ roles (after company merges are staged)
+  const stagedRoleIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const m of stagedMerges) {
+      ids.add(m.keep_id);
+      for (const id of m.merge_ids) ids.add(id);
+    }
+    return ids;
+  }, [stagedMerges]);
+
+  const filteredCompanies = useMemo(() => {
+    let groups = employerGroups.filter((g) => !stagedCompanyNames.has(g.employer));
+    if (companySearch.trim()) {
+      const q = companySearch.toLowerCase();
+      groups = groups.filter((g) => g.employer.toLowerCase().includes(q));
+    }
+    return groups;
+  }, [employerGroups, companySearch, stagedCompanyNames]);
+
+  // For role step: only show companies with 2+ roles, hide staged roles
   const companiesForRoles = useMemo(() => {
-    if (!roleSearch.trim()) return employerGroups.filter((g) => g.jobs.length >= 2);
-    const q = roleSearch.toLowerCase();
-    return employerGroups.filter((g) => g.jobs.length >= 2 && (g.employer.toLowerCase().includes(q) || g.jobs.some((j) => j.title.toLowerCase().includes(q))));
+    return employerGroups
+      .map((g) => ({
+        ...g,
+        jobs: g.jobs.filter((j) => !stagedMerges.some((m) => m.merge_ids.includes(j.id))),
+      }))
+      .filter((g) => g.jobs.length >= 2)
+      .filter((g) => {
+        if (!roleSearch.trim()) return true;
+        const q = roleSearch.toLowerCase();
+        return g.employer.toLowerCase().includes(q) || g.jobs.some((j) => j.title.toLowerCase().includes(q));
+      });
   }, [employerGroups, roleSearch]);
 
   if (!isOpen) return null;
