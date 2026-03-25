@@ -96,8 +96,6 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
   const [editingCompany, setEditingCompany] = useState<string | null>(null);
   const [editCompanyName, setEditCompanyName] = useState('');
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
-  const [duplicatesData, setDuplicatesData] = useState<any>(null);
-  const [loadingDuplicates, setLoadingDuplicates] = useState(false);
   const [mergingCompany, setMergingCompany] = useState<string | null>(null); // employer name in merge mode
   const [mergeChecked, setMergeChecked] = useState<Set<number>>(new Set());
   const [mergingRoles, setMergingRoles] = useState(false);
@@ -246,26 +244,7 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
     }
   };
 
-  // Merge duplicates
-  const openMergeModal = async () => {
-    setLoadingDuplicates(true);
-    try {
-      const data = await api.get<any>('/career-history/duplicates');
-      if (
-        (!data.company_duplicates || data.company_duplicates.length === 0) &&
-        (!data.role_duplicates || data.role_duplicates.length === 0)
-      ) {
-        alert('No duplicates found');
-        return;
-      }
-      setDuplicatesData(data);
-      setMergeModalOpen(true);
-    } catch (e) {
-      alert(`Failed to check duplicates: ${(e as Error).message}`);
-    } finally {
-      setLoadingDuplicates(false);
-    }
-  };
+  // Merge duplicates — wizard handles its own data loading
 
   const startMergeRoles = (employer: string) => {
     setMergingCompany(employer);
@@ -330,7 +309,6 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
     queryClient.invalidateQueries({ queryKey: ['career-history'] });
     queryClient.invalidateQueries({ queryKey: ['bullets-all'] });
     setMergeModalOpen(false);
-    setDuplicatesData(null);
   };
 
   return (
@@ -340,12 +318,11 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-sm font-semibold text-gray-100">Career History</h2>
           <button
-            onClick={openMergeModal}
-            disabled={loadingDuplicates}
-            className="text-xs text-yellow-400 hover:text-yellow-300 disabled:opacity-50"
+            onClick={() => setMergeModalOpen(true)}
+            className="text-xs text-yellow-400 hover:text-yellow-300"
             title="Find and merge duplicate companies/roles"
           >
-            {loadingDuplicates ? 'Checking...' : 'Merge Duplicates'}
+            Merge Duplicates
           </button>
         </div>
         <input
@@ -510,14 +487,11 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
       </div>
 
       {/* Merge Duplicates Modal */}
-      {duplicatesData && (
-        <MergeDuplicatesModal
-          isOpen={mergeModalOpen}
-          onClose={() => { setMergeModalOpen(false); setDuplicatesData(null); }}
-          onComplete={handleMergeComplete}
-          duplicates={duplicatesData}
-        />
-      )}
+      <MergeDuplicatesModal
+        isOpen={mergeModalOpen}
+        onClose={() => setMergeModalOpen(false)}
+        onComplete={handleMergeComplete}
+      />
     </div>
   );
 }
