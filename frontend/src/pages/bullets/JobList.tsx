@@ -2,10 +2,13 @@ import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import JobCard, { type CareerJob } from './JobCard';
+import MergeDuplicatesModal from './MergeDuplicatesModal';
+
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 interface JobListProps {
   selectedJobId: number | null;
-  onSelectJob: (id: number) => void;
+  onSelectJob: (id: number | null) => void;
 }
 
 interface CareerJobRow {
@@ -25,7 +28,7 @@ interface CareerJobRow {
   metadata?: Record<string, string> | null;
 }
 
-interface CompanyGroup {
+export interface CompanyGroup {
   employer: string;
   jobs: CareerJob[];
   totalBullets: number;
@@ -36,6 +39,9 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
   const [collapsedCompanies, setCollapsedCompanies] = useState<Set<string>>(new Set());
   const [editingCompany, setEditingCompany] = useState<string | null>(null);
   const [editCompanyName, setEditCompanyName] = useState('');
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [duplicatesData, setDuplicatesData] = useState<any>(null);
+  const [loadingDuplicates, setLoadingDuplicates] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: jobs = [], isLoading, refetch } = useQuery({
@@ -101,6 +107,14 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
     return result;
   }, [filtered]);
 
+  // Filter out UNASSIGNED if it has zero bullets
+  const visibleGroups = useMemo(() => {
+    return companyGroups.filter((g) => {
+      if (g.employer === 'UNASSIGNED' && g.totalBullets === 0) return false;
+      return true;
+    });
+  }, [companyGroups]);
+
   const totalBullets = useMemo(
     () => enrichedJobs.reduce((sum, j) => sum + (j.bullet_count || 0), 0),
     [enrichedJobs],
@@ -143,17 +157,75 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
     renameMutation.mutate({ oldName: editingCompany, newName: editCompanyName.trim() });
   };
 
+  // Delete company
+  const deleteCompany = async (group: CompanyGroup) => {
+    const msg = `Delete "${group.employer}" and all ${group.jobs.length} role(s) under it?`;
+    if (!window.confirm(msg)) return;
+
+    const keepBullets = window.confirm(
+      `Keep the bullets? They will be moved to UNASSIGNED.\n\nOK = Keep bullets\nCancel = Delete everything`
+    );
+
+    try {
+      const encodedEmployer = encodeURIComponent(group.employer);
+      await fetch(`${API_BASE}/company/${encodedEmployer}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keep_bullets: keepBullets }),
+      });
+      queryClient.invalidateQueries({ queryKey: ['career-history'] });
+      queryClient.invalidateQueries({ queryKey: ['bullets-all'] });
+      // Clear selection if deleted job was selected
+      if (group.jobs.some((j) => j.id === selectedJobId)) {
+        onSelectJob(null);
+      }
+    } catch (e) {
+      alert(`Delete failed: ${(e as Error).message}`);
+    }
+  };
+
+  // Merge duplicates
+  const openMergeModal = async () => {
+    setLoadingDuplicates(true);
+    try {
+      const data = await api.get<any>('/career-history/duplicates');
+      if (
+        (!data.company_duplicates || data.company_duplicates.length === 0) &&
+        (!data.role_duplicates || data.role_duplicates.length === 0)
+      ) {
+        alert('No duplicates found');
+        return;
+      }
+      setDuplicatesData(data);
+      setMergeModalOpen(true);
+    } catch (e) {
+      alert(`Failed to check duplicates: ${(e as Error).message}`);
+    } finally {
+      setLoadingDuplicates(false);
+    }
+  };
+
+  const handleMergeComplete = () => {
+    queryClient.invalidateQueries({ queryKey: ['career-history'] });
+    queryClient.invalidateQueries({ queryKey: ['bullets-all'] });
+    setMergeModalOpen(false);
+    setDuplicatesData(null);
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-700">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-sm font-semibold text-gray-100">Career History</h2>
-          <div className="flex gap-2 text-xs text-gray-500">
-            <span>{companyGroups.length} companies</span>
-            <span>{enrichedJobs.length} roles</span>
-            <span>{totalBullets} bullets</span>
-          </div>
+          <button
+            onClick={openMergeModal}
+            disabled={loadingDuplicates}
+            className="text-xs text-yellow-400 hover:text-yellow-300 disabled:opacity-50"
+            title="Find and merge duplicate companies/roles"
+          >
+            {loadingDuplicates ? 'Checking...' : 'Merge Duplicates'}
+          </button>
         </div>
         <input
           type="text"
@@ -168,14 +240,14 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (
           <div className="p-4 text-gray-500 text-sm">Loading career history...</div>
-        ) : companyGroups.length === 0 ? (
+        ) : visibleGroups.length === 0 ? (
           <div className="p-4 text-gray-500 text-sm">
             {search
               ? 'No jobs match your filter.'
               : 'No jobs found. Import a resume or add a job manually.'}
           </div>
         ) : (
-          companyGroups.map((group) => {
+          visibleGroups.map((group) => {
             const isCollapsed = collapsedCompanies.has(group.employer);
             const hasSelectedJob = group.jobs.some((j) => j.id === selectedJobId);
 
@@ -189,7 +261,7 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
                   onClick={() => toggleCompany(group.employer)}
                 >
                   <span className="text-gray-500 text-xs w-4 text-center">
-                    {isCollapsed ? '▸' : '▾'}
+                    {isCollapsed ? '\u25B8' : '\u25BE'}
                   </span>
 
                   {editingCompany === group.employer ? (
@@ -229,6 +301,13 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
                       >
                         ✏️
                       </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteCompany(group); }}
+                        className="text-gray-600 hover:text-red-400 text-xs"
+                        title="Delete company"
+                      >
+                        🗑
+                      </button>
                       <span className="text-xs text-gray-600">
                         {group.jobs.length} role{group.jobs.length > 1 ? 's' : ''} · {group.totalBullets}
                       </span>
@@ -245,6 +324,11 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
                         isSelected={selectedJobId === job.id}
                         onSelect={() => onSelectJob(job.id)}
                         onUpdate={() => refetch()}
+                        onDeleted={() => {
+                          if (selectedJobId === job.id) onSelectJob(null);
+                          queryClient.invalidateQueries({ queryKey: ['career-history'] });
+                          queryClient.invalidateQueries({ queryKey: ['bullets-all'] });
+                        }}
                       />
                     </div>
                   ))}
@@ -253,6 +337,16 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
           })
         )}
       </div>
+
+      {/* Merge Duplicates Modal */}
+      {duplicatesData && (
+        <MergeDuplicatesModal
+          isOpen={mergeModalOpen}
+          onClose={() => { setMergeModalOpen(false); setDuplicatesData(null); }}
+          onComplete={handleMergeComplete}
+          duplicates={duplicatesData}
+        />
+      )}
     </div>
   );
 }

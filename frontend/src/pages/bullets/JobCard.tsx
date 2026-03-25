@@ -26,11 +26,14 @@ interface JobCardProps {
   isSelected: boolean;
   onSelect: () => void;
   onUpdate: () => void;
+  onDeleted?: () => void;
 }
 
 type EditMode = 'collapsed' | 'view' | 'edit';
 
-export default function JobCard({ job, isSelected, onSelect, onUpdate }: JobCardProps) {
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted }: JobCardProps) {
   const [mode, setMode] = useState<EditMode>('collapsed');
   const [form, setForm] = useState<Record<string, string>>({});
   const [metaRows, setMetaRows] = useState<Array<{ key: string; value: string }>>([]);
@@ -162,6 +165,28 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate }: JobCard
               className="text-xs text-blue-400 hover:text-blue-300"
             >
               ✏️ Edit
+            </button>
+            <button
+              onClick={async () => {
+                const msg = `Delete "${job.title}" at "${job.employer}"? This job has ${job.bullet_count || 0} bullets.`;
+                if (!window.confirm(msg)) return;
+                const keepBullets = window.confirm(
+                  'Keep the bullets? They will be moved to UNASSIGNED.\n\nOK = Keep bullets\nCancel = Delete everything'
+                );
+                try {
+                  await fetch(`${API_BASE}/career-history/${job.id}/with-options`, {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keep_bullets: keepBullets }),
+                  });
+                  onDeleted?.();
+                } catch (e) {
+                  alert(`Delete failed: ${(e as Error).message}`);
+                }
+              }}
+              className="text-xs text-gray-500 hover:text-red-400"
+            >
+              🗑 Delete
             </button>
           </div>
         </div>
