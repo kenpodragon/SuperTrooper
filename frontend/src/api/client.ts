@@ -237,6 +237,31 @@ export const gapAnalyses = {
   get: (id: number) => api.get<GapAnalysis>(`/gap-analyses/${id}`),
 };
 
+// --- ATS Score for Recipes ---
+
+export interface AtsScoreResult {
+  ats_score: number;
+  keyword_matches: Record<string, boolean>;
+  match_percentage: number;
+  keywords_found: number;
+  keywords_checked: number;
+  formatting_flags: string[];
+  suggestions?: string[];
+  missing_keywords?: string[];
+  analysis_mode: string;
+}
+
+export async function recipeAtsScore(
+  recipeId: number,
+  jdText?: string,
+  applicationId?: number
+): Promise<AtsScoreResult> {
+  return api.post<AtsScoreResult>(`/resume/recipes/${recipeId}/ats-score`, {
+    jd_text: jdText,
+    application_id: applicationId,
+  });
+}
+
 export const staleApps = {
   list: (days = 14) => api.get<Application[]>(`/applications/stale?days=${days}`),
 };

@@ -1470,3 +1470,185 @@ def get_template_thumbnail(template_id):
         logger.warning("Failed to cache template thumbnail: %s", e)
 
     return Response(png_bytes, mimetype="image/png")
+
+
+# ---------------------------------------------------------------------------
+# ATS Score for Recipes (Phase 4)
+# ---------------------------------------------------------------------------
+
+# Stopwords for keyword extraction (shared with resume_tailoring)
+_ATS_STOPWORDS = frozenset(
+    "a an the and or but in on at to for of is it by with as from that this "
+    "be are was were been have has had do does did will would shall should may "
+    "might can could not no nor so if then than too very also about above after "
+    "again all am any because before between both but each few further get got "
+    "here how into just more most no only other our out over own same she some "
+    "such their them there these they through under until up us we what when "
+    "where which while who whom why you your able must need per via etc".split()
+)
+
+
+def _ats_extract_keywords(text: str) -> list[dict]:
+    """Extract keywords from text, returning [{keyword, count}] sorted by count desc."""
+    words = re.findall(r"[a-zA-Z][a-zA-Z+#.\-]{1,}", text.lower())
+    freq: dict[str, int] = {}
+    for w in words:
+        w_clean = w.strip(".-")
+        if w_clean and w_clean not in _ATS_STOPWORDS and len(w_clean) > 2:
+            freq[w_clean] = freq.get(w_clean, 0) + 1
+    return sorted(
+        [{"keyword": k, "count": v} for k, v in freq.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )
+
+
+def _resolved_to_text(resolved: dict) -> str:
+    """Convert a resolved recipe dict to plain text by joining all string values and list items."""
+    parts: list[str] = []
+
+    def _collect(obj):
+        if isinstance(obj, str):
+            parts.append(obj)
+        elif isinstance(obj, list):
+            for item in obj:
+                _collect(item)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _collect(v)
+
+    _collect(resolved)
+    return " ".join(parts)
+
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/ats-score", methods=["POST"])
+def recipe_ats_score(recipe_id):
+    """Score a recipe-based resume against a JD for ATS compatibility.
+
+    Body (JSON):
+        jd_text: optional job description text
+        application_id: optional — pulls JD from applications table
+    """
+    row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not row:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    data = request.get_json(force=True) if request.is_json else {}
+    jd_text = data.get("jd_text")
+    application_id = data.get("application_id")
+
+    # If application_id provided and no jd_text, fetch JD from applications
+    if application_id and not jd_text:
+        app_row = db.query_one(
+            "SELECT jd_text FROM applications WHERE id = %s", (application_id,)
+        )
+        if app_row and app_row.get("jd_text"):
+            jd_text = app_row["jd_text"]
+
+    # If still no JD, fall back to target_roles from settings preferences
+    if not jd_text:
+        settings_row = db.query_one(
+            "SELECT preferences FROM settings WHERE id = 1"
+        )
+        if settings_row and settings_row.get("preferences"):
+            prefs = settings_row["preferences"]
+            if isinstance(prefs, str):
+                prefs = json.loads(prefs)
+            target_roles = prefs.get("target_roles", [])
+            if target_roles:
+                jd_text = " ".join(target_roles)
+
+    if not jd_text:
+        return jsonify({"error": "No JD text available. Provide jd_text, application_id, or set target_roles in settings."}), 400
+
+    # Resolve recipe to full text
+    from mcp_tools_resume_gen import _resolve_recipe_db
+
+    recipe_json = row["recipe"]
+    if isinstance(recipe_json, str):
+        recipe_json = json.loads(recipe_json)
+    recipe_version = row.get("recipe_version", 1)
+    resolved = _resolve_recipe_db(recipe_json, recipe_version=recipe_version)
+    resume_text = _resolved_to_text(resolved)
+
+    if not resume_text.strip():
+        return jsonify({"error": "Recipe resolved to empty text"}), 400
+
+    # Extract keywords from JD
+    jd_keywords = _ats_extract_keywords(jd_text)
+    resume_lower = resume_text.lower()
+
+    # Check each JD keyword against resume
+    keyword_matches: dict[str, bool] = {}
+    found_count = 0
+    missing_keywords: list[str] = []
+    for kw in jd_keywords[:50]:
+        word = kw["keyword"]
+        matched = bool(re.search(r"\b" + re.escape(word) + r"\b", resume_lower))
+        keyword_matches[word] = matched
+        if matched:
+            found_count += 1
+        else:
+            missing_keywords.append(word)
+
+    total_checked = len(keyword_matches)
+    match_percentage = round((found_count / total_checked * 100), 1) if total_checked else 0
+
+    # Format score: recipe text is plain text (no HTML), so 100
+    format_score = 100
+    formatting_flags: list[str] = []
+    if "<table" in resume_lower:
+        format_score = 60
+        formatting_flags.append("Contains HTML tables")
+    if "<img" in resume_lower:
+        format_score = 60
+        formatting_flags.append("Contains images")
+
+    ats_score_val = round(match_percentage * 0.8 + format_score * 0.2)
+    ats_score_val = min(ats_score_val, 100)
+
+    python_result = {
+        "ats_score": ats_score_val,
+        "keyword_matches": keyword_matches,
+        "match_percentage": match_percentage,
+        "keywords_found": found_count,
+        "keywords_checked": total_checked,
+        "formatting_flags": formatting_flags,
+        "missing_keywords": missing_keywords,
+        "analysis_mode": "rule-based",
+    }
+
+    # AI enhancement via route_inference
+    ai_context = {
+        "resume_text": resume_text[:3000],
+        "jd_text": jd_text[:3000],
+        "python_result": python_result,
+    }
+
+    def _python_fallback(ctx):
+        return ctx["python_result"]
+
+    def _ai_handler(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        prompt = f"""Analyze this resume against the job description for ATS compatibility.
+
+Return a JSON object with these keys:
+- suggestions: array of 3-5 actionable improvements to boost the ATS score
+
+RESUME (first 3000 chars):
+{ctx["resume_text"]}
+
+JOB DESCRIPTION (first 3000 chars):
+{ctx["jd_text"]}
+
+Current keyword match: {ctx["python_result"]["match_percentage"]}%
+Missing keywords: {", ".join(ctx["python_result"]["missing_keywords"][:15])}"""
+        ai_result = provider.generate(prompt, response_format="json")
+        merged = {**ctx["python_result"], "analysis_mode": "ai-enhanced"}
+        if isinstance(ai_result, dict) and ai_result.get("suggestions"):
+            merged["suggestions"] = ai_result["suggestions"]
+        return merged
+
+    result = route_inference("recipe_ats_score", ai_context, _python_fallback, _ai_handler)
+    return jsonify(result), 200
