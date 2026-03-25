@@ -71,7 +71,7 @@ export default function BulletBrowser() {
   return (
     <div className="flex h-[calc(100vh-64px)]">
       {/* Left Panel */}
-      <div className="w-[340px] border-r border-gray-700 flex flex-col overflow-y-auto bg-gray-900">
+      <div className="w-[420px] border-r border-gray-700 flex flex-col overflow-y-auto bg-gray-900">
         <JobList selectedJobId={selectedJobId} onSelectJob={setSelectedJobId} />
       </div>
       {/* Right Panel */}

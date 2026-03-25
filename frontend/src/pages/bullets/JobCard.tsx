@@ -119,8 +119,16 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted
         <span className="text-gray-500 text-xs">{expanded ? '\u25BE' : '\u25B8'}</span>
         <div className="flex-1 min-w-0">
           <div className="font-semibold text-sm text-gray-100 truncate">{job.title}</div>
-          <div className="text-xs text-gray-400 truncate">{job.employer}</div>
         </div>
+        <span className="shrink-0 text-xs text-gray-500">
+          {(() => {
+            const s = job.start_date?.match(/(\d{4})/)?.[1];
+            if (!s) return '';
+            if (!job.end_date) return `${s}–now`;
+            const e = job.end_date.match(/(\d{4})/)?.[1];
+            return e && s !== e ? `${s}–${e}` : s;
+          })()}
+        </span>
         {job.bullet_count !== undefined && (
           <span className="shrink-0 bg-blue-500/20 text-blue-300 text-xs px-2 py-0.5 rounded-full">
             {job.bullet_count}

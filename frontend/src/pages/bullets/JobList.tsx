@@ -34,6 +34,62 @@ export interface CompanyGroup {
   totalBullets: number;
 }
 
+/** Extract year from a date string, or null */
+function yearOf(d?: string | null): number | null {
+  if (!d) return null;
+  const m = d.match(/(\d{4})/);
+  return m ? parseInt(m[1]) : null;
+}
+
+/** Compute a date range string for a set of jobs.
+ *  Single span: "2011–2022". Gaps: "2011 ... 2022". Current: "2011 ... now" or "2011–now". */
+function jobsDateRange(jobs: CareerJob[]): string {
+  const starts: number[] = [];
+  const ends: (number | null)[] = [];
+  let hasCurrent = false;
+  for (const j of jobs) {
+    const s = yearOf(j.start_date);
+    if (s) starts.push(s);
+    if (!j.end_date && (j.is_current || !j.end_date)) {
+      hasCurrent = true;
+      ends.push(null);
+    } else {
+      const e = yearOf(j.end_date);
+      if (e) ends.push(e);
+    }
+  }
+  if (starts.length === 0) return '';
+  const earliest = Math.min(...starts);
+  const endLabel = hasCurrent ? 'now' : (ends.filter((e): e is number => e !== null).length > 0 ? String(Math.max(...ends.filter((e): e is number => e !== null))) : '');
+  if (!endLabel) return String(earliest);
+
+  // Detect gaps: sort jobs by start, check if any end < next start
+  const sorted = [...jobs].sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
+  let hasGap = false;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const thisEnd = yearOf(sorted[i].end_date);
+    const nextStart = yearOf(sorted[i + 1].start_date);
+    if (thisEnd && nextStart && nextStart - thisEnd > 1) {
+      hasGap = true;
+      break;
+    }
+  }
+
+  const sep = hasGap ? ' ... ' : '–';
+  return `${earliest}${sep}${endLabel}`;
+}
+
+/** Date range for a single job */
+function jobDateRange(job: CareerJob): string {
+  const s = yearOf(job.start_date);
+  if (!s) return '';
+  if (!job.end_date) return `${s}–now`;
+  const e = yearOf(job.end_date);
+  if (!e) return String(s);
+  if (s === e) return String(s);
+  return `${s}–${e}`;
+}
+
 export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
   const [search, setSearch] = useState('');
   const [collapsedCompanies, setCollapsedCompanies] = useState<Set<string>>(new Set());
@@ -294,23 +350,23 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
                       <span className="flex-1 text-sm font-semibold text-gray-200 truncate">
                         {group.employer}
                       </span>
+                      <span className="text-xs text-gray-500 shrink-0">
+                        {jobsDateRange(group.jobs)}
+                      </span>
                       <button
                         onClick={(e) => { e.stopPropagation(); startEditCompany(group.employer); }}
-                        className="text-gray-600 hover:text-gray-400 text-xs"
+                        className="text-gray-600 hover:text-gray-400 text-xs shrink-0"
                         title="Rename company"
                       >
                         ✏️
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); deleteCompany(group); }}
-                        className="text-gray-600 hover:text-red-400 text-xs"
+                        className="text-gray-600 hover:text-red-400 text-xs shrink-0"
                         title="Delete company"
                       >
                         🗑
                       </button>
-                      <span className="text-xs text-gray-600">
-                        {group.jobs.length} role{group.jobs.length > 1 ? 's' : ''} · {group.totalBullets}
-                      </span>
                     </>
                   )}
                 </div>
