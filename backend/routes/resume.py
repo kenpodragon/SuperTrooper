@@ -2006,3 +2006,176 @@ Return a JSON object with key "suggestions" containing an array of objects with 
 
     result = route_inference("recipe_ai_generate_slot", ai_context, _python_fallback, _ai_handler)
     return jsonify(result), 200
+
+
+# ---------------------------------------------------------------------------
+# Best Picks — rank bullets & jobs by JD relevance
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/resume/recipes/<int:recipe_id>/best-picks", methods=["POST"])
+def recipe_best_picks(recipe_id):
+    """Rank bullets and jobs by relevance to a JD. Input: {jd_text?, application_id?, limit: 10}."""
+    row = db.query_one("SELECT id FROM resume_recipes WHERE id = %s", (recipe_id,))
+    if not row:
+        return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
+
+    body = request.get_json(force=True) or {}
+    jd_text = body.get("jd_text")
+    application_id = body.get("application_id")
+    limit = min(body.get("limit", 10), 50)
+
+    if not jd_text and not application_id:
+        return jsonify({"error": "One of jd_text or application_id is required"}), 400
+
+    # Resolve JD text from application if needed
+    if not jd_text and application_id:
+        app_row = db.query_one("SELECT jd_text FROM applications WHERE id = %s", (application_id,))
+        if not app_row or not app_row.get("jd_text"):
+            return jsonify({"error": f"Application id={application_id} has no jd_text"}), 400
+        jd_text = app_row["jd_text"]
+
+    def _python_fallback(_ctx=None):
+        # 1. Load all bullets with job info
+        bullets_rows = db.query(
+            "SELECT b.id, b.text, b.career_history_id, ch.employer, ch.title "
+            "FROM bullets b JOIN career_history ch ON b.career_history_id = ch.id "
+            "ORDER BY ch.start_date DESC NULLS LAST, b.display_order"
+        )
+
+        # 2. Load all jobs
+        jobs_rows = db.query(
+            "SELECT id, employer, title, start_date, end_date "
+            "FROM career_history ORDER BY start_date DESC NULLS LAST"
+        )
+
+        # 3. Extract keywords from JD
+        keywords = _ats_extract_keywords(jd_text)
+        kw_set = {kw["keyword"].lower() for kw in keywords}
+        if not kw_set:
+            return {
+                "ranked_bullets": [],
+                "ranked_jobs": [],
+                "suggested_skills": [],
+                "analysis_mode": "rule_based",
+            }
+
+        # 4. Score each bullet by keyword overlap
+        scored_bullets = []
+        for b in bullets_rows:
+            text_lower = b["text"].lower()
+            matched = [kw for kw in kw_set if kw in text_lower]
+            relevance = len(matched) / len(kw_set) if kw_set else 0
+            scored_bullets.append({
+                "bullet_id": b["id"],
+                "text": b["text"],
+                "relevance": round(relevance, 4),
+                "job": f"{b['employer']} — {b['title']}",
+                "career_history_id": b["career_history_id"],
+                "matched_keywords": sorted(matched),
+            })
+
+        # 5. Rank bullets by relevance
+        scored_bullets.sort(key=lambda x: x["relevance"], reverse=True)
+        ranked_bullets = scored_bullets[:limit]
+
+        # 6. Rank jobs by average bullet relevance
+        from collections import defaultdict
+        job_scores = defaultdict(list)
+        for sb in scored_bullets:
+            job_scores[sb["career_history_id"]].append(sb["relevance"])
+
+        ranked_jobs = []
+        for j in jobs_rows:
+            scores = job_scores.get(j["id"], [])
+            avg = sum(scores) / len(scores) if scores else 0
+            ranked_jobs.append({
+                "career_history_id": j["id"],
+                "company": j["employer"],
+                "title": j["title"],
+                "relevance": round(avg, 4),
+                "reason": f"{len(scores)} bullets, avg relevance {round(avg * 100, 1)}%",
+            })
+        ranked_jobs.sort(key=lambda x: x["relevance"], reverse=True)
+
+        # 7. Suggest missing skills: JD keywords not in skills table
+        skill_rows = db.query("SELECT LOWER(name) AS name FROM skills")
+        skill_names = {r["name"] for r in skill_rows}
+        # Also check what's in the bullet text
+        all_bullet_text = " ".join(b["text"].lower() for b in bullets_rows)
+        suggested_skills = [
+            kw for kw in kw_set
+            if kw not in skill_names and kw not in all_bullet_text
+        ]
+        suggested_skills.sort()
+
+        return {
+            "ranked_bullets": ranked_bullets,
+            "ranked_jobs": ranked_jobs[:10],
+            "suggested_skills": suggested_skills[:20],
+            "analysis_mode": "rule_based",
+        }
+
+    def _ai_handler(provider, _ctx=None):
+        # Get top 20 bullets from fallback for AI to re-rank
+        fallback = _python_fallback()
+        top_bullets = fallback["ranked_bullets"][:20]
+
+        if not top_bullets:
+            return fallback
+
+        bullets_text = "\n".join(
+            f"[ID:{b['bullet_id']}] ({b['job']}) {b['text']}"
+            for b in top_bullets
+        )
+
+        prompt = f"""You are a resume optimization expert. Given a job description and a list of resume bullets, rank them by semantic relevance to the JD.
+
+JOB DESCRIPTION:
+{jd_text[:3000]}
+
+CANDIDATE BULLETS (top 20 by keyword match):
+{bullets_text}
+
+Return a JSON object with:
+- "ranked_bullet_ids": array of bullet IDs in order of relevance (most relevant first)
+- "job_reasons": object mapping career_history_id to a 1-sentence reason why that job is relevant
+- "suggested_skills": array of skills mentioned in the JD that the candidate should add
+
+Be precise and specific in your reasoning."""
+
+        try:
+            ai_result = provider.generate(prompt, response_format="json")
+            if isinstance(ai_result, dict):
+                # Re-order bullets by AI ranking
+                id_order = ai_result.get("ranked_bullet_ids", [])
+                bullet_map = {b["bullet_id"]: b for b in top_bullets}
+                reranked = []
+                for bid in id_order:
+                    if bid in bullet_map:
+                        reranked.append(bullet_map.pop(bid))
+                # Append any not mentioned by AI
+                reranked.extend(bullet_map.values())
+                # Re-score by position
+                for i, b in enumerate(reranked):
+                    b["relevance"] = round(1.0 - (i / max(len(reranked), 1)), 4)
+
+                # Enhance job reasons from AI
+                job_reasons = ai_result.get("job_reasons", {})
+                for j in fallback["ranked_jobs"]:
+                    chid = str(j["career_history_id"])
+                    if chid in job_reasons:
+                        j["reason"] = job_reasons[chid]
+
+                return {
+                    "ranked_bullets": reranked[:limit],
+                    "ranked_jobs": fallback["ranked_jobs"],
+                    "suggested_skills": ai_result.get("suggested_skills", fallback["suggested_skills"]),
+                    "analysis_mode": "ai",
+                }
+        except Exception as exc:
+            logger.warning("AI best-picks failed, using fallback: %s", exc)
+
+        return fallback
+
+    result = route_inference("recipe_best_picks", {"jd_text": jd_text}, _python_fallback, _ai_handler)
+    return jsonify(result), 200

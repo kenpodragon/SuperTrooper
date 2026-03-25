@@ -10,6 +10,7 @@ import LiteralListBlock from './blocks/LiteralListBlock';
 import ThemePanel from './ThemePanel';
 import AtsScoreModal from './AtsScoreModal';
 import AiReviewPanel from './AiReviewPanel';
+import BestPicksPanel from './BestPicksPanel';
 import AiGenerateModal from './AiGenerateModal';
 import ContentPickerModal from './ContentPickerModal';
 import type { BulletRef, SkillRef, RecipeV2, ResolvedV2, ThemeSettings } from './types';
@@ -30,6 +31,7 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
   const [showTheme, setShowTheme] = useState(false);
   const [showAtsScore, setShowAtsScore] = useState(false);
   const [showAiReview, setShowAiReview] = useState(false);
+  const [showBestPicks, setShowBestPicks] = useState(false);
   const [pickerState, setPickerState] = useState<{
     mode: 'bullets' | 'jobs' | 'summaries';
     jobIndex?: number;
@@ -146,6 +148,7 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
         onGenerate={() => generateMutation.mutate()}
         onAiReview={() => setShowAiReview(true)}
         onAtsScore={() => setShowAtsScore(true)}
+        onBestPicks={() => setShowBestPicks(true)}
         onToggleTheme={() => setShowTheme(!showTheme)}
         onAiGenerate={() => setGenerateState({ slotType: 'bullet' })}
         generating={generateMutation.isPending}
@@ -301,6 +304,13 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
         <AiReviewPanel
           recipeId={recipeId}
           onClose={() => setShowAiReview(false)}
+        />
+      )}
+      {showBestPicks && (
+        <BestPicksPanel
+          recipeId={recipeId}
+          applicationId={recipe?.application_id}
+          onClose={() => setShowBestPicks(false)}
         />
       )}
       {generateState && (

@@ -323,6 +323,45 @@ export async function recipeAiReview(recipeId: number): Promise<AiReviewResult> 
   return api.post<AiReviewResult>(`/resume/recipes/${recipeId}/ai-review`, {});
 }
 
+// --- Best Picks for Recipes ---
+
+export interface BestPicksBullet {
+  bullet_id: number;
+  text: string;
+  relevance: number;
+  job: string;
+  career_history_id: number;
+  matched_keywords: string[];
+}
+
+export interface BestPicksJob {
+  career_history_id: number;
+  company: string;
+  title: string;
+  relevance: number;
+  reason: string;
+}
+
+export interface BestPicksResult {
+  ranked_bullets: BestPicksBullet[];
+  ranked_jobs: BestPicksJob[];
+  suggested_skills: string[];
+  analysis_mode: 'ai' | 'rule_based';
+}
+
+export async function recipeBestPicks(
+  recipeId: number,
+  jdText?: string,
+  applicationId?: number,
+  limit?: number,
+): Promise<BestPicksResult> {
+  return api.post<BestPicksResult>(`/resume/recipes/${recipeId}/best-picks`, {
+    jd_text: jdText,
+    application_id: applicationId,
+    limit: limit ?? 10,
+  });
+}
+
 export const staleApps = {
   list: (days = 14) => api.get<Application[]>(`/applications/stale?days=${days}`),
 };
