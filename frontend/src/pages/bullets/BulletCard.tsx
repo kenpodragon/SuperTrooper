@@ -147,6 +147,20 @@ export default function BulletCard({
 
   const aiLoading = wordsmithMutation.isPending || variantMutation.isPending || strengthenMutation.isPending;
 
+  // Inline AI improve — updates editText without saving
+  const [inlineAiLoading, setInlineAiLoading] = useState(false);
+  const [showInlineAiInput, setShowInlineAiInput] = useState(false);
+  const [inlineAiInstruction, setInlineAiInstruction] = useState('');
+  const inlineAiImprove = async (instruction: string) => {
+    setInlineAiLoading(true);
+    try {
+      const result = await api.post<{ updated?: string; text?: string }>(`/bullets/${bullet.id}/wordsmith`, { instruction });
+      const improved = result.updated || result.text || '';
+      if (improved) setEditText(improved);
+    } catch { /* silent */ }
+    finally { setInlineAiLoading(false); }
+  };
+
   const startEdit = () => {
     setEditText(bullet.text);
     setEditing(true);
@@ -182,7 +196,7 @@ export default function BulletCard({
                 className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
                 autoFocus
               />
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
                 <button
                   onClick={() => updateMutation.mutate(editText)}
                   disabled={updateMutation.isPending}
@@ -196,7 +210,59 @@ export default function BulletCard({
                 >
                   Cancel
                 </button>
+                {aiEnabled && (
+                  <>
+                    <div className="w-px h-4 bg-gray-600 mx-1" />
+                    <button
+                      onClick={() => inlineAiImprove('Polish and strengthen this bullet. Add metrics if possible.')}
+                      disabled={inlineAiLoading || !editText.trim()}
+                      className="px-3 py-1 bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 text-xs rounded disabled:opacity-50 flex items-center gap-1"
+                    >
+                      {inlineAiLoading ? '✨ Improving...' : '✨ AI Improve'}
+                    </button>
+                    <button
+                      onClick={() => setShowInlineAiInput(!showInlineAiInput)}
+                      disabled={inlineAiLoading || !editText.trim()}
+                      className={`px-2 py-1 text-xs rounded disabled:opacity-50 ${showInlineAiInput ? 'bg-purple-600/50 text-purple-200' : 'bg-purple-600/20 hover:bg-purple-600/40 text-purple-300'}`}
+                      title="Custom AI instruction"
+                    >
+                      🤖
+                    </button>
+                  </>
+                )}
               </div>
+              {showInlineAiInput && aiEnabled && (
+                <div className="flex gap-2 items-center mt-1">
+                  <input
+                    value={inlineAiInstruction}
+                    onChange={(e) => setInlineAiInstruction(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && inlineAiInstruction.trim()) {
+                        inlineAiImprove(inlineAiInstruction.trim());
+                        setShowInlineAiInput(false);
+                        setInlineAiInstruction('');
+                      }
+                      if (e.key === 'Escape') { setShowInlineAiInput(false); setInlineAiInstruction(''); }
+                    }}
+                    placeholder="e.g., make it more concise, add leadership angle..."
+                    autoFocus
+                    className="flex-1 bg-gray-900 border border-purple-600/50 rounded px-2 py-1 text-xs text-gray-100 placeholder-gray-500 focus:border-purple-400 focus:outline-none"
+                  />
+                  <button
+                    onClick={() => {
+                      if (inlineAiInstruction.trim()) {
+                        inlineAiImprove(inlineAiInstruction.trim());
+                        setShowInlineAiInput(false);
+                        setInlineAiInstruction('');
+                      }
+                    }}
+                    disabled={!inlineAiInstruction.trim()}
+                    className="px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white text-xs rounded disabled:opacity-50"
+                  >
+                    Go
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <>

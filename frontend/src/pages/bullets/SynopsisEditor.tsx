@@ -23,6 +23,9 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
   const [editText, setEditText] = useState('');
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showWordsmithModal, setShowWordsmithModal] = useState(false);
+  const [inlineAiLoading, setInlineAiLoading] = useState(false);
+  const [showInlineAiInput, setShowInlineAiInput] = useState(false);
+  const [inlineAiInstruction, setInlineAiInstruction] = useState('');
   const queryClient = useQueryClient();
 
   const { data: synopses = [], isLoading } = useQuery<Synopsis[]>({
@@ -93,6 +96,17 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
     if (active) {
       updateMutation.mutate({ id: active.id, data: { text: editText } });
     }
+  };
+
+  const inlineAiImprove = async (instruction: string) => {
+    if (!active) return;
+    setInlineAiLoading(true);
+    try {
+      const result = await api.post<{ updated?: string; text?: string }>(`/bullets/${active.id}/wordsmith`, { instruction });
+      const improved = result.updated || result.text || '';
+      if (improved) setEditText(improved);
+    } catch { /* silent */ }
+    finally { setInlineAiLoading(false); }
   };
 
   if (isLoading) {
@@ -182,7 +196,7 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
                     rows={4}
                     className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
                   />
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 items-center">
                     <button
                       onClick={saveEdit}
                       disabled={updateMutation.isPending}
@@ -196,7 +210,59 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
                     >
                       Cancel
                     </button>
+                    {aiEnabled && (
+                      <>
+                        <div className="w-px h-4 bg-gray-600 mx-1" />
+                        <button
+                          onClick={() => inlineAiImprove('Polish this synopsis. Make it compelling and concise.')}
+                          disabled={inlineAiLoading || !editText.trim()}
+                          className="px-3 py-1 bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 text-xs rounded disabled:opacity-50 flex items-center gap-1"
+                        >
+                          {inlineAiLoading ? '✨ Improving...' : '✨ AI Improve'}
+                        </button>
+                        <button
+                          onClick={() => setShowInlineAiInput(!showInlineAiInput)}
+                          disabled={inlineAiLoading || !editText.trim()}
+                          className={`px-2 py-1 text-xs rounded disabled:opacity-50 ${showInlineAiInput ? 'bg-purple-600/50 text-purple-200' : 'bg-purple-600/20 hover:bg-purple-600/40 text-purple-300'}`}
+                          title="Custom AI instruction"
+                        >
+                          🤖
+                        </button>
+                      </>
+                    )}
                   </div>
+                  {showInlineAiInput && aiEnabled && (
+                    <div className="flex gap-2 items-center mt-1">
+                      <input
+                        value={inlineAiInstruction}
+                        onChange={(e) => setInlineAiInstruction(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && inlineAiInstruction.trim()) {
+                            inlineAiImprove(inlineAiInstruction.trim());
+                            setShowInlineAiInput(false);
+                            setInlineAiInstruction('');
+                          }
+                          if (e.key === 'Escape') { setShowInlineAiInput(false); setInlineAiInstruction(''); }
+                        }}
+                        placeholder="e.g., focus on leadership impact, add metrics..."
+                        autoFocus
+                        className="flex-1 bg-gray-900 border border-purple-600/50 rounded px-2 py-1 text-xs text-gray-100 placeholder-gray-500 focus:border-purple-400 focus:outline-none"
+                      />
+                      <button
+                        onClick={() => {
+                          if (inlineAiInstruction.trim()) {
+                            inlineAiImprove(inlineAiInstruction.trim());
+                            setShowInlineAiInput(false);
+                            setInlineAiInstruction('');
+                          }
+                        }}
+                        disabled={!inlineAiInstruction.trim()}
+                        className="px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white text-xs rounded disabled:opacity-50"
+                      >
+                        Go
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div>

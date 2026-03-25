@@ -37,6 +37,7 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted
   const [mode, setMode] = useState<EditMode>('collapsed');
   const [form, setForm] = useState<Record<string, string>>({});
   const [metaRows, setMetaRows] = useState<Array<{ key: string; value: string }>>([]);
+  const [altTitles, setAltTitles] = useState<string[]>([]);
   const queryClient = useQueryClient();
 
   const expanded = isSelected && mode !== 'collapsed';
@@ -67,7 +68,9 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted
       notes: job.notes || '',
     });
     const meta = job.metadata || {};
-    setMetaRows(Object.entries(meta).map(([key, value]) => ({ key, value: String(value) })));
+    const { alternate_titles, ...restMeta } = meta as Record<string, any>;
+    setAltTitles(Array.isArray(alternate_titles) ? alternate_titles : []);
+    setMetaRows(Object.entries(restMeta).map(([key, value]) => ({ key, value: String(value) })));
     setMode('edit');
   };
 
@@ -94,11 +97,13 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted
     if (form.team_size !== undefined) payload.team_size = form.team_size ? parseInt(form.team_size) : null;
     if (form.budget_usd !== undefined) payload.budget_usd = form.budget_usd ? parseFloat(form.budget_usd) : null;
 
-    const metaObj: Record<string, string> = {};
+    const metaObj: Record<string, any> = {};
     for (const row of metaRows) {
       if (row.key.trim()) metaObj[row.key.trim()] = row.value;
     }
-    if (metaRows.length > 0) payload.metadata = metaObj;
+    const filteredAltTitles = altTitles.filter((t) => t.trim());
+    if (filteredAltTitles.length > 0) metaObj.alternate_titles = filteredAltTitles;
+    payload.metadata = metaObj;
 
     mutation.mutate(payload);
   };
@@ -136,6 +141,9 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted
         <div className="px-4 pb-3 space-y-2">
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
             <Detail label="Title" value={job.title} />
+            {(job.metadata as any)?.alternate_titles?.length > 0 && (
+              <Detail label="Alt Titles" value={(job.metadata as any).alternate_titles.join(', ')} />
+            )}
             <Detail label="Company" value={job.employer} />
             <Detail label="Location" value={job.location} />
             <Detail label="Industry" value={job.industry} />
@@ -210,6 +218,39 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted
           </div>
           <div className="space-y-2">
             <Field label="Title" value={form.title || ''} onChange={(v) => setForm({ ...form, title: v })} />
+            {/* Alternate titles */}
+            <div>
+              <label className="text-xs text-gray-400">Alternate Titles</label>
+              <div className="space-y-1 mt-1">
+                {altTitles.map((title, i) => (
+                  <div key={i} className="flex gap-1 items-center">
+                    <input
+                      value={title}
+                      onChange={(e) => {
+                        const updated = [...altTitles];
+                        updated[i] = e.target.value;
+                        setAltTitles(updated);
+                      }}
+                      className="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 focus:border-blue-400 focus:outline-none"
+                      placeholder="Alternate title..."
+                    />
+                    <button
+                      onClick={() => setAltTitles(altTitles.filter((_, j) => j !== i))}
+                      className="text-red-400 hover:text-red-300 text-xs px-1"
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={() => setAltTitles([...altTitles, ''])}
+                  className="text-xs text-blue-400 hover:text-blue-300"
+                >
+                  + Add alternate title
+                </button>
+              </div>
+            </div>
             <Field label="Company" value={form.employer || ''} onChange={(v) => setForm({ ...form, employer: v })} />
             <Field label="Location" value={form.location || ''} onChange={(v) => setForm({ ...form, location: v })} />
             <Field label="Industry" value={form.industry || ''} onChange={(v) => setForm({ ...form, industry: v })} />
