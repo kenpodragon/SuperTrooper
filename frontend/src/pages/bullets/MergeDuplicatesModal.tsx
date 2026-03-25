@@ -1,25 +1,16 @@
 import { useState } from 'react';
 import { api } from '../../api/client';
 
+// Matches actual API response shape from GET /api/career-history/duplicates
 interface CompanyDuplicate {
-  employer: string;
-  variants: Array<{
-    name: string;
-    role_count: number;
-    bullet_count: number;
-    job_ids: number[];
-  }>;
+  group: number[];   // career_history IDs
+  names: string[];   // employer name variants
 }
 
 interface RoleDuplicate {
   employer: string;
-  roles: Array<{
-    id: number;
-    title: string;
-    bullet_count: number;
-    start_date?: string;
-    end_date?: string;
-  }>;
+  group: number[];   // career_history IDs
+  titles: string[];  // title variants
 }
 
 interface DuplicatesData {
@@ -51,11 +42,10 @@ export default function MergeDuplicatesModal({
   const mergeCompany = async (groupIdx: number) => {
     const group = duplicates.company_duplicates[groupIdx];
     const selectedIdx = companySelections[groupIdx] ?? 0;
-    const keepName = group.variants[selectedIdx].name;
-    const keepIds = group.variants[selectedIdx].job_ids;
-    const mergeIds = group.variants
-      .filter((_, i) => i !== selectedIdx)
-      .flatMap((v) => v.job_ids);
+    const keepName = group.names[selectedIdx];
+    // Keep the first ID, merge the rest. The backend will rename all to keepName.
+    const keepId = group.group[0];
+    const mergeIds = group.group.slice(1);
 
     if (mergeIds.length === 0) return;
 
@@ -63,7 +53,7 @@ export default function MergeDuplicatesModal({
     setError(null);
     try {
       await api.post('/career-history/merge', {
-        keep_id: keepIds[0],
+        keep_id: keepId,
         merge_ids: mergeIds,
         new_employer: keepName,
       });
@@ -78,8 +68,8 @@ export default function MergeDuplicatesModal({
   const mergeRole = async (groupIdx: number) => {
     const group = duplicates.role_duplicates[groupIdx];
     const selectedIdx = roleSelections[groupIdx] ?? 0;
-    const keepRole = group.roles[selectedIdx];
-    const mergeIds = group.roles.filter((_, i) => i !== selectedIdx).map((r) => r.id);
+    const keepId = group.group[selectedIdx];
+    const mergeIds = group.group.filter((_, i) => i !== selectedIdx);
 
     if (mergeIds.length === 0) return;
 
@@ -87,7 +77,7 @@ export default function MergeDuplicatesModal({
     setError(null);
     try {
       await api.post('/career-history/merge', {
-        keep_id: keepRole.id,
+        keep_id: keepId,
         merge_ids: mergeIds,
       });
       setMerged((prev) => new Set(prev).add(`role-${groupIdx}`));
@@ -99,8 +89,8 @@ export default function MergeDuplicatesModal({
   };
 
   const allDone =
-    duplicates.company_duplicates.every((_, i) => merged.has(`company-${i}`)) &&
-    duplicates.role_duplicates.every((_, i) => merged.has(`role-${i}`));
+    (duplicates.company_duplicates || []).every((_, i) => merged.has(`company-${i}`)) &&
+    (duplicates.role_duplicates || []).every((_, i) => merged.has(`role-${i}`));
 
   const handleClose = () => {
     if (merged.size > 0) onComplete();
@@ -125,11 +115,11 @@ export default function MergeDuplicatesModal({
           )}
 
           {/* Company duplicates */}
-          {duplicates.company_duplicates.length > 0 && (
+          {duplicates.company_duplicates?.length > 0 && (
             <div>
               <h3 className="text-sm font-semibold text-gray-300 mb-3">Company Names</h3>
               <div className="space-y-4">
-                {duplicates.company_duplicates.map((group, gi) => {
+                {duplicates.company_duplicates.map((dup, gi) => {
                   const isDone = merged.has(`company-${gi}`);
                   return (
                     <div
@@ -137,29 +127,26 @@ export default function MergeDuplicatesModal({
                       className={`border border-gray-700 rounded-lg p-4 ${isDone ? 'opacity-50' : ''}`}
                     >
                       <div className="text-xs text-gray-500 mb-2">
-                        Variants: {group.variants.map((v) => `"${v.name}"`).join(' / ')}
+                        Variants: {dup.names.map((n) => `"${n}"`).join(' / ')}
+                        <span className="ml-2 text-gray-600">({dup.group.length} job IDs: {dup.group.join(', ')})</span>
                       </div>
                       <div className="space-y-1.5">
-                        {group.variants.map((variant, vi) => (
+                        {dup.names.map((name, ni) => (
                           <label
-                            key={vi}
+                            key={ni}
                             className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer"
                           >
                             <input
                               type="radio"
                               name={`company-${gi}`}
-                              checked={(companySelections[gi] ?? 0) === vi}
+                              checked={(companySelections[gi] ?? 0) === ni}
                               onChange={() =>
-                                setCompanySelections((prev) => ({ ...prev, [gi]: vi }))
+                                setCompanySelections((prev) => ({ ...prev, [gi]: ni }))
                               }
                               disabled={isDone}
                               className="accent-blue-500"
                             />
-                            Keep "{variant.name}"
-                            <span className="text-xs text-gray-500 ml-auto">
-                              {variant.role_count} role{variant.role_count !== 1 ? 's' : ''},{' '}
-                              {variant.bullet_count} bullet{variant.bullet_count !== 1 ? 's' : ''}
-                            </span>
+                            Keep "{name}"
                           </label>
                         ))}
                       </div>
@@ -190,39 +177,37 @@ export default function MergeDuplicatesModal({
           )}
 
           {/* Role duplicates */}
-          {duplicates.role_duplicates.length > 0 && (
+          {duplicates.role_duplicates?.length > 0 && (
             <div>
               <h3 className="text-sm font-semibold text-gray-300 mb-3">Duplicate Roles</h3>
               <div className="space-y-4">
-                {duplicates.role_duplicates.map((group, gi) => {
+                {duplicates.role_duplicates.map((dup, gi) => {
                   const isDone = merged.has(`role-${gi}`);
                   return (
                     <div
                       key={gi}
                       className={`border border-gray-700 rounded-lg p-4 ${isDone ? 'opacity-50' : ''}`}
                     >
-                      <div className="text-xs text-gray-500 mb-2">At "{group.employer}":</div>
+                      <div className="text-xs text-gray-500 mb-2">At "{dup.employer}":</div>
                       <div className="space-y-1.5">
-                        {group.roles.map((role, ri) => (
+                        {dup.titles.map((title, ti) => (
                           <label
-                            key={ri}
+                            key={ti}
                             className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer"
                           >
                             <input
                               type="radio"
                               name={`role-${gi}`}
-                              checked={(roleSelections[gi] ?? 0) === ri}
+                              checked={(roleSelections[gi] ?? 0) === ti}
                               onChange={() =>
-                                setRoleSelections((prev) => ({ ...prev, [gi]: ri }))
+                                setRoleSelections((prev) => ({ ...prev, [gi]: ti }))
                               }
                               disabled={isDone}
                               className="accent-blue-500"
                             />
-                            "{role.title}"
-                            <span className="text-xs text-gray-500 ml-auto">
-                              {role.bullet_count} bullet{role.bullet_count !== 1 ? 's' : ''}
-                              {role.start_date && ` · ${role.start_date}`}
-                              {role.end_date && ` - ${role.end_date}`}
+                            "{title}"
+                            <span className="text-xs text-gray-600 ml-auto">
+                              ID: {dup.group[ti]}
                             </span>
                           </label>
                         ))}
