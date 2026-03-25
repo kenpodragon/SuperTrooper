@@ -408,13 +408,15 @@ def generate_bullet():
     )
     next_order = (max_order["mx"] or 0) + 1
 
+    bullet_type = data.get("type", "achievement")
+
     row = db.execute_returning(
         """
         INSERT INTO bullets (career_history_id, text, type, display_order, content_hash)
-        VALUES (%s, %s, 'achievement', %s, %s)
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING *
         """,
-        (career_history_id, text, next_order, content_hash),
+        (career_history_id, text, bullet_type, next_order, content_hash),
     )
     return jsonify(row), 201
 

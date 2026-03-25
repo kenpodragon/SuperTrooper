@@ -129,11 +129,6 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted
             return e && s !== e ? `${s}–${e}` : s;
           })()}
         </span>
-        {job.bullet_count !== undefined && (
-          <span className="shrink-0 bg-blue-500/20 text-blue-300 text-xs px-2 py-0.5 rounded-full">
-            {job.bullet_count}
-          </span>
-        )}
       </button>
 
       {/* Expanded view */}
@@ -176,11 +171,18 @@ export default function JobCard({ job, isSelected, onSelect, onUpdate, onDeleted
             </button>
             <button
               onClick={async () => {
-                const msg = `Delete "${job.title}" at "${job.employer}"? This job has ${job.bullet_count || 0} bullets.`;
-                if (!window.confirm(msg)) return;
-                const keepBullets = window.confirm(
-                  'Keep the bullets? They will be moved to UNASSIGNED.\n\nOK = Keep bullets\nCancel = Delete everything'
+                const bullets = job.bullet_count || 0;
+                const choice = prompt(
+                  `Delete "${job.title}" at "${job.employer}"?\n\n` +
+                  `This job has ${bullets} bullet(s).\n\n` +
+                  `Type your choice:\n` +
+                  `  1 = Delete job only (keep bullets in UNASSIGNED)\n` +
+                  `  2 = Delete job AND all bullets\n` +
+                  `  (Cancel to abort)`
                 );
+                if (!choice) return;
+                const keepBullets = choice.trim() === '1';
+                if (choice.trim() !== '1' && choice.trim() !== '2') return;
                 try {
                   await fetch(`${API_BASE}/career-history/${job.id}/with-options`, {
                     method: 'DELETE',

@@ -220,25 +220,28 @@ def get_bullet(bullet_id):
 def create_bullet():
     """Add a new bullet."""
     data = request.get_json(force=True)
-    if not data.get("text"):
+    # Synopsis type can start with empty text (placeholder)
+    if data.get("type") != "synopsis" and not data.get("text"):
         return jsonify({"error": "text is required"}), 400
 
     row = db.execute_returning(
         """
         INSERT INTO bullets (career_history_id, text, type, star_situation, star_task,
             star_action, star_result, metrics_json, tags, role_suitability,
-            industry_suitability, detail_recall, source_file)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            industry_suitability, detail_recall, source_file, display_order, is_default)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING *
         """,
         (
-            data.get("career_history_id"), data["text"], data.get("type", "core"),
+            data.get("career_history_id"), data.get("text", ""), data.get("type", "core"),
             data.get("star_situation"), data.get("star_task"),
             data.get("star_action"), data.get("star_result"),
             json.dumps(data["metrics_json"]) if data.get("metrics_json") else None,
             data.get("tags"), data.get("role_suitability"),
             data.get("industry_suitability"), data.get("detail_recall", "high"),
             data.get("source_file"),
+            data.get("display_order", 0),
+            data.get("is_default", False),
         ),
     )
     return jsonify(row), 201
@@ -252,6 +255,7 @@ def update_bullet(bullet_id):
         "career_history_id", "text", "type", "star_situation", "star_task",
         "star_action", "star_result", "metrics_json", "tags",
         "role_suitability", "industry_suitability", "detail_recall", "source_file",
+        "display_order", "is_default",
     ]
     sets, params = [], []
     for key in allowed:

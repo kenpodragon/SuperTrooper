@@ -215,12 +215,16 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
 
   // Delete company
   const deleteCompany = async (group: CompanyGroup) => {
-    const msg = `Delete "${group.employer}" and all ${group.jobs.length} role(s) under it?`;
-    if (!window.confirm(msg)) return;
-
-    const keepBullets = window.confirm(
-      `Keep the bullets? They will be moved to UNASSIGNED.\n\nOK = Keep bullets\nCancel = Delete everything`
+    const choice = prompt(
+      `Delete "${group.employer}" and all ${group.jobs.length} role(s) under it?\n` +
+      `Total bullets: ${group.totalBullets}\n\n` +
+      `Type your choice:\n` +
+      `  1 = Delete jobs only (keep bullets in UNASSIGNED)\n` +
+      `  2 = Delete jobs AND all bullets\n` +
+      `  (Cancel to abort)`
     );
+    if (!choice || (choice.trim() !== '1' && choice.trim() !== '2')) return;
+    const keepBullets = choice.trim() === '1';
 
     try {
       const encodedEmployer = encodeURIComponent(group.employer);
@@ -231,7 +235,6 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
       });
       queryClient.invalidateQueries({ queryKey: ['career-history'] });
       queryClient.invalidateQueries({ queryKey: ['bullets-all'] });
-      // Clear selection if deleted job was selected
       if (group.jobs.some((j) => j.id === selectedJobId)) {
         onSelectJob(null);
       }
