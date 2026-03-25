@@ -255,7 +255,13 @@ def _resolve_single(cur, table: str, row_id: int, column: str | None, slot_name:
     # Generic column fetch
     cur.execute(f"SELECT {column} FROM {table} WHERE id = %s", (row_id,))
     row = cur.fetchone()
-    return row[0] if row and row[0] else ""
+    if not row or not row[0]:
+        return ""
+    value = row[0]
+    # Handle dict/JSON values (e.g. intro_text stored as {"text": "..."} from v1 import)
+    if isinstance(value, dict):
+        return value.get("text", str(value))
+    return value
 
 
 def resolve_recipe(conn, recipe_json: dict) -> dict[str, str]:

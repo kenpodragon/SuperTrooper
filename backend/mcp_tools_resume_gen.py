@@ -906,5 +906,13 @@ def _resolve_recipe_db(recipe_json: dict, recipe_version: int = 1) -> dict:
                     content[slot_name] = ""
             else:
                 row = db.query_one(f"SELECT {column} FROM {table} WHERE id = %s", (row_id,))
-                content[slot_name] = row[column] if row and row.get(column) else ""
+                if row and row.get(column):
+                    value = row[column]
+                    # Handle dict/JSON values (e.g. intro_text stored as {"text": "..."} from v1 import)
+                    if isinstance(value, dict):
+                        content[slot_name] = value.get("text", str(value))
+                    else:
+                        content[slot_name] = value
+                else:
+                    content[slot_name] = ""
     return content

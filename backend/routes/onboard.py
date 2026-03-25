@@ -153,36 +153,52 @@ def _store_original_template(cur, filename, docx_bytes):
 def _build_recipe_slots(template_map, career_ids, bullet_ids, skill_ids, parsed):
     """Map template_map slots to inserted DB rows for recipe creation.
 
-    Uses original_text matching where possible to map slots to the correct
-    career_history, bullets, or skills rows.
+    Handles BOTH formats:
+    - Legacy (from templatize_resume v31/v32): template_map has "slots" list
+      with entries like {name, type, original_text, ...}
+    - New (from template_builder auto): template_map is a flat dict
+      {slot_name: {type, original_text, formatting, parent_section}}
     """
     slots = {}
     if not template_map:
         return slots
 
     # Build quick lookup from parsed data
-    # career_history entries keyed by employer+title
     ch_lookup = {}
     for i, ch in enumerate(parsed.get("career_history", [])):
         key = (ch.get("employer", ""), ch.get("title", ""))
         if i < len(career_ids):
             ch_lookup[key] = career_ids[i]
 
+    # Detect format: new format has 'type' and 'original_text' at top level values
+    # Legacy format has a "slots" key with a list
+    is_new_format = False
+    if "slots" not in template_map:
+        # Check if any top-level value is a dict with 'type' and 'original_text'
+        for v in template_map.values():
+            if isinstance(v, dict) and "type" in v and "original_text" in v:
+                is_new_format = True
+                break
+
+    if is_new_format:
+        return _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup)
+    else:
+        return _build_recipe_slots_legacy(template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup)
+
+
+def _build_recipe_slots_legacy(template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup):
+    """Handle legacy template_map format (slots list from v31/v32 templatizer)."""
+    slots = {}
     job_idx = 0
     bullet_offset = 0
     for slot in template_map.get("slots", []):
-        slot_name = slot.get("name", "")
-        slot_type = slot.get("type", "")
+        slot_name = slot.get("name", "") or slot.get("placeholder", "")
+        slot_type = slot.get("type", "") or slot.get("slot_type", "")
 
-        if slot_type == "header":
-            slots[slot_name] = {"literal": slot.get("original_text", "")}
-        elif slot_type == "headline":
-            slots[slot_name] = {"literal": slot.get("original_text", "")}
-        elif slot_type == "summary":
-            slots[slot_name] = {"literal": slot.get("original_text", "")}
-        elif slot_type == "highlight":
-            slots[slot_name] = {"literal": slot.get("original_text", "")}
-        elif slot_type == "keywords":
+        if not slot_name:
+            continue
+
+        if slot_type in ("header", "headline", "summary", "highlight", "keywords"):
             slots[slot_name] = {"literal": slot.get("original_text", "")}
         elif slot_type in ("job_header", "job_intro"):
             if job_idx < len(career_ids):
@@ -193,7 +209,7 @@ def _build_recipe_slots(template_map, career_ids, bullet_ids, skill_ids, parsed)
                 }
             else:
                 slots[slot_name] = {"literal": slot.get("original_text", "")}
-        elif slot_type == "bullet":
+        elif slot_type in ("bullet", "job_bullet"):
             if bullet_offset < len(bullet_ids):
                 slots[slot_name] = {
                     "table": "bullets",
@@ -213,6 +229,114 @@ def _build_recipe_slots(template_map, career_ids, bullet_ids, skill_ids, parsed)
         # Advance job_idx when we hit a new job_header
         if slot_type == "job_header":
             job_idx += 1
+
+    return slots
+
+
+def _fuzzy_match_bullet(text, cur, threshold=0.75):
+    """Fuzzy match text against bullets table. Returns bullet id or None."""
+    if not text or len(text.strip()) < 10:
+        return None
+    # Use trigram similarity if available, otherwise fall back to LIKE
+    try:
+        cur.execute(
+            """SELECT id, text, similarity(text, %s) AS sim
+               FROM bullets
+               WHERE similarity(text, %s) > %s
+               ORDER BY sim DESC LIMIT 1""",
+            (text, text, threshold),
+        )
+        row = cur.fetchone()
+        if row:
+            return row["id"] if isinstance(row, dict) else row[0]
+    except Exception:
+        # pg_trgm not available or error — try SequenceMatcher fallback
+        pass
+    return None
+
+
+def _fuzzy_match_career(text, cur):
+    """Match text against career_history by employer name substring. Returns id or None."""
+    if not text:
+        return None
+    # Extract likely company name (first part before comma or pipe)
+    import re
+    company = re.split(r'[,|]', text)[0].strip()
+    if len(company) < 3:
+        return None
+    cur.execute(
+        "SELECT id FROM career_history WHERE employer ILIKE %s ORDER BY id LIMIT 1",
+        (f"%{company}%",),
+    )
+    row = cur.fetchone()
+    if row:
+        return row["id"] if isinstance(row, dict) else row[0]
+    return None
+
+
+def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup):
+    """Handle new template_map format (flat dict from template_builder).
+
+    Format: {slot_name: {type, original_text, formatting, parent_section}}
+    """
+    slots = {}
+    job_idx = 0
+    bullet_offset = 0
+
+    # Sort slots to process in a predictable order (job headers before their bullets)
+    sorted_names = sorted(template_map.keys(), key=lambda k: k)
+
+    for slot_name in sorted_names:
+        info = template_map[slot_name]
+        if not isinstance(info, dict) or "type" not in info:
+            continue
+
+        slot_type = info["type"]
+        original = info.get("original_text", "")
+
+        if slot_type in ("header", "headline", "summary", "highlights", "keywords", "skills"):
+            slots[slot_name] = {"literal": original}
+
+        elif slot_type == "job_header":
+            if job_idx < len(career_ids):
+                slots[slot_name] = {
+                    "table": "career_history",
+                    "id": career_ids[job_idx],
+                }
+            else:
+                slots[slot_name] = {"literal": original}
+            job_idx += 1
+
+        elif slot_type == "job_intro":
+            # Map to the current job's career_history entry
+            current_job = max(job_idx, 1)  # job_idx already advanced after header
+            idx = current_job - 1
+            if idx < len(career_ids):
+                slots[slot_name] = {
+                    "table": "career_history",
+                    "id": career_ids[idx],
+                    "column": "intro_text",
+                }
+            else:
+                slots[slot_name] = {"literal": original}
+
+        elif slot_type == "bullet":
+            if bullet_offset < len(bullet_ids):
+                slots[slot_name] = {
+                    "table": "bullets",
+                    "id": bullet_ids[bullet_offset],
+                    "column": "text",
+                }
+                bullet_offset += 1
+            else:
+                slots[slot_name] = {"literal": original}
+
+        elif slot_type in ("education", "certification", "additional"):
+            slots[slot_name] = {"literal": original}
+
+        else:
+            # Unknown type — store as literal
+            slots[slot_name] = {"literal": original}
 
     return slots
 
@@ -371,9 +495,11 @@ def _process_file(filename, file_bytes, file_ext):
                     try:
                         tmpl_docx = os.path.join(tmp_dir, "template_placeholder.docx")
                         tmpl_map_path = os.path.join(tmp_dir, "template_map.json")
-                        templ_result = templatize(docx_path, tmpl_docx, tmpl_map_path)
+                        templ_result = templatize(docx_path, tmpl_docx, tmpl_map_path, layout_name="auto")
+                        # slot_count comes from new builder; legacy returns total_paragraphs
+                        slot_count = templ_result.get("slot_count") or len(templ_result.get("slots", []))
                         report["steps"]["templatize"] = {
-                            "slots": templ_result.get("slot_count", 0),
+                            "slots": slot_count,
                             "template_docx": tmpl_docx,
                         }
 

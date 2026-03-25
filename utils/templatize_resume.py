@@ -320,7 +320,7 @@ def _set_placeholder(paragraph, placeholder_name: str) -> None:
             paragraph.text = marker
 
 
-def templatize(input_path: str, output_docx: str, output_map: str, layout_name: str = "v32") -> dict:
+def _legacy_templatize(input_path: str, output_docx: str, output_map: str, layout_name: str = "v32") -> dict:
     """Convert a full resume .docx into a placeholder template.
 
     Args:
@@ -433,6 +433,35 @@ def templatize(input_path: str, output_docx: str, output_map: str, layout_name: 
     return template_map
 
 
+def templatize(input_path: str, output_docx: str, output_map: str, layout_name: str = "v32") -> dict:
+    """Convert a full resume .docx into a placeholder template.
+
+    Routes to the legacy layout-specific templatizer for v31/v32, or to the
+    new general-purpose template_builder for 'auto' and any other layout.
+
+    Args:
+        input_path: Path to the full resume .docx.
+        output_docx: Path to save the placeholder template .docx.
+        output_map: Path to save the template map JSON.
+        layout_name: Layout to use — "v31", "v32" for legacy, "auto" or
+                     anything else for the new parser-based builder.
+
+    Returns:
+        A result dict. For legacy layouts this is the full template_map.
+        For auto/new layouts this is {slot_count, sections_detected, layout}.
+    """
+    if layout_name in ("v31", "v32"):
+        return _legacy_templatize(input_path, output_docx, output_map, layout_name)
+
+    # New general-purpose path via template_builder
+    try:
+        from template_builder import build_template
+    except ImportError:
+        from utils.template_builder import build_template
+
+    return build_template(input_path, output_docx, output_map, layout=layout_name)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Convert a full .docx resume into a placeholder template."
@@ -440,8 +469,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True, help="Path to the full resume .docx")
     parser.add_argument("--output-docx", required=True, help="Path to save placeholder template .docx")
     parser.add_argument("--output-map", required=True, help="Path to save template map JSON")
-    parser.add_argument("--layout", default="v32", choices=list(LAYOUTS.keys()),
-                        help="Layout definition to use (default: v32)")
+    parser.add_argument("--layout", default="v32", choices=list(LAYOUTS.keys()) + ["auto"],
+                        help="Layout definition to use (default: v32, 'auto' for parser-based)")
     return parser
 
 
