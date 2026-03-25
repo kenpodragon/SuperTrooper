@@ -103,14 +103,19 @@ def update_career_history(career_id):
         "employer", "title", "start_date", "end_date", "location", "industry",
         "team_size", "budget_usd", "revenue_impact", "is_current",
         "linkedin_dates", "intro_text", "career_links", "notes",
+        "metadata", "start_date_raw", "end_date_raw", "start_date_iso", "end_date_iso",
     ]
     sets, params = [], []
     for key in allowed:
         if key in data:
-            sets.append(f"{key} = %s")
             if key == "career_links":
+                sets.append(f"{key} = %s")
                 params.append(json.dumps(data[key]) if data[key] else None)
+            elif key == "metadata":
+                sets.append(f"{key} = %s::jsonb")
+                params.append(json.dumps(data[key]) if data[key] is not None else None)
             else:
+                sets.append(f"{key} = %s")
                 params.append(data[key])
     if not sets:
         return jsonify({"error": "No valid fields to update"}), 400
@@ -149,6 +154,8 @@ def list_bullets():
     limit = int(request.args.get("limit", 50))
     offset = int(request.args.get("offset", 0))
 
+    career_history_id = request.args.get("career_history_id", type=int)
+
     clauses, params = [], []
     if text_q:
         clauses.append("b.text ILIKE %s")
@@ -162,9 +169,16 @@ def list_bullets():
     if industry:
         clauses.append("%s = ANY(b.industry_suitability)")
         params.append(industry)
+    if career_history_id:
+        clauses.append("b.career_history_id = %s")
+        params.append(career_history_id)
     if bullet_type:
-        clauses.append("b.type = %s")
-        params.append(bullet_type)
+        if bullet_type.startswith("!"):
+            clauses.append("b.type != %s")
+            params.append(bullet_type[1:])
+        else:
+            clauses.append("b.type = %s")
+            params.append(bullet_type)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = db.query(
@@ -177,7 +191,7 @@ def list_bullets():
         FROM bullets b
         LEFT JOIN career_history ch ON ch.id = b.career_history_id
         {where}
-        ORDER BY b.id
+        ORDER BY b.display_order NULLS LAST, b.id
         LIMIT %s OFFSET %s
         """,
         params + [limit, offset],
