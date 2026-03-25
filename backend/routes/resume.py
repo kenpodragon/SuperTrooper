@@ -393,23 +393,9 @@ def generate_from_recipe(recipe_id):
         return {"content": ctx["resolved_content"]}
 
     def _ai_recipe_content(ctx):
-        from ai_providers import get_provider
-        provider = get_provider()
-        # AI can polish bullets and summary while preserving structure
-        enhanced = dict(ctx["resolved_content"])
-        # Try to enhance the summary if present
-        for key, val in enhanced.items():
-            if "SUMMARY" in key and val:
-                prompt = (
-                    f"Polish this resume summary for impact and clarity. "
-                    f"Keep the same facts and metrics. No buzzwords. No em dashes. "
-                    f"Under the same word count:\n\n{val}"
-                )
-                try:
-                    enhanced[key] = provider.generate(prompt)
-                except Exception:
-                    pass  # Keep original on failure
-        return {"content": enhanced}
+        # AI polishing disabled during generation to preserve content fidelity.
+        # AI enhancement happens via the ai-review and ai-generate-slot endpoints instead.
+        return {"content": ctx["resolved_content"]}
 
     gen_result = route_inference(
         task="generate_from_recipe",
