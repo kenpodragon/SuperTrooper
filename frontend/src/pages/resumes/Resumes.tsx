@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, recipes } from '../../api/client';
 import type { Recipe } from '../../api/client';
+import TemplatesBrowser from './TemplatesBrowser';
 
 interface RecipeDetail {
   id: number;
@@ -54,6 +55,7 @@ interface AtsScoreResult {
 export default function Resumes() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const [tab, setTab] = useState<'recipes' | 'templates'>('recipes');
   const [view, setView] = useState<'list' | 'detail'>('list');
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -237,6 +239,35 @@ export default function Resumes() {
   // List view
   return (
     <div>
+      {/* Tab Bar */}
+      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border, #e5e7eb)', marginBottom: 24 }}>
+        {(['recipes', 'templates'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            style={{
+              padding: '10px 20px',
+              fontSize: 14,
+              fontWeight: tab === t ? 600 : 400,
+              color: tab === t ? 'var(--accent, #3b82f6)' : 'var(--text-secondary, #6b7280)',
+              background: 'none',
+              border: 'none',
+              borderBottom: tab === t ? '2px solid var(--accent, #3b82f6)' : '2px solid transparent',
+              cursor: 'pointer',
+              textTransform: 'capitalize',
+              marginBottom: -1,
+            }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* Templates tab */}
+      {tab === 'templates' && <TemplatesBrowser />}
+
+      {/* Recipes tab */}
+      {tab === 'recipes' && <>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Resume Builder</h1>
         <div className="flex gap-2">
@@ -574,6 +605,7 @@ export default function Resumes() {
           </div>
         </div>
       )}
+      </>}
     </div>
   );
 }

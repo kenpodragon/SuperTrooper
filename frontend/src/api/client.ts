@@ -220,6 +220,58 @@ export const recipes = {
   get: (id: number) => api.get<Recipe>(`/resume/recipes/${id}`),
 };
 
+// --- Templates ---
+
+export interface TemplateListItem {
+  id: number;
+  name: string;
+  filename?: string;
+  description?: string;
+  is_active?: boolean;
+  template_type?: string;
+  parser_version?: string;
+  size_bytes?: number;
+  has_thumbnail: boolean;
+  recipe_count: number;
+  created_at?: string;
+}
+
+export interface TemplateSlot {
+  placeholder: string;
+  slot_type?: string;
+  original_text?: string;
+  parent_section?: string;
+}
+
+export interface TemplateDetail extends TemplateListItem {
+  template_map?: Record<string, TemplateSlot> | TemplateSlot[];
+  recipes?: { id: number; name: string; description?: string; is_active?: boolean; created_at?: string }[];
+}
+
+export const templates = {
+  list: async (): Promise<TemplateListItem[]> => {
+    const res = await api.get<{ templates: TemplateListItem[] }>('/resume/templates');
+    return res.templates;
+  },
+  get: (id: number) => api.get<TemplateDetail>(`/resume/templates/${id}`),
+  del: (id: number) => api.del<{ deleted: number; name: string }>(`/resume/templates/${id}`),
+  upload: async (file: File, name?: string): Promise<{ id: number; name: string }> => {
+    const form = new FormData();
+    form.append('file', file);
+    if (name) form.append('name', name);
+    const res = await fetch(`${BASE}/resume/templates/upload`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || res.statusText);
+    }
+    return res.json();
+  },
+};
+
+export function templateThumbnailUrl(templateId: number): string {
+  return `${BASE}/resume/templates/${templateId}/thumbnail`;
+}
+
 export const bullets = {
   list: (params = '') => api.get<Bullet[]>(`/bullets${params}`),
 };

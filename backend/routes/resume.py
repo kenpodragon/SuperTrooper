@@ -669,9 +669,85 @@ def delete_certification(cert_id):
 def list_templates():
     """List available resume templates (without blob data)."""
     rows = db.query(
-        "SELECT id, name, filename, description, is_active, length(template_blob) as size_bytes, created_at FROM resume_templates ORDER BY name"
+        """SELECT t.id, t.name, t.filename, t.description, t.is_active,
+                  t.template_type, t.parser_version,
+                  length(t.template_blob) as size_bytes,
+                  t.preview_blob IS NOT NULL as has_thumbnail,
+                  t.created_at,
+                  COALESCE(rc.recipe_count, 0) as recipe_count
+           FROM resume_templates t
+           LEFT JOIN (
+               SELECT template_id, COUNT(*) as recipe_count
+               FROM resume_recipes
+               GROUP BY template_id
+           ) rc ON rc.template_id = t.id
+           ORDER BY t.name"""
     )
     return jsonify({"templates": rows, "count": len(rows)})
+
+
+@bp.route("/api/resume/templates/<int:template_id>", methods=["GET"])
+def get_template_detail(template_id):
+    """Get template detail including template_map slots."""
+    row = db.query_one(
+        """SELECT t.id, t.name, t.filename, t.description, t.is_active,
+                  t.template_type, t.parser_version, t.template_map,
+                  length(t.template_blob) as size_bytes,
+                  t.preview_blob IS NOT NULL as has_thumbnail,
+                  t.created_at,
+                  COALESCE(rc.recipe_count, 0) as recipe_count
+           FROM resume_templates t
+           LEFT JOIN (
+               SELECT template_id, COUNT(*) as recipe_count
+               FROM resume_recipes
+               GROUP BY template_id
+           ) rc ON rc.template_id = t.id
+           WHERE t.id = %s""",
+        (template_id,),
+    )
+    if not row:
+        return jsonify({"error": "Template not found"}), 404
+    # Also fetch recipes referencing this template
+    recipes = db.query(
+        "SELECT id, name, description, is_active, created_at FROM resume_recipes WHERE template_id = %s ORDER BY name",
+        (template_id,),
+    )
+    row["recipes"] = recipes
+    return jsonify(row)
+
+
+@bp.route("/api/resume/templates/<int:template_id>", methods=["DELETE"])
+def delete_template(template_id):
+    """Delete a template. Returns error if recipes reference it."""
+    row = db.query_one("SELECT id, name FROM resume_templates WHERE id = %s", (template_id,))
+    if not row:
+        return jsonify({"error": "Template not found"}), 404
+    recipe_count = db.query_one(
+        "SELECT COUNT(*) as cnt FROM resume_recipes WHERE template_id = %s", (template_id,)
+    )
+    if recipe_count and recipe_count["cnt"] > 0:
+        return jsonify({"error": f"Cannot delete: {recipe_count['cnt']} recipe(s) reference this template"}), 409
+    db.execute("DELETE FROM resume_templates WHERE id = %s", (template_id,))
+    return jsonify({"deleted": template_id, "name": row["name"]})
+
+
+@bp.route("/api/resume/templates/upload", methods=["POST"])
+def upload_template():
+    """Upload a .docx file as a new template."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded. Use multipart form with 'file' field."}), 400
+    f = request.files["file"]
+    if not f.filename or not f.filename.lower().endswith(".docx"):
+        return jsonify({"error": "Only .docx files are supported"}), 400
+    blob = f.read()
+    name = request.form.get("name", f.filename.rsplit(".", 1)[0])
+    row = db.query_one(
+        """INSERT INTO resume_templates (name, filename, template_blob, template_type, is_active)
+           VALUES (%s, %s, %s, 'full', true)
+           RETURNING id, name, filename, created_at""",
+        (name, f.filename, blob),
+    )
+    return jsonify(row), 201
 
 
 @bp.route("/api/resume/templates/<int:template_id>/download", methods=["GET"])
