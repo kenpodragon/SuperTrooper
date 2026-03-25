@@ -21,6 +21,7 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
   const [sortMode, setSortMode] = useState<SortMode>('order');
   const [dragId, setDragId] = useState<number | null>(null);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [newBulletText, setNewBulletText] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const { data: bullets = [], isLoading } = useQuery<Bullet[]>({
@@ -44,14 +45,17 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
   });
 
   const addMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (text: string) =>
       api.post('/bullets', {
         career_history_id: jobId,
         type: 'achievement',
-        text: '',
+        text,
         display_order: bullets.length,
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['bullets', jobId] }),
+    onSuccess: () => {
+      setNewBulletText(null);
+      queryClient.invalidateQueries({ queryKey: ['bullets', jobId] });
+    },
   });
 
   const generateMutation = useMutation({
@@ -204,9 +208,9 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
         <button
           onClick={() => {
             if (aiEnabled) setShowGenerateModal(true);
-            else addMutation.mutate();
+            else setNewBulletText('');
           }}
-          disabled={addMutation.isPending}
+          disabled={addMutation.isPending || newBulletText !== null}
           className="text-xs px-2 py-1 bg-blue-600/30 text-blue-300 hover:bg-blue-600/50 rounded"
         >
           + Add Bullet
@@ -264,6 +268,36 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
               onDrop={handleDrop}
             />
           ))
+        )}
+
+        {/* Inline new bullet editor */}
+        {newBulletText !== null && (
+          <div className="border border-blue-500/50 rounded-lg p-3 bg-gray-800/50">
+            <textarea
+              value={newBulletText}
+              onChange={(e) => setNewBulletText(e.target.value)}
+              placeholder="Type your new bullet point here..."
+              autoFocus
+              className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-blue-400 focus:outline-none resize-y min-h-[60px]"
+            />
+            <div className="flex gap-2 mt-2 justify-end">
+              <button
+                onClick={() => setNewBulletText(null)}
+                className="text-xs px-3 py-1 bg-gray-700 text-gray-300 rounded hover:bg-gray-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (newBulletText.trim()) addMutation.mutate(newBulletText.trim());
+                }}
+                disabled={!newBulletText.trim() || addMutation.isPending}
+                className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-500 disabled:opacity-50"
+              >
+                {addMutation.isPending ? 'Saving...' : 'Save Bullet'}
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
