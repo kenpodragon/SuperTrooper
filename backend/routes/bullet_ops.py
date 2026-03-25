@@ -1,4 +1,5 @@
-"""Bullet operations: clone, reorder, stale-count, check-duplicates, AI ops."""
+"""Bullet operations: clone, reorder, stale-count, check-duplicates, AI ops,
+delete with orphan handling, merge duplicates."""
 
 import difflib
 import hashlib
@@ -652,6 +653,243 @@ def strengthen_bullet(bullet_id):
         "original": original_text,
         "updated": updated_text,
         "bullet_id": bullet_id,
+    }), 200
+
+
+# ===========================================================================
+# Delete & Merge operations
+# ===========================================================================
+
+
+def get_or_create_unassigned():
+    """Get or create the UNASSIGNED career_history row for orphaned bullets."""
+    row = db.query_one(
+        "SELECT id FROM career_history WHERE employer = 'UNASSIGNED' AND title = 'UNASSIGNED'"
+    )
+    if row:
+        return row["id"]
+    new = db.execute_returning(
+        """
+        INSERT INTO career_history (employer, title)
+        VALUES ('UNASSIGNED', 'UNASSIGNED')
+        RETURNING id
+        """
+    )
+    return new["id"]
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/career-history/<id>/with-options
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/career-history/<int:job_id>/with-options", methods=["DELETE"])
+def delete_job_with_options(job_id):
+    """Delete a career_history row. Optionally keep bullets by moving to UNASSIGNED."""
+    data = request.get_json(force=True) or {}
+    keep_bullets = data.get("keep_bullets", False)
+
+    job = db.query_one("SELECT id FROM career_history WHERE id = %s", (job_id,))
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    bullets_moved = 0
+    bullets_deleted = 0
+
+    if keep_bullets:
+        unassigned_id = get_or_create_unassigned()
+        bullets_moved = db.execute(
+            "UPDATE bullets SET career_history_id = %s WHERE career_history_id = %s",
+            (unassigned_id, job_id),
+        )
+    else:
+        bullets_deleted = db.execute(
+            "DELETE FROM bullets WHERE career_history_id = %s", (job_id,)
+        )
+
+    db.execute("DELETE FROM career_history WHERE id = %s", (job_id,))
+
+    return jsonify({
+        "deleted_job_id": job_id,
+        "bullets_moved": bullets_moved,
+        "bullets_deleted": bullets_deleted,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/company/<employer>
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/company/<path:employer>", methods=["DELETE"])
+def delete_company(employer):
+    """Delete ALL jobs for an employer. Optionally keep bullets by moving to UNASSIGNED."""
+    data = request.get_json(force=True) or {}
+    keep_bullets = data.get("keep_bullets", False)
+
+    jobs = db.query(
+        "SELECT id FROM career_history WHERE LOWER(employer) = LOWER(%s)", (employer,)
+    )
+    if not jobs:
+        return jsonify({"error": "No jobs found for employer"}), 404
+
+    job_ids = [j["id"] for j in jobs]
+    placeholders = ",".join(["%s"] * len(job_ids))
+
+    bullets_moved = 0
+    bullets_deleted = 0
+
+    if keep_bullets:
+        unassigned_id = get_or_create_unassigned()
+        bullets_moved = db.execute(
+            f"UPDATE bullets SET career_history_id = %s WHERE career_history_id IN ({placeholders})",
+            [unassigned_id] + job_ids,
+        )
+    else:
+        bullets_deleted = db.execute(
+            f"DELETE FROM bullets WHERE career_history_id IN ({placeholders})",
+            job_ids,
+        )
+
+    db.execute(
+        f"DELETE FROM career_history WHERE id IN ({placeholders})",
+        job_ids,
+    )
+
+    return jsonify({
+        "employer": employer,
+        "jobs_deleted": len(job_ids),
+        "bullets_moved": bullets_moved,
+        "bullets_deleted": bullets_deleted,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/career-history/duplicates
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/career-history/duplicates", methods=["GET"])
+def detect_duplicates():
+    """Scan career_history for near-duplicate employers and roles."""
+    rows = db.query(
+        "SELECT id, employer, title FROM career_history ORDER BY employer, title"
+    )
+
+    # --- Company-level duplicates (SequenceMatcher > 0.85, case-insensitive) ---
+    employer_groups = {}  # canonical -> [(id, employer)]
+    for r in rows:
+        emp = r["employer"] or ""
+        emp_lower = emp.lower().strip()
+        matched = False
+        for canon in list(employer_groups.keys()):
+            if difflib.SequenceMatcher(None, emp_lower, canon).ratio() > 0.85:
+                employer_groups[canon].append((r["id"], emp))
+                matched = True
+                break
+        if not matched:
+            employer_groups[emp_lower] = [(r["id"], emp)]
+
+    company_duplicates = []
+    for canon, members in employer_groups.items():
+        if len(members) > 1:
+            # Only flag if there are actually different names (not just multiple roles)
+            names = list({m[1] for m in members})
+            if len(names) > 1:
+                company_duplicates.append({
+                    "group": [m[0] for m in members],
+                    "names": names,
+                })
+
+    # --- Role-level duplicates (same employer, SequenceMatcher > 0.8 on title) ---
+    by_employer = {}
+    for r in rows:
+        key = (r["employer"] or "").lower().strip()
+        by_employer.setdefault(key, []).append(r)
+
+    role_duplicates = []
+    for emp_key, emp_rows in by_employer.items():
+        if len(emp_rows) < 2:
+            continue
+        title_groups = {}  # canonical -> [(id, title)]
+        for r in emp_rows:
+            ttl = (r["title"] or "").lower().strip()
+            matched = False
+            for canon in list(title_groups.keys()):
+                if difflib.SequenceMatcher(None, ttl, canon).ratio() > 0.8:
+                    title_groups[canon].append((r["id"], r["title"]))
+                    matched = True
+                    break
+            if not matched:
+                title_groups[ttl] = [(r["id"], r["title"])]
+
+        for canon, members in title_groups.items():
+            if len(members) > 1:
+                role_duplicates.append({
+                    "employer": emp_rows[0]["employer"],
+                    "group": [m[0] for m in members],
+                    "titles": list({m[1] for m in members}),
+                })
+
+    return jsonify({
+        "company_duplicates": company_duplicates,
+        "role_duplicates": role_duplicates,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/career-history/merge
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/career-history/merge", methods=["POST"])
+def merge_jobs():
+    """Merge multiple career_history rows into one, moving all bullets."""
+    data = request.get_json(force=True) or {}
+    keep_id = data.get("keep_id")
+    merge_ids = data.get("merge_ids", [])
+    new_employer = data.get("new_employer")
+    new_title = data.get("new_title")
+
+    if not keep_id or not merge_ids:
+        return jsonify({"error": "keep_id and merge_ids are required"}), 400
+
+    # Validate keep_id exists
+    kept = db.query_one("SELECT id FROM career_history WHERE id = %s", (keep_id,))
+    if not kept:
+        return jsonify({"error": "keep_id not found"}), 404
+
+    # Remove keep_id from merge_ids if accidentally included
+    merge_ids = [mid for mid in merge_ids if mid != keep_id]
+    if not merge_ids:
+        return jsonify({"error": "merge_ids must contain IDs other than keep_id"}), 400
+
+    placeholders = ",".join(["%s"] * len(merge_ids))
+
+    # Move bullets
+    bullets_moved = db.execute(
+        f"UPDATE bullets SET career_history_id = %s WHERE career_history_id IN ({placeholders})",
+        [keep_id] + merge_ids,
+    )
+
+    # Update employer/title if requested
+    if new_employer:
+        db.execute(
+            "UPDATE career_history SET employer = %s WHERE id = %s",
+            (new_employer, keep_id),
+        )
+    if new_title:
+        db.execute(
+            "UPDATE career_history SET title = %s WHERE id = %s",
+            (new_title, keep_id),
+        )
+
+    # Delete merged rows
+    jobs_deleted = db.execute(
+        f"DELETE FROM career_history WHERE id IN ({placeholders})",
+        merge_ids,
+    )
+
+    return jsonify({
+        "kept_id": keep_id,
+        "bullets_moved": bullets_moved,
+        "jobs_deleted": jobs_deleted,
     }), 200
 
 
