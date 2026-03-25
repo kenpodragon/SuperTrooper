@@ -96,9 +96,6 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
   const [editingCompany, setEditingCompany] = useState<string | null>(null);
   const [editCompanyName, setEditCompanyName] = useState('');
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
-  const [mergingCompany, setMergingCompany] = useState<string | null>(null); // employer name in merge mode
-  const [mergeChecked, setMergeChecked] = useState<Set<number>>(new Set());
-  const [mergingRoles, setMergingRoles] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: jobs = [], isLoading, refetch } = useQuery({
@@ -246,64 +243,6 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
 
   // Merge duplicates — wizard handles its own data loading
 
-  const startMergeRoles = (employer: string) => {
-    setMergingCompany(employer);
-    setMergeChecked(new Set());
-    // Auto-expand the company
-    setCollapsedCompanies((prev) => {
-      const next = new Set(prev);
-      next.delete(employer);
-      return next;
-    });
-  };
-
-  const cancelMergeRoles = () => {
-    setMergingCompany(null);
-    setMergeChecked(new Set());
-  };
-
-  const toggleMergeCheck = (jobId: number) => {
-    setMergeChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(jobId)) next.delete(jobId);
-      else next.add(jobId);
-      return next;
-    });
-  };
-
-  const executeMergeRoles = async () => {
-    const ids = Array.from(mergeChecked);
-    if (ids.length < 2) { alert('Select at least 2 roles to merge.'); return; }
-
-    // The first checked one is the keeper (user can reorder by checking order)
-    const keepId = ids[0];
-    const mergeIds = ids.slice(1);
-
-    const keepJob = enrichedJobs.find((j) => j.id === keepId);
-    const title = prompt(
-      `Merge ${ids.length} roles into one.\n\n` +
-      `Title for the merged role (or leave as-is):\n`,
-      keepJob?.title || ''
-    );
-    if (title === null) return; // cancelled
-
-    setMergingRoles(true);
-    try {
-      await api.post('/career-history/merge', {
-        keep_id: keepId,
-        merge_ids: mergeIds,
-        new_title: title || undefined,
-      });
-      queryClient.invalidateQueries({ queryKey: ['career-history'] });
-      queryClient.invalidateQueries({ queryKey: ['bullets-all'] });
-      if (mergeIds.includes(selectedJobId as number)) onSelectJob(keepId);
-      cancelMergeRoles();
-    } catch (e) {
-      alert(`Merge failed: ${(e as Error).message}`);
-    } finally {
-      setMergingRoles(false);
-    }
-  };
 
   const handleMergeComplete = () => {
     queryClient.invalidateQueries({ queryKey: ['career-history'] });
@@ -395,23 +334,6 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
                       <span className="text-xs text-gray-500 shrink-0">
                         {jobsDateRange(group.jobs)}
                       </span>
-                      {group.jobs.length >= 2 && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (mergingCompany === group.employer) cancelMergeRoles();
-                            else startMergeRoles(group.employer);
-                          }}
-                          className={`text-xs shrink-0 ${
-                            mergingCompany === group.employer
-                              ? 'text-yellow-400'
-                              : 'text-gray-600 hover:text-yellow-400'
-                          }`}
-                          title="Merge roles"
-                        >
-                          🔗
-                        </button>
-                      )}
                       <button
                         onClick={(e) => { e.stopPropagation(); startEditCompany(group.employer); }}
                         className="text-gray-600 hover:text-gray-400 text-xs shrink-0"
@@ -433,53 +355,20 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
                 {/* Jobs under this company */}
                 {!isCollapsed &&
                   group.jobs.map((job) => (
-                    <div key={job.id} className="pl-4 flex items-start">
-                      {mergingCompany === group.employer && (
-                        <label className="flex items-center pt-3 pl-1 pr-1 cursor-pointer" onClick={(e) => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            checked={mergeChecked.has(job.id)}
-                            onChange={() => toggleMergeCheck(job.id)}
-                            className="accent-yellow-400 w-4 h-4"
-                          />
-                        </label>
-                      )}
-                      <div className="flex-1">
-                        <JobCard
-                          job={job}
-                          isSelected={selectedJobId === job.id}
-                          onSelect={() => onSelectJob(job.id)}
-                          onUpdate={() => refetch()}
-                          onDeleted={() => {
-                            if (selectedJobId === job.id) onSelectJob(null);
-                            queryClient.invalidateQueries({ queryKey: ['career-history'] });
-                            queryClient.invalidateQueries({ queryKey: ['bullets-all'] });
-                          }}
-                        />
-                      </div>
+                    <div key={job.id} className="pl-4">
+                      <JobCard
+                        job={job}
+                        isSelected={selectedJobId === job.id}
+                        onSelect={() => onSelectJob(job.id)}
+                        onUpdate={() => refetch()}
+                        onDeleted={() => {
+                          if (selectedJobId === job.id) onSelectJob(null);
+                          queryClient.invalidateQueries({ queryKey: ['career-history'] });
+                          queryClient.invalidateQueries({ queryKey: ['bullets-all'] });
+                        }}
+                      />
                     </div>
                   ))}
-
-                {/* Merge bar when in merge mode */}
-                {mergingCompany === group.employer && !isCollapsed && (
-                  <div className="flex items-center gap-2 px-4 py-2 bg-yellow-900/20 border-t border-yellow-800/30">
-                    <span className="text-xs text-yellow-300">{mergeChecked.size} selected</span>
-                    <div className="flex-1" />
-                    <button
-                      onClick={executeMergeRoles}
-                      disabled={mergeChecked.size < 2 || mergingRoles}
-                      className="text-xs px-3 py-1 bg-yellow-600 hover:bg-yellow-500 text-white rounded disabled:opacity-50"
-                    >
-                      {mergingRoles ? 'Merging...' : 'Merge Selected'}
-                    </button>
-                    <button
-                      onClick={cancelMergeRoles}
-                      className="text-xs px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )}
               </div>
             );
           })
