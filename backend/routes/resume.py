@@ -1,6 +1,6 @@
 """Routes for resume generation, recipes, templates, header, education, certifications."""
 
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, Response
 import io
 import json
 import logging
@@ -8,6 +8,7 @@ import re
 import db
 from docx import Document
 from ai_providers.router import route_inference
+from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
@@ -1346,3 +1347,126 @@ def compare_recipes():
             "shared": sorted(slots_a & slots_b),
         },
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# Template Thumbnail
+# ---------------------------------------------------------------------------
+
+def _generate_template_thumbnail(template_blob, template_name):
+    """Generate a 300x400 PNG layout diagram from a .docx template blob.
+
+    Parses the template paragraphs and renders colored blocks:
+    - Light blue for placeholder paragraphs (containing {{ }})
+    - Gray for regular text paragraphs
+    Returns PNG bytes.
+    """
+    WIDTH, HEIGHT = 300, 400
+    MARGIN = 12
+    TOP_OFFSET = 40
+    BLOCK_HEIGHT = 14
+    BLOCK_GAP = 4
+    PLACEHOLDER_COLOR = (173, 216, 230)  # light blue
+    TEXT_COLOR = (200, 200, 200)  # light gray
+    BORDER_COLOR = (100, 100, 100)
+
+    img = Image.new("RGB", (WIDTH, HEIGHT), "white")
+    draw = ImageDraw.Draw(img)
+
+    # Try to load a small font; fall back to default
+    try:
+        title_font = ImageFont.truetype("arial.ttf", 14)
+        small_font = ImageFont.truetype("arial.ttf", 9)
+    except (OSError, IOError):
+        title_font = ImageFont.load_default()
+        small_font = title_font
+
+    # Draw template name at top
+    draw.text((MARGIN, 10), template_name[:40], fill="black", font=title_font)
+    draw.line([(MARGIN, 32), (WIDTH - MARGIN, 32)], fill=BORDER_COLOR, width=1)
+
+    # Parse .docx paragraphs
+    paragraphs = []
+    try:
+        doc = Document(io.BytesIO(template_blob))
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+            is_placeholder = "{{" in text and "}}" in text
+            # Extract placeholder name if present
+            slot_name = ""
+            if is_placeholder:
+                import re as _re
+                match = _re.search(r"\{\{\s*(\w+)", text)
+                if match:
+                    slot_name = match.group(1)
+            paragraphs.append({
+                "text": text[:50],
+                "is_placeholder": is_placeholder,
+                "slot_name": slot_name,
+            })
+    except Exception as e:
+        logger.warning("Failed to parse template docx for thumbnail: %s", e)
+        paragraphs = [{"text": "(unable to parse template)", "is_placeholder": False, "slot_name": ""}]
+
+    # Draw paragraph blocks
+    y = TOP_OFFSET
+    max_blocks = (HEIGHT - TOP_OFFSET - MARGIN) // (BLOCK_HEIGHT + BLOCK_GAP)
+    for i, para in enumerate(paragraphs[:max_blocks]):
+        color = PLACEHOLDER_COLOR if para["is_placeholder"] else TEXT_COLOR
+        block_width = WIDTH - 2 * MARGIN
+        draw.rectangle(
+            [(MARGIN, y), (MARGIN + block_width, y + BLOCK_HEIGHT)],
+            fill=color,
+            outline=BORDER_COLOR,
+        )
+        label = para["slot_name"] if para["slot_name"] else para["text"][:35]
+        draw.text((MARGIN + 4, y + 1), label, fill="black", font=small_font)
+        y += BLOCK_HEIGHT + BLOCK_GAP
+
+    if len(paragraphs) > max_blocks:
+        draw.text((MARGIN, y), f"... +{len(paragraphs) - max_blocks} more", fill="gray", font=small_font)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@bp.route("/api/resume/templates/<int:template_id>/thumbnail", methods=["GET"])
+def get_template_thumbnail(template_id):
+    """Return a PNG thumbnail preview of a resume template.
+
+    If a cached preview_blob exists, returns it directly.
+    Otherwise generates a layout diagram from the template .docx,
+    caches it in preview_blob, and returns the PNG.
+    """
+    row = db.query_one(
+        "SELECT id, name, preview_blob, template_blob FROM resume_templates WHERE id = %s",
+        (template_id,),
+    )
+    if not row:
+        return jsonify({"error": "Template not found"}), 404
+
+    # Return cached thumbnail if available
+    if row.get("preview_blob"):
+        preview_bytes = bytes(row["preview_blob"])
+        return Response(preview_bytes, mimetype="image/png")
+
+    # Generate thumbnail from template_blob
+    if not row.get("template_blob"):
+        return jsonify({"error": "Template has no .docx blob to generate thumbnail from"}), 404
+
+    template_blob = bytes(row["template_blob"])
+    png_bytes = _generate_template_thumbnail(template_blob, row.get("name", "Template"))
+
+    # Cache in DB
+    try:
+        db.execute(
+            "UPDATE resume_templates SET preview_blob = %s WHERE id = %s",
+            (png_bytes, template_id),
+        )
+    except Exception as e:
+        logger.warning("Failed to cache template thumbnail: %s", e)
+
+    return Response(png_bytes, mimetype="image/png")
