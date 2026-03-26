@@ -938,12 +938,16 @@ def _flatten_v2_for_template(resolved: dict) -> dict:
 
 def _fill_simple(paragraph, text):
     """Replace placeholder text, preserving first run formatting."""
+    from docx.oxml.ns import qn
     if paragraph.runs:
         paragraph.runs[0].text = text
         for run in paragraph.runs[1:]:
             run.text = ""
     else:
         paragraph.text = text
+    # Remove hyperlink elements that carry leftover text from the original
+    for hl in paragraph._element.findall(qn('w:hyperlink')):
+        paragraph._element.remove(hl)
 
 
 def _fill_bold_label(paragraph, text, separator=": "):

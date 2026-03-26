@@ -5,6 +5,7 @@ extract → parse → insert → templatize → recipe → reconstruct → compa
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import traceback
@@ -33,6 +34,7 @@ from compare_docs import extract_paragraphs, compare_text
 
 from parsers import parse_resume
 from ai_providers import get_provider
+from resume_parser import parse_resume_for_kb
 
 bp = Blueprint("onboard", __name__)
 
@@ -278,13 +280,63 @@ def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, par
     """Handle new template_map format (flat dict from template_builder).
 
     Format: {slot_name: {type, original_text, formatting, parent_section}}
+
+    For job_header slots, we need to distinguish company lines from title lines.
+    The template may create separate JOB_HEADER slots for both company and title,
+    but career_ids only has one entry per company+title combo.  We detect company
+    vs title by checking if the original text looks like an employer (contains
+    location, braces, or doesn't match known title patterns) vs a title.
     """
     slots = {}
     job_idx = 0
     bullet_offset = 0
+    company_base_idx = 0  # index of first career entry for current company
+    title_count = 0       # how many title lines seen for current company
 
-    # Sort slots to process in a predictable order (job headers before their bullets)
-    sorted_names = sorted(template_map.keys(), key=lambda k: k)
+    # Build employer set for fuzzy company line matching
+    career_entries = parsed.get("career_history", [])
+    employer_starts = set()
+    for ch in career_entries:
+        emp = ch.get("employer", "").strip()
+        if emp:
+            # First significant word(s) of employer name for matching
+            employer_starts.add(emp[:30].lower())
+
+    def _is_company_line(text):
+        """Check if text looks like a company line vs a title line.
+
+        Uses the same indicators as resume_parser: {braces}, (Onsite/Remote/Hybrid),
+        City+ST pattern, or pipe-separated one-liners with dates.
+        """
+        # Has {description} in braces → company
+        if re.search(r'\{[^}]+[})]', text):
+            return True
+        # Has (Onsite/Remote/Hybrid) annotation → company
+        if re.search(r'\([^)]*(?:Onsite|Remote|Hybrid)[^)]*\)', text, re.IGNORECASE):
+            return True
+        # City, ST pattern where the text starts with a name (not a title word)
+        if re.search(r'[A-Z][a-z]+,\s*[A-Z]{2}\b', text):
+            first_word = text.split(',')[0].split()[0] if text else ''
+            title_words = {'director', 'vp', 'vice', 'president', 'chief', 'senior',
+                           'manager', 'engineer', 'architect', 'lead', 'head', 'officer',
+                           'consultant', 'analyst', 'founder', 'cto', 'ceo', 'cio'}
+            if first_word.lower() not in title_words:
+                return True
+        # Pipe-separated one-liner with dates (additional work experience entries)
+        if '|' in text and re.search(r'\d{4}', text):
+            return True
+        # Check if text starts like a known employer
+        text_lower = text[:30].lower().strip()
+        for emp_start in employer_starts:
+            if text_lower.startswith(emp_start[:15]):
+                return True
+        return False
+
+    # Sort slots with natural number ordering so JOB_2 comes before JOB_10.
+    def _natural_key(k):
+        return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', k)]
+
+    sorted_names = sorted(template_map.keys(), key=_natural_key)
 
     for slot_name in sorted_names:
         info = template_map[slot_name]
@@ -298,19 +350,53 @@ def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, par
             slots[slot_name] = {"literal": original}
 
         elif slot_type == "job_header":
-            if job_idx < len(career_ids):
-                slots[slot_name] = {
-                    "table": "career_history",
-                    "id": career_ids[job_idx],
-                }
+            is_company = _is_company_line(original)
+
+            if is_company:
+                # Company line — map to current career entry, then advance
+                # past all entries with the same employer (handles multi-role
+                # companies like Tsunami with Director + Sr Architect).
+                company_base_idx = job_idx
+                title_count = 0
+                # Check if original text had dates (to tell resolver)
+                has_dates = bool(re.search(r'\d{4}', original))
+                # Detect one-liner format (Title | Company in additional work section)
+                is_oneliner = '|' in original and has_dates
+                if job_idx < len(career_ids):
+                    slots[slot_name] = {
+                        "table": "career_history",
+                        "id": career_ids[job_idx],
+                        "include_dates": has_dates,
+                        "format": "oneliner" if is_oneliner else "standard",
+                    }
+                    company_employer = career_entries[job_idx].get("employer", "") if job_idx < len(career_entries) else ""
+                    job_idx += 1
+                    # Skip additional roles at same company
+                    while (job_idx < len(career_entries)
+                           and career_entries[job_idx].get("employer", "") == company_employer):
+                        job_idx += 1
+                else:
+                    slots[slot_name] = {"literal": original}
             else:
-                slots[slot_name] = {"literal": original}
-            job_idx += 1
+                # Title line — map to career entry within current company.
+                # Sequential titles map to sequential career entries at the
+                # same company (e.g., Director then Sr Architect at Tsunami).
+                has_dates = bool(re.search(r'\d{4}', original))
+                title_offset = company_base_idx + title_count
+                if title_offset < len(career_ids):
+                    slots[slot_name] = {
+                        "table": "career_history",
+                        "id": career_ids[title_offset],
+                        "column": "title",
+                        "include_dates": has_dates,
+                    }
+                else:
+                    slots[slot_name] = {"literal": original}
+                title_count += 1
 
         elif slot_type == "job_intro":
-            # Map to the current job's career_history entry
-            current_job = max(job_idx, 1)  # job_idx already advanced after header
-            idx = current_job - 1
+            # Map to the most recent title's career entry
+            idx = company_base_idx + max(title_count - 1, 0)
             if idx < len(career_ids):
                 slots[slot_name] = {
                     "table": "career_history",
@@ -399,9 +485,17 @@ def _process_file(filename, file_bytes, file_ext):
 
         # ----- Step 3: Parse -----
         try:
-            provider = get_provider()
-            parsed = parse_resume(raw_text, provider)
-            parsing_method = "ai_enhanced" if provider else "rule_based"
+            # Use the general-purpose .docx parser (reads formatting for better
+            # section/bullet detection) when a .docx is available.  Falls back to
+            # the legacy text-based parser + AI provider for plain-text-only paths.
+            if docx_path:
+                parsed = parse_resume_for_kb(docx_path)
+                parsing_method = "docx_structure"
+            else:
+                provider = get_provider()
+                parsed = parse_resume(raw_text, provider)
+                parsing_method = "ai_enhanced" if provider else "rule_based"
+
             confidence = parsed.get("confidence", 0.0)
             report["steps"]["parsing"] = {
                 "method": parsing_method,

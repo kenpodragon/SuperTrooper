@@ -880,14 +880,51 @@ def _resolve_recipe_db(recipe_json: dict, recipe_version: int = 1) -> dict:
                     content[slot_name] = row[column] if row else ""
             elif column is None or column == "":
                 if table == "career_history":
-                    r = db.query_one("SELECT employer, location, industry FROM career_history WHERE id = %s", (row_id,))
+                    r = db.query_one(
+                        "SELECT employer, title, location, industry, notes, "
+                        "start_date, end_date, is_current FROM career_history WHERE id = %s",
+                        (row_id,),
+                    )
+                    def _fmt_date(d):
+                        """Format date: bare year if Jan 1, otherwise Month Year."""
+                        if not d or not hasattr(d, "strftime"):
+                            return str(d) if d else ""
+                        if d.month == 1 and d.day == 1:
+                            return str(d.year)  # Bare year (e.g., 2012)
+                        return d.strftime("%B %Y")  # Full month (e.g., August 2021)
+
                     if r:
-                        parts = [r["employer"]]
-                        if r.get("location"):
-                            parts.append(f", {r['location']}")
-                        if r.get("industry"):
-                            parts.append(f" {{{r['industry']}}}")
-                        content[slot_name] = "".join(parts)
+                        # Build date suffix
+                        date_suffix = ""
+                        if ref.get("include_dates") and r.get("start_date"):
+                            start = _fmt_date(r["start_date"])
+                            is_bare_year = (hasattr(r["start_date"], "month") and r["start_date"].month == 1 and r["start_date"].day == 1)
+                            sep = "-" if is_bare_year else " - "  # No spaces for year-only dates
+                            if r.get("is_current"):
+                                date_suffix = f"\t{start}{sep}Present"
+                            elif r.get("end_date"):
+                                end = _fmt_date(r["end_date"])
+                                date_suffix = f"\t{start}{sep}{end}"
+
+                        if ref.get("format") == "oneliner":
+                            # One-liner: Title | Company (Industry)\tDates
+                            title = r.get("title", "")
+                            employer = r["employer"]
+                            industry = r.get("industry", "")
+                            if industry:
+                                content[slot_name] = f"{title} | {employer} ({industry}){date_suffix}"
+                            else:
+                                content[slot_name] = f"{title} | {employer}{date_suffix}"
+                        else:
+                            # Standard: Company, Location (Onsite) {Industry}\tDates
+                            parts = [r["employer"]]
+                            if r.get("location") and r["location"] not in r["employer"]:
+                                parts.append(f", {r['location']}")
+                            if r.get("notes") and any(w in (r["notes"] or "").lower() for w in ("onsite", "remote", "hybrid")):
+                                parts.append(f" ({r['notes']})")
+                            if r.get("industry"):
+                                parts.append(f" {{{r['industry']}}}")
+                            content[slot_name] = "".join(parts) + date_suffix
                 elif table == "education":
                     r = db.query_one("SELECT degree, field, institution, location FROM education WHERE id = %s", (row_id,))
                     if r:
@@ -905,14 +942,38 @@ def _resolve_recipe_db(recipe_json: dict, recipe_version: int = 1) -> dict:
                 else:
                     content[slot_name] = ""
             else:
-                row = db.query_one(f"SELECT {column} FROM {table} WHERE id = %s", (row_id,))
-                if row and row.get(column):
-                    value = row[column]
-                    # Handle dict/JSON values (e.g. intro_text stored as {"text": "..."} from v1 import)
-                    if isinstance(value, dict):
-                        content[slot_name] = value.get("text", str(value))
+                if table == "career_history" and column == "title":
+                    # Title with optional date range (multi-role companies)
+                    def _fmt_dt(d):
+                        if not d or not hasattr(d, "strftime"):
+                            return str(d) if d else ""
+                        return str(d.year) if d.month == 1 and d.day == 1 else d.strftime("%B %Y")
+
+                    row = db.query_one(
+                        "SELECT title, start_date, end_date, is_current FROM career_history WHERE id = %s",
+                        (row_id,),
+                    )
+                    if row and row.get("title"):
+                        title_text = row["title"]
+                        if ref.get("include_dates") and row.get("start_date"):
+                            start = _fmt_dt(row["start_date"])
+                            if row.get("is_current"):
+                                title_text += f", {start} \u2013 Present"
+                            elif row.get("end_date"):
+                                end = _fmt_dt(row["end_date"])
+                                title_text += f", {start} \u2013 {end}"
+                        content[slot_name] = title_text
                     else:
-                        content[slot_name] = value
+                        content[slot_name] = ""
                 else:
-                    content[slot_name] = ""
+                    row = db.query_one(f"SELECT {column} FROM {table} WHERE id = %s", (row_id,))
+                    if row and row.get(column):
+                        value = row[column]
+                        # Handle dict/JSON values (e.g. intro_text stored as {"text": "..."} from v1 import)
+                        if isinstance(value, dict):
+                            content[slot_name] = value.get("text", str(value))
+                        else:
+                            content[slot_name] = value
+                    else:
+                        content[slot_name] = ""
     return content

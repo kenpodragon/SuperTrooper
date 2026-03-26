@@ -3,7 +3,10 @@
 Uses AI provider if given, falls back to rule-based parser on any failure.
 """
 
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def parse_resume(text: str, provider: Optional[Any] = None) -> dict[str, Any]:
@@ -20,9 +23,13 @@ def parse_resume(text: str, provider: Optional[Any] = None) -> dict[str, Any]:
     if provider:
         try:
             from .ai_enhanced import parse_resume_ai
-            return parse_resume_ai(text, provider)
-        except Exception:
-            pass  # Fall back to rule-based
+            result = parse_resume_ai(text, provider)
+            logger.info("AI parser succeeded: %d career entries, %d skills",
+                        len(result.get("career_history", [])),
+                        len(result.get("skills", [])))
+            return result
+        except Exception as e:
+            logger.warning("AI parser failed, falling back to rule-based: %s", e)
 
     from .rule_based import parse_resume_text
     return parse_resume_text(text)
