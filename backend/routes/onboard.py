@@ -34,6 +34,7 @@ from compare_docs import extract_paragraphs, compare_text
 
 from parsers import parse_resume
 from ai_providers import get_provider
+from ai_providers.router import route_inference
 from resume_parser import parse_resume_for_kb
 from template_dedup import check_duplicates, compute_hash
 
@@ -705,6 +706,162 @@ def _process_file(filename, file_bytes, file_ext):
             report["errors"].append(f"Parsing failed: {e}")
             report["status"] = "failed"
             return report
+
+        # ----- Step 3b: AI Refinement (optional) -----
+        # When AI is enabled, pass the Python-parsed result + raw text to AI
+        # for refinement: better employer normalization, title extraction,
+        # bullet quality scoring, missing data recovery.
+        try:
+            ai_context = {
+                "parsed": parsed,
+                "raw_text": raw_text[:8000],  # truncate to avoid token limits
+                "filename": filename,
+            }
+
+            def _python_passthrough(ctx):
+                """No-op fallback — return the Python parse as-is."""
+                return {"parsed": ctx["parsed"], "refinements": []}
+
+            def _ai_refine_parse(ctx):
+                """AI refines the Python-parsed resume data."""
+                provider = get_provider()
+                if not provider:
+                    raise RuntimeError("No AI provider available")
+
+                def _date_str(d):
+                    """Convert date/datetime to string, pass through strings/None."""
+                    if d is None:
+                        return None
+                    if isinstance(d, str):
+                        return d
+                    return d.isoformat() if hasattr(d, 'isoformat') else str(d)
+
+                career_summary = []
+                for entry in ctx["parsed"].get("career_history", []):
+                    career_summary.append({
+                        "employer": entry.get("employer", ""),
+                        "title": entry.get("title", ""),
+                        "start_date": _date_str(entry.get("start_date")),
+                        "end_date": _date_str(entry.get("end_date")),
+                        "bullet_count": len(entry.get("bullets", [])),
+                        "first_bullets": [b[:100] for b in entry.get("bullets", [])[:3]],
+                    })
+
+                prompt = f"""You are a resume data quality reviewer. A Python parser extracted career data from a resume. Review the extraction and suggest corrections.
+
+Python parser extracted:
+- {len(career_summary)} career entries
+- {len(ctx["parsed"].get("skills", []))} skills
+- {len(ctx["parsed"].get("education", []))} education entries
+
+Career entries:
+{json.dumps(career_summary, indent=2)}
+
+Skills found: {json.dumps(ctx["parsed"].get("skills", [])[:30])}
+
+Raw resume text (first 4000 chars):
+{ctx["raw_text"][:4000]}
+
+Return ONLY valid JSON:
+{{
+  "employer_corrections": [
+    {{"original": "wrong name", "corrected": "right name", "reason": "why"}}
+  ],
+  "title_corrections": [
+    {{"employer": "company", "original": "wrong title", "corrected": "right title"}}
+  ],
+  "missing_entries": [
+    {{"employer": "company", "title": "role", "start_date": "YYYY-MM or null", "end_date": "YYYY-MM or null"}}
+  ],
+  "missing_skills": ["skill not captured by parser"],
+  "bullet_quality": {{
+    "total_reviewed": 0,
+    "with_metrics": 0,
+    "weak_bullets": [
+      {{"text": "bullet text", "suggestion": "how to improve"}}
+    ]
+  }},
+  "confidence_adjustment": 0.0,
+  "notes": "overall assessment"
+}}
+
+Rules:
+- Only suggest employer_corrections if the name is clearly wrong (typo, abbreviation, inconsistent)
+- missing_entries: jobs visible in the raw text but not in the parsed data
+- missing_skills: important skills in the text not captured
+- bullet_quality.weak_bullets: max 5, only truly vague bullets lacking specifics
+- confidence_adjustment: -0.2 to +0.2 adjustment to parser confidence"""
+
+                ai_result = provider.generate(prompt, response_format="json")
+                return {"parsed": ctx["parsed"], "refinements": ai_result if isinstance(ai_result, dict) else {}}
+
+            refine_result = route_inference(
+                "onboard_parse_refinement", ai_context,
+                _python_passthrough, _ai_refine_parse,
+            )
+
+            refinements = refine_result.get("refinements", {})
+            if refinements:
+                # Apply employer corrections
+                for corr in refinements.get("employer_corrections", []):
+                    for entry in parsed.get("career_history", []):
+                        if entry.get("employer", "").lower() == corr.get("original", "").lower():
+                            entry["employer"] = corr["corrected"]
+
+                # Apply title corrections
+                for corr in refinements.get("title_corrections", []):
+                    for entry in parsed.get("career_history", []):
+                        if (entry.get("employer", "").lower() == corr.get("employer", "").lower()
+                                and entry.get("title", "").lower() == corr.get("original", "").lower()):
+                            entry["title"] = corr["corrected"]
+
+                # Add missing entries
+                for missing in refinements.get("missing_entries", []):
+                    if missing.get("employer") and missing.get("title"):
+                        parsed.setdefault("career_history", []).append({
+                            "employer": missing["employer"],
+                            "title": missing["title"],
+                            "start_date": missing.get("start_date"),
+                            "end_date": missing.get("end_date"),
+                            "bullets": [],
+                            "intro_text": "",
+                        })
+
+                # Add missing skills
+                existing_skills = {
+                    (s if isinstance(s, str) else s.get("name", "")).lower()
+                    for s in parsed.get("skills", [])
+                }
+                for skill in refinements.get("missing_skills", []):
+                    if skill.lower() not in existing_skills:
+                        parsed.setdefault("skills", []).append(skill)
+
+                # Adjust confidence
+                adj = refinements.get("confidence_adjustment", 0)
+                if isinstance(adj, (int, float)):
+                    confidence = max(0.0, min(1.0, confidence + adj))
+                    parsed["confidence"] = confidence
+
+                parsing_method = f"{parsing_method}+ai_refined"
+                report["steps"]["ai_refinement"] = {
+                    "mode": refine_result.get("analysis_mode", "unknown"),
+                    "employer_corrections": len(refinements.get("employer_corrections", [])),
+                    "title_corrections": len(refinements.get("title_corrections", [])),
+                    "missing_entries_added": len(refinements.get("missing_entries", [])),
+                    "missing_skills_added": len(refinements.get("missing_skills", [])),
+                    "confidence_adjustment": adj,
+                    "bullet_quality": refinements.get("bullet_quality", {}),
+                    "notes": refinements.get("notes", ""),
+                }
+
+                # Update the parsing step report
+                report["steps"]["parsing"]["method"] = parsing_method
+                report["steps"]["parsing"]["confidence"] = confidence
+                report["steps"]["parsing"]["career_history_count"] = len(parsed.get("career_history", []))
+                report["steps"]["parsing"]["skill_count"] = len(parsed.get("skills", []))
+        except Exception as e:
+            # AI refinement is optional — log but don't fail the pipeline
+            report["steps"]["ai_refinement"] = f"skipped: {e}"
 
         # ----- Step 4: Insert into DB -----
         career_ids = []

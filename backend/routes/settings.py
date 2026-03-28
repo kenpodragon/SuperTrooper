@@ -28,45 +28,61 @@ def _serialize_row(row):
 
 @bp.route("/api/settings", methods=["GET"])
 def get_settings():
-    """Return the single settings row."""
+    """Return the single settings row, creating it with defaults if missing."""
     rows = db.query(
         """
         SELECT id, ai_provider, ai_enabled, ai_model, default_template_id,
                duplicate_threshold, preferences, created_at, updated_at
-        FROM settings
-        WHERE id = 1
+        FROM settings WHERE id = 1
         """,
         (),
     )
     if not rows:
-        return jsonify({"error": "Settings row not found"}), 404
+        # Auto-create the default row
+        row = db.execute_returning(
+            """
+            INSERT INTO settings (id) VALUES (1)
+            RETURNING id, ai_provider, ai_enabled, ai_model, default_template_id,
+                      duplicate_threshold, preferences, created_at, updated_at
+            """,
+            (),
+        )
+        if not row:
+            return jsonify({"error": "Failed to create settings row"}), 500
+        return jsonify(_serialize_row(row))
     return jsonify(_serialize_row(rows[0]))
 
 
 @bp.route("/api/settings", methods=["PATCH"])
 def update_settings():
-    """Update allowed settings fields and return the updated row."""
+    """Update allowed settings fields and return the updated row.
+
+    Uses INSERT ... ON CONFLICT so the row is created if it doesn't exist yet.
+    """
     body = request.get_json(silent=True) or {}
 
     updates = {k: v for k, v in body.items() if k in ALLOWED_FIELDS}
     if not updates:
         return jsonify({"error": "No valid fields provided"}), 400
 
-    set_clauses = ", ".join(f"{col} = %s" for col in updates)
-    values = list(updates.values()) + [1]
+    # Upsert: insert default row if missing, then apply updates
+    columns = list(updates.keys())
+    placeholders = ", ".join(["%s"] * len(columns))
+    set_clauses = ", ".join(f"{col} = EXCLUDED.{col}" for col in columns)
 
     row = db.execute_returning(
         f"""
-        UPDATE settings
+        INSERT INTO settings (id, {", ".join(columns)})
+        VALUES (1, {placeholders})
+        ON CONFLICT (id) DO UPDATE
         SET {set_clauses}, updated_at = NOW()
-        WHERE id = %s
         RETURNING id, ai_provider, ai_enabled, ai_model, default_template_id,
                   duplicate_threshold, preferences, created_at, updated_at
         """,
-        values,
+        list(updates.values()),
     )
     if not row:
-        return jsonify({"error": "Settings row not found after update"}), 500
+        return jsonify({"error": "Settings upsert failed"}), 500
     return jsonify(_serialize_row(row))
 
 
@@ -76,6 +92,7 @@ def get_config():
 
     Returns the settings row plus computed platform metadata
     (version, available integrations, data counts).
+    Auto-creates the settings row if missing.
     """
     rows = db.query(
         """
@@ -87,9 +104,14 @@ def get_config():
         (),
     )
     if not rows:
-        return jsonify({"error": "Settings row not found"}), 404
-
-    config = _serialize_row(rows[0])
+        row = db.execute_returning(
+            "INSERT INTO settings (id) VALUES (1) RETURNING *", ()
+        )
+        if not row:
+            return jsonify({"error": "Failed to create settings row"}), 500
+        config = _serialize_row(row)
+    else:
+        config = _serialize_row(rows[0])
 
     # Add computed platform metadata
     counts = {}
@@ -121,21 +143,23 @@ def update_config():
     if not updates:
         return jsonify({"error": "No valid fields provided. Allowed: " + ", ".join(sorted(ALLOWED_FIELDS))}), 400
 
-    set_clauses = ", ".join(f"{col} = %s" for col in updates)
-    values = list(updates.values()) + [1]
+    columns = list(updates.keys())
+    placeholders = ", ".join(["%s"] * len(columns))
+    set_clauses = ", ".join(f"{col} = EXCLUDED.{col}" for col in columns)
 
     row = db.execute_returning(
         f"""
-        UPDATE settings
+        INSERT INTO settings (id, {", ".join(columns)})
+        VALUES (1, {placeholders})
+        ON CONFLICT (id) DO UPDATE
         SET {set_clauses}, updated_at = NOW()
-        WHERE id = %s
         RETURNING id, ai_provider, ai_enabled, ai_model, default_template_id,
                   duplicate_threshold, preferences, created_at, updated_at
         """,
-        values,
+        list(updates.values()),
     )
     if not row:
-        return jsonify({"error": "Settings row not found after update"}), 500
+        return jsonify({"error": "Settings upsert failed"}), 500
 
     config = _serialize_row(row)
 
