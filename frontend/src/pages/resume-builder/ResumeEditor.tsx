@@ -159,8 +159,8 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
           <div className="bg-white text-gray-900 shadow-lg rounded p-8 min-h-[11in]" style={{ fontFamily: 'var(--font-family)' }}>
 
             {/* Header */}
-            {resolved.header && recipe.header && (
-              <HeaderBlock data={resolved.header} headerId={recipe.header.id ?? 1} themeVars={themeStyle} />
+            {recipe.header && (
+              <HeaderBlock data={resolved.header ?? {}} headerId={recipe.header.id ?? 1} themeVars={themeStyle} />
             )}
 
             {/* Headline */}
@@ -193,10 +193,10 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
             />
 
             {/* Experience */}
-            {recipe.experience && resolved.experience && (
+            {recipe.experience && (
               <ExperienceBlock
                 jobs={recipe.experience}
-                resolvedJobs={resolved.experience}
+                resolvedJobs={resolved.experience ?? []}
                 recipeId={recipeId}
                 onRecipeChange={(exp) => updateRecipe(r => ({ ...r, experience: exp }))}
                 onPickBullet={(jobIdx) => setPickerState({
@@ -219,10 +219,10 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
             )}
 
             {/* Skills */}
-            {recipe.skills && resolved.skills && (
+            {recipe.skills && (
               <SkillTagsBlock
                 skillRefs={recipe.skills}
-                resolvedSkills={resolved.skills}
+                resolvedSkills={resolved.skills ?? []}
                 onUpdate={(skills) => updateRecipe(r => ({ ...r, skills }))}
               />
             )}

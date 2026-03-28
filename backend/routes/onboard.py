@@ -35,6 +35,7 @@ from compare_docs import extract_paragraphs, compare_text
 from parsers import parse_resume
 from ai_providers import get_provider
 from resume_parser import parse_resume_for_kb
+from template_dedup import check_duplicates, compute_hash
 
 bp = Blueprint("onboard", __name__)
 
@@ -81,10 +82,180 @@ def _dedup_skill(cur, name):
     return row["id"] if row else None
 
 
+# ---------------------------------------------------------------------------
+# Data quality filters — reject junk before it enters the DB
+# ---------------------------------------------------------------------------
+
+_JUNK_EMPLOYER_EXACT = {
+    "affiliations", "unknown", "teaching", "assistant manager",
+    "esl teacher/development manager", "executive conslutant",
+    "german, spanish, japanese", "recruiter",
+}
+
+_JUNK_EMPLOYER_PATTERNS = re.compile(
+    r"(?i)"
+    r"^(interests|hobbies|languages?|skills?|awards?|patents?|publications?)"
+    r"|^\d{4}\s*[-–]\s*\d{4}"                   # bare date range
+    r"|^(januar|februar|märz|april|mai|juni|juli|august|september|oktober|november|dezember)\b"  # German months
+    r"|\b(jahr|monate|ergebnisse|vizepräsident|direktor für)\b"  # German words
+    r"|^gov cloud using |using \.net and java"    # tech description, not employer
+    r"|^dear\s|^kind regards"                    # cover letter
+    r"|^\(?\d{3}\)?\s*[-.]?\s*\d{3}"             # phone number
+    r"|@.*\.\w{2,4}$"                            # email address
+    r"|^https?://"                               # URL
+)
+
+
+def _is_junk_employer(name: str) -> bool:
+    """Return True if this employer name is not a real company."""
+    if not name or not name.strip():
+        return True
+    clean = name.strip()
+    if clean.lower() in _JUNK_EMPLOYER_EXACT:
+        return True
+    if _JUNK_EMPLOYER_PATTERNS.search(clean):
+        return True
+    # Too short (single word under 3 chars)
+    if len(clean) < 3:
+        return True
+    return False
+
+
+# Canonical employer name mappings — normalize variants to one name
+_EMPLOYER_CANONICAL = {
+    "smtc": "SMTC",
+    "tsunami tsolutions": "Tsunami Tsolutions",
+    "tsunami": "Tsunami Tsolutions",
+    "atex": "Atex Inc",
+    "atex inc": "Atex Inc",
+    "newscycle solutions": "Atex Inc (Newscycle Solutions)",
+    "newscycle": "Atex Inc (Newscycle Solutions)",
+    "wall street associates": "Wall Street Associates",
+    "enjapan": "Wall Street Associates",
+    "enworld": "Wall Street Associates",
+    "live music tutor": "Live Music Tutor",
+    "simplygranted": "SimplyGranted",
+    "simply granted": "SimplyGranted",
+    "nova corporation": "Nova Corporation",
+    "nova": "Nova Corporation",
+    "ashley associates": "Ashley Associates",
+    "28 consulting": "28 Consulting",
+    "datavers.ai": "Datavers.ai",
+    "datavers": "Datavers.ai",
+    "fact finders pro": "Fact Finders Pro",
+    "cmatos": "CMATOS (Martial Arts)",
+    "myblendedlearning": "MyBlendedLearning",
+    "various": "Various (Consulting)",
+    "technology management": "Various (Consulting)",
+}
+
+
+def _normalize_employer(name: str) -> str:
+    """Normalize employer name: strip location suffixes, map to canonical."""
+    if not name:
+        return name
+    clean = name.strip()
+
+    # Strip "(cont.)" suffix
+    clean = re.sub(r"\s*\(cont\.?\)\s*$", "", clean, flags=re.IGNORECASE)
+
+    # Strip trailing date ranges like ", 2011-2012" or ", 2012–2019"
+    clean = re.sub(r",?\s*\d{4}\s*[-–]\s*\d{4}\s*$", "", clean)
+
+    # Strip trailing location suffixes like ", Melbourne, FL" or ", Tokyo, Japan"
+    # Pattern: ", City, ST" or ", City, Country" at end
+    clean = re.sub(
+        r",?\s+(?:Melbourne|Orlando|Fort Lauderdale|Tokyo|Osaka|North America|Redding|SE Asia|USA Countrywide|Countrywide Japan|Online|International)\b.*$",
+        "", clean, flags=re.IGNORECASE
+    )
+    # Generic ", XX" state suffix at end
+    clean = re.sub(r",?\s+[A-Z]{2}\s*$", "", clean)
+    # Strip trailing whitespace and commas
+    clean = clean.strip().rstrip(",").strip()
+
+    # Parenthetical descriptions — keep but normalize
+    # e.g. "SMTC (Electronic Manufacturing Services)" -> just match on base
+    base = re.sub(r"\s*\(.*?\)\s*", "", clean).strip().lower()
+
+    # Look up canonical — match on word boundaries to avoid false positives
+    for key, canonical in _EMPLOYER_CANONICAL.items():
+        if re.search(r"(?i)\b" + re.escape(key) + r"\b", base):
+            return canonical
+
+    # Title-case normalization for ALL-CAPS employers
+    if clean == clean.upper() and len(clean) > 4:
+        clean = clean.title()
+
+    return clean
+
+
+_JUNK_BULLET_PATTERNS = re.compile(
+    r"(?i)"
+    r"^(recruiter|it executive|it management|created with|key strengths|stephen salaka|career narrative)$"
+    r"|^(assistant manager|kind regards|date:\s|dear\s|\[source:)"
+    r"|^(ssalaka@|stephensalaka\.com|linkedin\.com|\(\d{3}\)\s*\d{3})"
+    r"|^\d{1,2}/\d{1,2}/\d{4}$"                # bare date
+    r"|^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}\s*[-–]"  # date range
+    r"|^https?://"                              # URL
+    r"|@\w+\.\w{2,4}$"                         # email
+    r"|^\(?\d{3}\)?\s*[-.]?\s*\d{3}"           # phone
+    r"|^data analysis:$"                        # label only
+    r"|^(smtc|atex|simplygranted|tsunami|mealmatch|datavers|nova corp),?\s"  # company name, not bullet
+    r"|^(simplygranted|mealmatch ai|martial arts instructor|customer service manager)$"  # bare title/name
+    r"|^key strengths:?\s*$"                    # section header
+    r"|^(previous experience|additional experience|work experience|professional experience):?\s*$"  # section headers
+)
+
+
+def _is_junk_bullet(text: str) -> bool:
+    """Return True if bullet text is junk (not a real achievement/highlight)."""
+    if not text or not text.strip():
+        return True
+    clean = text.strip()
+    if len(clean) < 10:
+        return True
+    if _JUNK_BULLET_PATTERNS.search(clean):
+        return True
+    # All-caps single words
+    if " " not in clean and clean == clean.upper():
+        return True
+    # Section headers ending with colon only (no real content after)
+    if re.match(r"^[A-Za-z\s]+:\s*$", clean):
+        return True
+    # Bare date ranges
+    if re.match(r"^[A-Za-z]{3,4}\s+\d{4}\s*[-–]\s*", clean) and len(clean) < 40:
+        return True
+    # Company name with location (not a bullet)
+    if re.match(r"^[A-Z][A-Z\s]+,\s+[A-Z][a-z]+,?\s+[A-Z]{2}\s*$", clean):
+        return True
+    return False
+
+
 def _insert_career_history(cur, entry):
     """Insert a career_history row, or return existing id if employer+title already exists."""
     employer = entry.get("employer") or "Unknown"
     title = entry.get("title") or "Unknown"
+
+    # Filter junk employers
+    if _is_junk_employer(employer):
+        return None
+
+    # Normalize employer name
+    employer = _normalize_employer(employer)
+
+    # Filter junk titles
+    if re.match(r"(?i)^unknown$", title):
+        title = "Unknown"
+    # German text titles
+    if re.search(r"(?i)\b(januar|februar|oktober|dezember|jahr|monate)\b", title):
+        return None
+
+    # Truncate to fit varchar limits
+    employer = employer[:200]
+    title = title[:200]
+    location = (entry.get("location") or "")[:200] or None
+    industry = (entry.get("industry") or "")[:100] or None
+    revenue_impact = (entry.get("revenue_impact") or "")[:200] or None
 
     # Check for existing (unique constraint on employer+title)
     cur.execute(
@@ -106,11 +277,11 @@ def _insert_career_history(cur, entry):
             title,
             entry.get("start_date"),
             entry.get("end_date"),
-            entry.get("location"),
-            entry.get("industry"),
+            location,
+            industry,
             entry.get("team_size"),
             entry.get("budget_usd"),
-            entry.get("revenue_impact"),
+            revenue_impact,
             entry.get("is_current", False),
             entry.get("intro_text"),
             entry.get("notes"),
@@ -120,36 +291,59 @@ def _insert_career_history(cur, entry):
 
 
 def _insert_bullet(cur, career_history_id, bullet_text, source_file):
-    """Insert a bullet row. Returns the new id."""
+    """Insert a bullet row. Returns the new id, or existing id if duplicate."""
     cur.execute(
         """INSERT INTO bullets (career_history_id, text, type, source_file)
-           VALUES (%s, %s, %s, %s) RETURNING id""",
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (career_history_id, type, md5(text)) DO NOTHING
+           RETURNING id""",
         (career_history_id, bullet_text, "achievement", source_file),
     )
-    return cur.fetchone()["id"]
+    row = cur.fetchone()
+    if row:
+        return row["id"]
+    # Already existed — fetch existing
+    cur.execute(
+        "SELECT id FROM bullets WHERE career_history_id = %s AND type = 'achievement' AND md5(text) = md5(%s) LIMIT 1",
+        (career_history_id, bullet_text),
+    )
+    existing = cur.fetchone()
+    return existing["id"] if existing else None
 
 
 def _insert_skill(cur, name, category=None, proficiency=None):
     """Insert a skill row. Returns the new id."""
     cur.execute(
         "INSERT INTO skills (name, category, proficiency) VALUES (%s,%s,%s) RETURNING id",
-        (name, category, proficiency),
+        (name[:100], (category or "")[:50] or None, (proficiency or "")[:20] or None),
     )
     return cur.fetchone()["id"]
 
 
 def _store_original_template(cur, filename, docx_bytes):
     """Store the uploaded resume in resume_templates as uploaded_original.
-    Returns template id.
+    Detects exact duplicates by content hash. Returns (template_id, is_duplicate).
     """
+    content_hash = compute_hash(docx_bytes)
+
+    # Check for exact duplicate
+    cur.execute(
+        """SELECT id FROM resume_templates
+            WHERE content_hash = %s AND template_type = 'uploaded_original'""",
+        (content_hash,),
+    )
+    existing = cur.fetchone()
+    if existing:
+        return existing["id"], True
+
     cur.execute(
         """INSERT INTO resume_templates
-               (name, filename, template_blob, template_type, is_active)
-           VALUES (%s, %s, %s, 'uploaded_original', false)
+               (name, filename, template_blob, template_type, is_active, content_hash)
+           VALUES (%s, %s, %s, 'uploaded_original', false, %s)
            RETURNING id""",
-        (f"Upload: {filename}", filename, psycopg2.Binary(docx_bytes)),
+        (f"Upload: {filename}"[:100], filename[:200], psycopg2.Binary(docx_bytes), content_hash),
     )
-    return cur.fetchone()["id"]
+    return cur.fetchone()["id"], False
 
 
 def _build_recipe_slots(template_map, career_ids, bullet_ids, skill_ids, parsed):
@@ -527,10 +721,14 @@ def _process_file(filename, file_bytes, file_ext):
                 # Career history + bullets
                 for entry in parsed.get("career_history", []):
                     ch_id = _insert_career_history(cur, entry)
+                    if ch_id is None:
+                        continue  # junk employer filtered out
                     career_ids.append(ch_id)
 
                     for bullet_text in entry.get("bullets", []):
                         if not bullet_text or not bullet_text.strip():
+                            continue
+                        if _is_junk_bullet(bullet_text):
                             continue
                         skip, near_id = _dedup_bullet(
                             cur, bullet_text, ch_id, dup_threshold
@@ -560,10 +758,221 @@ def _process_file(filename, file_bytes, file_ext):
                         sid = _insert_skill(cur, name, cat, prof)
                         skill_ids.append(sid)
 
+                # Education (dedup by degree-type + institution keyword)
+                edu_ids = []
+                for edu_text in parsed.get("education", []):
+                    if not edu_text or not edu_text.strip():
+                        continue
+                    # Parse "Degree, Field | Institution — Location" or plain text
+                    parts = re.split(r'\s*\|\s*', edu_text, maxsplit=1)
+                    degree_field = parts[0].strip()
+                    institution = parts[1].strip() if len(parts) > 1 else ""
+                    # Split degree from field on comma
+                    df = degree_field.split(",", 1)
+                    degree = df[0].strip()
+                    field = df[1].strip() if len(df) > 1 else None
+                    # Strip location from institution
+                    inst_parts = re.split(r'\s*[\u2014\u2013\-,]\s*', institution, maxsplit=1)
+                    inst_name = inst_parts[0].strip()
+                    location = inst_parts[1].strip() if len(inst_parts) > 1 else None
+
+                    if not degree:
+                        continue
+                    # Reject junk that isn't education
+                    deg_lower_check = degree.lower()
+                    if any(deg_lower_check.startswith(p) for p in [
+                        'market ', 'global ', 'successfully', 'established',
+                        'available', 'the following', 'certified scrum',
+                        'certified lean', 'to support', 'kind regards',
+                        '[company', '[interviewer', 'is the seeking',
+                        'could the quality', 'led ', 'built ', 'took ',
+                        'drove ', 'achieved', 'delivered', 'directed',
+                        'managed ', 'spearheaded', 'converted', 'implemented',
+                        'recruited', 'brought on', 'improved', 'innovated',
+                        'designed', 'extended', 'recorded', 'rapid ',
+                        'scalable', 'sdlc', 'voip', 'client impact',
+                        'cost optimization', 'efficiency', 'm&a',
+                        'agile process', 'process improvement',
+                        'democratizing', 'this is where', 'optional',
+                        'tldr', 'the most impactful', 'early career',
+                        'senior software & process', 'i\'ve always',
+                        'martial arts innovation',
+                    ]):
+                        continue
+                    if degree.startswith('(') and ')' in degree[:5]:
+                        continue
+                    # Reject narrative timeline entries (year-dash stories)
+                    if re.match(r'^\d{4}\s*[-–]', degree):
+                        continue
+                    # Reject very long text (>100 chars = not a degree)
+                    if len(degree) > 100:
+                        continue
+                    # Reject source tags, emails, URLs, phone numbers
+                    if degree.startswith('[Source:') or '@' in degree or 'http' in degree:
+                        continue
+                    if re.match(r'^[\d(]\d', degree):
+                        continue
+                    # Reject Arabic/non-Latin script (likely machine-translated duplicate)
+                    if re.search(r'[\u0600-\u06FF]', degree):
+                        continue
+                    # Reject blog post titles (quoted)
+                    if degree.startswith('"') or degree.startswith("'"):
+                        continue
+                    # Guard: institution is required; skip if missing
+                    if not inst_name:
+                        inst_name = "Unknown"
+                    # Truncate fields to fit varchar(200)
+                    degree = degree[:200]
+                    field = field[:200] if field else field
+                    inst_name = inst_name[:200]
+                    location = location[:200] if location else location
+
+                    # Normalize degree to a canonical short form for dedup
+                    deg_lower = degree.lower()
+                    if "ph.d" in deg_lower or "phd" in deg_lower or "doctor" in deg_lower:
+                        deg_key = "phd"
+                    elif "mba" in deg_lower or "master" in deg_lower:
+                        deg_key = "mba" if "business" in deg_lower or "mba" in deg_lower else "masters"
+                    elif "bachelor" in deg_lower or deg_lower in ("bs", "ba", "b.s.", "b.a."):
+                        deg_key = "bachelors"
+                    elif "post-graduate" in deg_lower or "post graduate" in deg_lower or "certificate" in deg_lower:
+                        deg_key = "postgrad"
+                    else:
+                        deg_key = deg_lower[:20]
+
+                    # Extract institution keyword: biggest unique word
+                    inst_lower = (inst_name or "").lower()
+                    stop = {"university", "of", "the", "college", "institute", "school"}
+                    inst_words = [w for w in inst_lower.split() if w not in stop and len(w) > 2]
+                    inst_keyword = inst_words[0] if inst_words else inst_lower[:15]
+
+                    # Dedup: check if we already have this degree type at this institution
+                    cur.execute(
+                        """SELECT id FROM education
+                           WHERE LOWER(institution) LIKE %s
+                           AND (LOWER(degree) LIKE %s OR LOWER(degree) LIKE %s)""",
+                        (f"%{inst_keyword}%", f"%{deg_key}%", f"%{degree[:10].lower()}%"),
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        edu_ids.append(existing["id"])
+                    else:
+                        cur.execute(
+                            "INSERT INTO education (degree, field, institution, location) VALUES (%s,%s,%s,%s) RETURNING id",
+                            (degree, field, inst_name or None, location),
+                        )
+                        edu_ids.append(cur.fetchone()["id"])
+
+                # Certifications (dedup by normalized name, filter non-certs)
+                cert_ids = []
+                # Words that indicate associations/orgs, not certifications
+                non_cert_words = {'association', 'society', 'honor society', 'institute',
+                                  'boy scouts', 'ieee', 'apa', 'siop', 'psi chi', 'aps',
+                                  'bsa', 'associations'}
+                for cert_text in parsed.get("certifications", []):
+                    if not cert_text or not cert_text.strip():
+                        continue
+                    # Parse "Name | Issuer" or plain text
+                    parts = re.split(r'\s*\|\s*', cert_text, maxsplit=1)
+                    name = parts[0].strip()
+                    issuer = parts[1].strip() if len(parts) > 1 else None
+                    if not name or len(name) < 3:
+                        continue
+                    # Filter out associations and professional orgs
+                    name_lower = name.lower()
+                    if any(nw in name_lower for nw in non_cert_words):
+                        continue
+                    # Filter junk: cover letter text, contact info, metadata
+                    if any(name_lower.startswith(p) for p in [
+                        '[company', '[interviewer', '[source:', 'to support',
+                        'could the quality', 'is the seeking', 'kind regards',
+                        'available to', 'ssalaka@', 'linkedin.com',
+                        'stephensalaka', 'stephen salaka', '(321)',
+                    ]):
+                        continue
+                    if name_lower in ('affiliations', 'technology', '8th degree black belt (8 dan)'):
+                        continue
+                    # Skip if it looks like an email, URL or phone number
+                    if '@' in name or name.startswith('http') or re.match(r'^\(\d{3}\)', name):
+                        continue
+                    # Normalize: collapse spaces, strip special chars for matching
+                    name_normalized = re.sub(r'\s+', ' ', name).strip()
+                    cur.execute(
+                        "SELECT id FROM certifications WHERE LOWER(REGEXP_REPLACE(name, '\\s+', ' ', 'g')) = LOWER(%s)",
+                        (name_normalized,),
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        cert_ids.append(existing["id"])
+                    else:
+                        cur.execute(
+                            "INSERT INTO certifications (name, issuer) VALUES (%s,%s) RETURNING id",
+                            (name[:200], (issuer or "")[:200] or None),
+                        )
+                        cert_ids.append(cur.fetchone()["id"])
+
+                # Highlights (top-of-resume achievement bullets, no career_history_id)
+                highlight_ids = []
+                for hl_text in parsed.get("highlights", []):
+                    if not hl_text or not hl_text.strip():
+                        continue
+                    if _is_junk_bullet(hl_text):
+                        continue
+                    # Dedup: exact match on text where career_history_id IS NULL
+                    cur.execute(
+                        "SELECT id FROM bullets WHERE text = %s AND career_history_id IS NULL",
+                        (hl_text,),
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        highlight_ids.append(existing["id"])
+                    else:
+                        cur.execute(
+                            "INSERT INTO bullets (text, type, source_file, career_history_id) VALUES (%s, 'highlight', %s, NULL) RETURNING id",
+                            (hl_text, filename),
+                        )
+                        highlight_ids.append(cur.fetchone()["id"])
+
+                # Summary (professional summary text — dedup by first 80 chars similarity)
+                summary_text = parsed.get("summary", "")
+                summary_id = None
+                if summary_text and summary_text.strip() and len(summary_text.strip()) > 30:
+                    # Skip if it doesn't look like a professional summary
+                    # (must be prose, not instructions or questions)
+                    s_lower = summary_text.lower()
+                    if any(w in s_lower for w in ['before you begin', 'make sure you',
+                                                   'searches: focus', 'high salary',
+                                                   'what should it be']):
+                        pass  # Skip non-summary text
+                    else:
+                        # Dedup: check if first 80 chars match any existing summary
+                        prefix = summary_text.strip()[:80]
+                        cur.execute(
+                            "SELECT id FROM summary_variants WHERE LEFT(text, 80) = LEFT(%s, 80)",
+                            (prefix,),
+                        )
+                        existing = cur.fetchone()
+                        if existing:
+                            summary_id = existing["id"]
+                        else:
+                            # Use a generic sequential role_type (unique constraint)
+                            cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_num FROM summary_variants")
+                            next_num = cur.fetchone()["next_num"]
+                            role_type = f"parsed_{next_num}"
+                            cur.execute(
+                                "INSERT INTO summary_variants (role_type, text) VALUES (%s, %s) RETURNING id",
+                                (role_type, summary_text),
+                            )
+                            summary_id = cur.fetchone()["id"]
+
                 report["steps"]["db_insert"] = {
                     "career_history_ids": career_ids,
                     "bullet_ids": bullet_ids,
                     "skill_ids": skill_ids,
+                    "education_ids": edu_ids,
+                    "certification_ids": cert_ids,
+                    "highlight_ids": highlight_ids,
+                    "summary_id": summary_id,
                     "near_duplicates": near_dups,
                     "skipped_exact_dups": sum(
                         len(ch.get("bullets", []))
@@ -575,8 +984,11 @@ def _process_file(filename, file_bytes, file_ext):
                 if docx_path:
                     with open(docx_path, "rb") as f:
                         docx_bytes = f.read()
-                    template_id = _store_original_template(cur, filename, docx_bytes)
-                    report["steps"]["template_stored"] = {"template_id": template_id}
+                    template_id, is_dup = _store_original_template(cur, filename, docx_bytes)
+                    report["steps"]["template_stored"] = {
+                        "template_id": template_id,
+                        "duplicate_detected": is_dup,
+                    }
                 else:
                     template_id = None
                     report["steps"]["template_stored"] = "skipped (no docx)"
