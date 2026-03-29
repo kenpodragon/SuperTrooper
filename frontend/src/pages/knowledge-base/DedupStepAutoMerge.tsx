@@ -92,6 +92,7 @@ export default function DedupStepAutoMerge({ entityType, groups, onComplete }: P
       )}
 
       {activeGroups.map((group) => {
+        const isEmployerRename = !!group.canonical_name;
         const effectiveWinner = winnerOverrides[group.group_id] ?? group.winner_id;
         const isExpanded = expanded[group.group_id];
 
@@ -104,7 +105,8 @@ export default function DedupStepAutoMerge({ entityType, groups, onComplete }: P
               <div className="flex-1 min-w-0">
                 <div className="flex flex-wrap gap-2 mb-2">
                   {group.members.map((member: any) => {
-                    const isWinner = member.id === effectiveWinner;
+                    const isWinner = !isEmployerRename && member.id === effectiveWinner;
+                    const label = member.employer || member.title || member.name || member.text?.slice(0, 60) || member.content_preview || `#${member.id}`;
                     return (
                       <span
                         key={member.id}
@@ -114,25 +116,27 @@ export default function DedupStepAutoMerge({ entityType, groups, onComplete }: P
                             : 'bg-gray-700 text-gray-300'
                         }`}
                       >
-                        {member.name || member.content_preview || `#${member.id}`}
+                        {label}
                       </span>
                     );
                   })}
                 </div>
                 <p className="text-gray-400 text-xs">{group.reason}</p>
-                {group.canonical_name && (
+                {isEmployerRename && (
                   <p className="text-green-400 text-xs mt-1">
                     Rename to: <span className="font-medium">{group.canonical_name}</span>
                   </p>
                 )}
               </div>
               <div className="flex gap-2 shrink-0">
-                <button
-                  onClick={() => toggleExpand(group.group_id)}
-                  className="px-3 py-1 rounded text-sm bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
-                >
-                  {isExpanded ? 'Collapse' : 'Override'}
-                </button>
+                {!isEmployerRename && (
+                  <button
+                    onClick={() => toggleExpand(group.group_id)}
+                    className="px-3 py-1 rounded text-sm bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+                  >
+                    {isExpanded ? 'Collapse' : 'Override'}
+                  </button>
+                )}
                 <button
                   onClick={() => demoteGroup(group.group_id)}
                   className="px-3 py-1 rounded text-sm bg-yellow-700 text-yellow-200 hover:bg-yellow-600 transition-colors"
@@ -142,7 +146,7 @@ export default function DedupStepAutoMerge({ entityType, groups, onComplete }: P
               </div>
             </div>
 
-            {isExpanded && (
+            {isExpanded && !isEmployerRename && (
               <div className="mt-3 pt-3 border-t border-gray-700">
                 <p className="text-gray-400 text-xs mb-2">Select winner:</p>
                 <div className="flex flex-wrap gap-2">
