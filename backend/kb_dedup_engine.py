@@ -979,3 +979,331 @@ def ai_suggest_role_types(summaries: list) -> dict:
         python_fallback=_python_fallback,
         ai_handler=_ai_handler,
     )
+
+
+# ---------------------------------------------------------------------------
+# Merge Execution
+# ---------------------------------------------------------------------------
+
+# Table name map for simple entity types
+_ENTITY_TABLE = {
+    "career_history": "career_history",
+    "bullets": "bullets",
+    "skills": "skills",
+    "education": "education",
+    "certifications": "certifications",
+    "summary_variants": "summary_variants",
+    "languages": "languages",
+    "references": "references",
+}
+
+
+def execute_merge(entity_type: str, winner_id: int, loser_ids: list, conn=None) -> dict:
+    """Merge loser records into winner by repointing FKs then deleting losers.
+
+    For career_history: repoints bullets.career_history_id and
+    "references".career_history_id before deleting losers.
+
+    Args:
+        conn: Optional existing psycopg2 connection. When provided the caller
+              owns commit/rollback. When None, a pooled connection is used.
+
+    Returns {"merged": N, "errors": []}
+    """
+    import db
+
+    table = _ENTITY_TABLE.get(entity_type)
+    if table is None:
+        raise ValueError(f"Unknown entity_type: {entity_type!r}")
+    if not loser_ids:
+        return {"merged": 0, "errors": []}
+
+    errors = []
+    merged = 0
+
+    def _run(cur):
+        nonlocal merged
+        if entity_type == "career_history":
+            cur.execute(
+                "UPDATE bullets SET career_history_id = %s "
+                "WHERE career_history_id = ANY(%s)",
+                [winner_id, loser_ids],
+            )
+            cur.execute(
+                'UPDATE "references" SET career_history_id = %s '
+                "WHERE career_history_id = ANY(%s)",
+                [winner_id, loser_ids],
+            )
+        cur.execute(
+            f"DELETE FROM {table} WHERE id = ANY(%s)",
+            [loser_ids],
+        )
+        merged = cur.rowcount
+
+    try:
+        if conn is not None:
+            with conn.cursor() as cur:
+                _run(cur)
+        else:
+            with db.get_conn() as _conn:
+                with _conn.cursor() as cur:
+                    _run(cur)
+    except Exception as exc:
+        logger.exception("execute_merge failed for %s", entity_type)
+        errors.append(str(exc))
+
+    return {"merged": merged, "errors": errors}
+
+
+def execute_delete(entity_type: str, ids: list, conn=None) -> dict:
+    """Delete entities by ID.
+
+    For career_history: cascades by deleting bullets first, then nulling
+    "references".career_history_id before deleting the career_history rows.
+
+    Args:
+        conn: Optional existing psycopg2 connection (caller owns commit/rollback).
+
+    Returns {"deleted": N, "errors": []}
+    """
+    import db
+
+    table = _ENTITY_TABLE.get(entity_type)
+    if table is None:
+        raise ValueError(f"Unknown entity_type: {entity_type!r}")
+    if not ids:
+        return {"deleted": 0, "errors": []}
+
+    errors = []
+    deleted = 0
+
+    def _run(cur):
+        nonlocal deleted
+        if entity_type == "career_history":
+            cur.execute(
+                "DELETE FROM bullets WHERE career_history_id = ANY(%s)",
+                [ids],
+            )
+            cur.execute(
+                'UPDATE "references" SET career_history_id = NULL '
+                "WHERE career_history_id = ANY(%s)",
+                [ids],
+            )
+        cur.execute(
+            f"DELETE FROM {table} WHERE id = ANY(%s)",
+            [ids],
+        )
+        deleted = cur.rowcount
+
+    try:
+        if conn is not None:
+            with conn.cursor() as cur:
+                _run(cur)
+        else:
+            with db.get_conn() as _conn:
+                with _conn.cursor() as cur:
+                    _run(cur)
+    except Exception as exc:
+        logger.exception("execute_delete failed for %s", entity_type)
+        errors.append(str(exc))
+
+    return {"deleted": deleted, "errors": errors}
+
+
+def execute_reclassify(source_type: str, target_type: str, items: list, conn=None) -> dict:
+    """Move items from source table to target table.
+
+    Primary use case: summary_variants → bullets.
+    Each item: {"id": N, "career_history_id": optional}
+
+    Args:
+        conn: Optional existing psycopg2 connection (caller owns commit/rollback).
+
+    Returns {"reclassified": N, "errors": []}
+    """
+    import db
+
+    src_table = _ENTITY_TABLE.get(source_type)
+    tgt_table = _ENTITY_TABLE.get(target_type)
+    if src_table is None:
+        raise ValueError(f"Unknown source_type: {source_type!r}")
+    if tgt_table is None:
+        raise ValueError(f"Unknown target_type: {target_type!r}")
+    if not items:
+        return {"reclassified": 0, "errors": []}
+
+    errors = []
+    reclassified = 0
+
+    def _run(cur):
+        nonlocal reclassified
+        for item in items:
+            src_id = item["id"]
+            career_history_id = item.get("career_history_id")
+
+            cur.execute(f"SELECT * FROM {src_table} WHERE id = %s", [src_id])
+            row = cur.fetchone()
+            if row is None:
+                errors.append(f"{source_type} id={src_id} not found")
+                continue
+
+            col_names = [desc[0] for desc in cur.description]
+            row_dict = dict(zip(col_names, row))
+
+            text_val = (
+                row_dict.get("text")
+                or row_dict.get("content")
+                or row_dict.get("summary")
+                or ""
+            )
+
+            if target_type == "bullets":
+                cur.execute(
+                    "INSERT INTO bullets (career_history_id, text, type) "
+                    "VALUES (%s, %s, %s)",
+                    [career_history_id, text_val, "reclassified"],
+                )
+            elif source_type == "bullets" and target_type == "summary_variants":
+                role_type = row_dict.get("role_type") or f"reclassified_{src_id}"
+                cur.execute(
+                    "INSERT INTO summary_variants (role_type, text) "
+                    "VALUES (%s, %s) ON CONFLICT (role_type) DO NOTHING",
+                    [role_type, text_val],
+                )
+            else:
+                errors.append(
+                    f"Unsupported reclassify path: {source_type} -> {target_type}"
+                )
+                continue
+
+            cur.execute(f"DELETE FROM {src_table} WHERE id = %s", [src_id])
+            reclassified += 1
+
+    try:
+        if conn is not None:
+            with conn.cursor() as cur:
+                _run(cur)
+        else:
+            with db.get_conn() as _conn:
+                with _conn.cursor() as cur:
+                    _run(cur)
+    except Exception as exc:
+        logger.exception("execute_reclassify failed %s->%s", source_type, target_type)
+        errors.append(str(exc))
+
+    return {"reclassified": reclassified, "errors": errors}
+
+
+def execute_employer_rename(career_history_ids: list, canonical_name: str, conn=None) -> dict:
+    """Update the employer column for a set of career_history records.
+
+    Args:
+        conn: Optional existing psycopg2 connection (caller owns commit/rollback).
+
+    Returns {"updated": N}
+    """
+    import db
+
+    if not career_history_ids:
+        return {"updated": 0}
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE career_history SET employer = %s WHERE id = ANY(%s)",
+                [canonical_name, career_history_ids],
+            )
+            return {"updated": cur.rowcount}
+
+    rowcount = db.execute(
+        "UPDATE career_history SET employer = %s WHERE id = ANY(%s)",
+        [canonical_name, career_history_ids],
+    )
+    return {"updated": rowcount}
+
+
+def execute_summary_role_type_rename(reassignments: dict, conn=None) -> dict:
+    """Rename role_types in summary_variants.
+
+    reassignments: {old_role_type: new_role_type}
+
+    Args:
+        conn: Optional existing psycopg2 connection (caller owns commit/rollback).
+
+    Returns {"updated": N}
+    """
+    import db
+
+    if not reassignments:
+        return {"updated": 0}
+
+    updated = 0
+
+    def _run(cur):
+        nonlocal updated
+        for old_role_type, new_role_type in reassignments.items():
+            cur.execute(
+                "UPDATE summary_variants SET role_type = %s WHERE role_type = %s",
+                [new_role_type, old_role_type],
+            )
+            updated += cur.rowcount
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            _run(cur)
+    else:
+        with db.get_conn() as _conn:
+            with _conn.cursor() as cur:
+                _run(cur)
+
+    return {"updated": updated}
+
+
+def execute_summary_split(
+    split_id: int,
+    keep_summary_text: str,
+    extract_bullets: list,
+    career_history_id: int = None,
+    conn=None,
+) -> dict:
+    """Update a summary_variants record's text and create new bullet records.
+
+    Args:
+        split_id:           ID of the summary_variants record to update.
+        keep_summary_text:  The cleaned summary text to write back.
+        extract_bullets:    List of strings to insert as new bullet records.
+        career_history_id:  Optional FK for the new bullets.
+        conn:               Optional existing psycopg2 connection (caller owns
+                            commit/rollback).
+
+    Returns {"summary_updated": True, "bullets_created": N}
+    """
+    import db
+
+    bullets_created = 0
+
+    def _run(cur):
+        nonlocal bullets_created
+        cur.execute(
+            "UPDATE summary_variants SET text = %s WHERE id = %s",
+            [keep_summary_text, split_id],
+        )
+        for bullet_text in extract_bullets:
+            if not bullet_text or not bullet_text.strip():
+                continue
+            cur.execute(
+                "INSERT INTO bullets (career_history_id, text, type) "
+                "VALUES (%s, %s, %s)",
+                [career_history_id, bullet_text.strip(), "extracted_from_summary"],
+            )
+            bullets_created += 1
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            _run(cur)
+    else:
+        with db.get_conn() as _conn:
+            with _conn.cursor() as cur:
+                _run(cur)
+
+    return {"summary_updated": True, "bullets_created": bullets_created}

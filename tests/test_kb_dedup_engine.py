@@ -1,8 +1,17 @@
-"""Tests for kb_dedup_engine — grouping logic (no AI, no DB)."""
+"""Tests for kb_dedup_engine — grouping logic (no AI, no DB) + merge execution (integration)."""
 
+import os
 import pytest
+import psycopg2
+import psycopg2.extras
 from unittest.mock import MagicMock, patch
 from kb_dedup_engine import (
+    execute_merge,
+    execute_delete,
+    execute_reclassify,
+    execute_employer_rename,
+    execute_summary_role_type_rename,
+    execute_summary_split,
     group_skills,
     group_education,
     group_certifications,
@@ -672,3 +681,222 @@ def test_ai_suggest_role_types_empty_list():
     with patch("ai_providers.router.route_inference", side_effect=_fake_route):
         result = ai_suggest_role_types([])
         assert result["suggestions"] == []
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — Merge Execution (hit real DB, rollback after each test)
+# ---------------------------------------------------------------------------
+
+_PGPASSWORD = os.environ.get("PGPASSWORD", "WUHD8fBisb57FS4Q3bdvfuvgnim9fL1c")
+
+
+@pytest.fixture
+def test_conn():
+    """DB connection that rolls back after each test so real data is never touched."""
+    conn = psycopg2.connect(
+        host="localhost",
+        port=5555,
+        dbname="supertroopers",
+        user="supertroopers",
+        password=_PGPASSWORD,
+    )
+    conn.autocommit = False
+    yield conn
+    conn.rollback()
+    conn.close()
+
+
+def _q(conn, sql, params=None):
+    """Run a query and return list of RealDictRow."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params or [])
+        return cur.fetchall()
+
+
+def _exec(conn, sql, params=None):
+    with conn.cursor() as cur:
+        cur.execute(sql, params or [])
+        return cur.rowcount
+
+
+# ── Test 1: execute_merge for skills (simple delete) ────────────────────────
+
+def test_execute_merge_skills(test_conn):
+    """Merging two skill rows deletes the loser."""
+    with test_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO skills (name, category) VALUES (%s, %s) RETURNING id",
+            ["__test_skill_winner__", "test"],
+        )
+        winner_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO skills (name, category) VALUES (%s, %s) RETURNING id",
+            ["__test_skill_loser__", "test"],
+        )
+        loser_id = cur.fetchone()[0]
+
+    result = execute_merge("skills", winner_id, [loser_id], conn=test_conn)
+
+    assert result["errors"] == []
+    assert result["merged"] == 1
+
+    rows = _q(test_conn, "SELECT id FROM skills WHERE id = ANY(%s)", [[winner_id, loser_id]])
+    ids = {r["id"] for r in rows}
+    assert winner_id in ids
+    assert loser_id not in ids
+
+
+# ── Test 2: execute_merge for career_history repoints bullets + refs ─────────
+
+def test_execute_merge_career_history(test_conn):
+    """Merging career_history repoints bullets to winner, deletes loser."""
+    with test_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO career_history (employer, title) VALUES (%s, %s) RETURNING id",
+            ["__test_employer_winner__", "Engineer"],
+        )
+        winner_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO career_history (employer, title) VALUES (%s, %s) RETURNING id",
+            ["__test_employer_loser__", "Engineer"],
+        )
+        loser_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO bullets (career_history_id, text) VALUES (%s, %s) RETURNING id",
+            [loser_id, "__test_bullet__"],
+        )
+        bullet_id = cur.fetchone()[0]
+
+    result = execute_merge("career_history", winner_id, [loser_id], conn=test_conn)
+
+    assert result["errors"] == []
+    assert result["merged"] == 1
+
+    # Bullet should now point to winner
+    rows = _q(test_conn, "SELECT career_history_id FROM bullets WHERE id = %s", [bullet_id])
+    assert rows[0]["career_history_id"] == winner_id
+
+    # Loser should be gone
+    rows = _q(test_conn, "SELECT id FROM career_history WHERE id = %s", [loser_id])
+    assert rows == []
+
+
+# ── Test 3: execute_delete for career_history cascades bullets ────────────────
+
+def test_execute_delete_career_history(test_conn):
+    """Deleting career_history cascades to its bullets."""
+    with test_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO career_history (employer, title) VALUES (%s, %s) RETURNING id",
+            ["__test_delete_employer__", "Manager"],
+        )
+        ch_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO bullets (career_history_id, text) VALUES (%s, %s) RETURNING id",
+            [ch_id, "__test_delete_bullet__"],
+        )
+        bullet_id = cur.fetchone()[0]
+
+    result = execute_delete("career_history", [ch_id], conn=test_conn)
+
+    assert result["errors"] == []
+    assert result["deleted"] == 1
+
+    rows = _q(test_conn, "SELECT id FROM career_history WHERE id = %s", [ch_id])
+    assert rows == []
+
+    rows = _q(test_conn, "SELECT id FROM bullets WHERE id = %s", [bullet_id])
+    assert rows == []
+
+
+# ── Test 4: execute_reclassify summary_variants → bullets ────────────────────
+
+def test_execute_reclassify_summary_to_bullet(test_conn):
+    """Reclassifying a summary_variant creates a bullet and deletes the source."""
+    unique_role = f"__test_reclassify_role_{os.getpid()}__"
+    with test_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO summary_variants (role_type, text) VALUES (%s, %s) RETURNING id",
+            [unique_role, "Led migration that reduced costs by 40%."],
+        )
+        sv_id = cur.fetchone()[0]
+
+    result = execute_reclassify(
+        "summary_variants",
+        "bullets",
+        [{"id": sv_id, "career_history_id": None}],
+        conn=test_conn,
+    )
+
+    assert result["errors"] == []
+    assert result["reclassified"] == 1
+
+    # Source row should be gone
+    rows = _q(test_conn, "SELECT id FROM summary_variants WHERE id = %s", [sv_id])
+    assert rows == []
+
+    # A bullet with that text should exist
+    rows = _q(
+        test_conn,
+        "SELECT id FROM bullets WHERE text = %s AND type = 'reclassified'",
+        ["Led migration that reduced costs by 40%."],
+    )
+    assert len(rows) == 1
+
+
+# ── Test 5: execute_employer_rename ──────────────────────────────────────────
+
+def test_execute_employer_rename(test_conn):
+    """Renames employer for specified career_history rows."""
+    with test_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO career_history (employer, title) VALUES (%s, %s) RETURNING id",
+            ["OldName Corp", "Developer"],
+        )
+        ch_id = cur.fetchone()[0]
+
+    result = execute_employer_rename([ch_id], "New Canonical Name", conn=test_conn)
+
+    assert result["updated"] == 1
+
+    rows = _q(test_conn, "SELECT employer FROM career_history WHERE id = %s", [ch_id])
+    assert rows[0]["employer"] == "New Canonical Name"
+
+
+# ── Test 6: execute_summary_split ────────────────────────────────────────────
+
+def test_execute_summary_split(test_conn):
+    """Updates summary text and creates bullet records from extracted content."""
+    unique_role = f"__test_split_role_{os.getpid()}__"
+    with test_conn.cursor() as cur:
+        # Capture max bullet id before insert so we can scope the assertion
+        cur.execute("SELECT COALESCE(MAX(id), 0) FROM bullets")
+        bullet_id_floor = cur.fetchone()[0]
+
+        cur.execute(
+            "INSERT INTO summary_variants (role_type, text) VALUES (%s, %s) RETURNING id",
+            [unique_role, "Experienced PM. Led team of 10 engineers. Reduced costs by 30%."],
+        )
+        sv_id = cur.fetchone()[0]
+
+    result = execute_summary_split(
+        split_id=sv_id,
+        keep_summary_text="Experienced PM with 8 years in B2B SaaS.",
+        extract_bullets=["Led team of 10 engineers.", "Reduced costs by 30%."],
+        career_history_id=None,
+        conn=test_conn,
+    )
+
+    assert result["summary_updated"] is True
+    assert result["bullets_created"] == 2
+
+    rows = _q(test_conn, "SELECT text FROM summary_variants WHERE id = %s", [sv_id])
+    assert rows[0]["text"] == "Experienced PM with 8 years in B2B SaaS."
+
+    rows = _q(
+        test_conn,
+        "SELECT text FROM bullets WHERE type = 'extracted_from_summary' "
+        "AND text = ANY(%s) AND id > %s",
+        [["Led team of 10 engineers.", "Reduced costs by 30%."], bullet_id_floor],
+    )
+    assert len(rows) == 2
