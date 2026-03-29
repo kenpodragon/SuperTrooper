@@ -250,17 +250,78 @@ def _make_group(winner: dict, members: list) -> dict:
 # 1. Skills
 # ---------------------------------------------------------------------------
 
+def _is_junk_skill(name: str) -> str | None:
+    """Return a reason string if this skill name is junk, else None."""
+    n = (name or "").strip()
+    if not n:
+        return "Empty skill name"
+    # Slash-separated skill lists (e.g. "JavaScript/PHP/ASP(.NET)/HTML") — should be split
+    if n.count("/") >= 3:
+        return "Slash-separated list — should be split into individual skills"
+    # Semicolon-separated lists
+    if n.count(";") >= 2:
+        return "Semicolon-separated list — should be split into individual skills"
+    # Too long — real skills are rarely > 50 chars
+    if len(n) > 50:
+        return f"Too long ({len(n)} chars) — likely a sentence fragment, not a skill"
+    # Contains sentence-ending punctuation (but not periods in abbreviations like .NET or A.I.)
+    if any(c in n for c in "!?;"):
+        return "Contains sentence punctuation — likely a sentence fragment"
+    if "." in n and len(n) > 35:
+        # Long string with periods — likely a sentence
+        return "Long text with periods — likely a sentence fragment"
+    # Starts with lowercase gerund/verb — sentence fragment
+    frag_starts = (
+        "ensuring", "fostering", "leveraging", "whether", "through", "working",
+        "supporting", "particularly", "performing", "utilizing", "managing",
+        "leading", "building", "driving", "delivering", "overseeing",
+        "architecting", "designing", "implementing", "developing",
+    )
+    lower = n.lower()
+    if any(lower.startswith(w) for w in frag_starts) and " " in n:
+        return "Starts with gerund/verb — likely a sentence fragment, not a skill"
+    # Contains phrases that indicate it's a description, not a skill
+    desc_phrases = (
+        "let's connect", "about me", "master of", "bachelor", "associate",
+        "i'm always", "open to", "feel free", "don't hesitate",
+        "years of experience", "proven track record",
+    )
+    if any(p in lower for p in desc_phrases):
+        return "Contains descriptive phrase — not a skill name"
+    # Location patterns (city, state format)
+    if n.count(",") >= 1 and any(c.isupper() for c in n.split(",")[-1].strip()[:2]):
+        import re
+        if re.match(r".*,\s*[A-Z]{2}\b", n):
+            return "Looks like a location (City, ST), not a skill"
+    # Education entry that landed in skills
+    edu_markers = ("mba", "phd", "ph.d", "m.s.", "b.s.", "master of business", "bachelor of")
+    if any(lower.startswith(m) or f" {m}" in lower for m in edu_markers):
+        return "Looks like an education entry, not a skill"
+    return None
+
+
 def group_skills(skills: list) -> dict:
     """Group skills by name.
 
     auto_merge  — same canonical name (case-insensitive / synonym resolution)
     needs_review — different canonical names but same synonym canonical (abbreviation)
+    junk — entries that are not real skills (sentence fragments, descriptions, etc.)
     """
     FIELDS = ["name", "category", "proficiency", "last_used_year", "years_experience"]
 
-    # Bucket by canonical name
-    canonical_buckets: dict[str, list] = {}
+    # First pass: detect junk
+    junk = []
+    clean_skills = []
     for s in skills:
+        reason = _is_junk_skill(s.get("name", ""))
+        if reason:
+            junk.append({"id": s["id"], "content_preview": s.get("name", "")[:100], "reason": reason})
+        else:
+            clean_skills.append(s)
+
+    # Bucket by canonical name (only clean skills)
+    canonical_buckets: dict[str, list] = {}
+    for s in clean_skills:
         key = _normalize_name(s.get("name", ""))
         canonical_buckets.setdefault(key, []).append(s)
 
@@ -270,81 +331,186 @@ def group_skills(skills: list) -> dict:
     for canon, members in canonical_buckets.items():
         winner = _pick_winner(members, FIELDS)
         if len(members) > 1:
-            # Check if all members share the same lowercased raw name (exact match)
             raw_names = {m.get("name", "").strip().lower() for m in members}
             if len(raw_names) == 1:
-                # All identical raw names (case-insensitive) → auto_merge
                 auto_merge.append(_make_group(winner, members))
             else:
-                # Different raw names resolved to same canonical via synonym → needs_review
                 needs_review.append(_make_group(winner, members))
-        else:
-            # Single record — no duplicate, skip entirely (Fix 4: don't flag single abbreviations)
-            pass
 
-    return {"auto_merge": auto_merge, "needs_review": needs_review, "junk": []}
+    return {"auto_merge": auto_merge, "needs_review": needs_review, "junk": junk}
 
 
 # ---------------------------------------------------------------------------
 # 2. Education
 # ---------------------------------------------------------------------------
 
+def _is_junk_education(entry: dict) -> str | None:
+    """Return a reason string if this education entry is junk, else None."""
+    degree = (entry.get("degree") or "").strip()
+    institution = (entry.get("institution") or "").strip()
+    field = (entry.get("field") or "").strip()
+
+    if not degree and not institution:
+        return "Missing both degree and institution"
+
+    lower_deg = degree.lower()
+    lower_inst = institution.lower()
+    combined = f"{lower_deg} {lower_inst} {field.lower()}"
+
+    # Awards, volunteer, memberships, speaker engagements — not education
+    non_edu_markers = (
+        "award", "volunteer", "member", "speaker", "consult", "about me",
+        "additional", "interests", "hobby", "hobbies", "objective",
+        "summary", "profile", "experience", "employment", "reference",
+    )
+    if any(m in combined for m in non_edu_markers):
+        return f"Looks like a non-education entry (contains '{next(m for m in non_edu_markers if m in combined)}')"
+
+    # Very long degree names are usually descriptions
+    if len(degree) > 80:
+        return f"Degree name too long ({len(degree)} chars) — likely misclassified content"
+
+    # No institution at all
+    if not institution and degree:
+        # Could be valid if it's a well-known cert-like education (e.g. "GED")
+        if len(degree) > 30:
+            return "Long degree text with no institution — likely misclassified"
+
+    return None
+
+
 def group_education(entries: list) -> dict:
-    """Group education by normalized institution + degree."""
+    """Group education by normalized institution + degree. Detect junk entries."""
     FIELDS = ["institution", "degree", "field_of_study", "start_date", "end_date",
               "gpa", "honors", "location"]
 
-    buckets: dict[tuple, list] = {}
+    # First pass: detect junk
+    junk = []
+    clean_entries = []
     for e in entries:
+        reason = _is_junk_education(e)
+        if reason:
+            junk.append({
+                "id": e["id"],
+                "content_preview": f"{e.get('degree', '')} — {e.get('institution', '')}"[:100],
+                "reason": reason,
+            })
+        else:
+            clean_entries.append(e)
+
+    # Dedup: group by normalized institution + degree
+    buckets: dict[tuple, list] = {}
+    for e in clean_entries:
         inst = _institution_normalize(e.get("institution", ""))
         deg = (e.get("degree") or "").strip().lower()
         key = (inst, deg)
         buckets.setdefault(key, []).append(e)
 
     auto_merge = []
+    needs_review = []
     for key, members in buckets.items():
         winner = _pick_winner(members, FIELDS)
         if len(members) > 1:
             auto_merge.append(_make_group(winner, members))
 
-    return {"auto_merge": auto_merge, "needs_review": [], "junk": []}
+    # Also check for near-duplicate institutions with similar degrees
+    inst_buckets: dict[str, list] = {}
+    for e in clean_entries:
+        inst = _institution_normalize(e.get("institution", ""))
+        inst_buckets.setdefault(inst, []).append(e)
+
+    for inst, members in inst_buckets.items():
+        if len(members) < 2:
+            continue
+        # Check pairs with similar (but not identical) degree names
+        for i, a in enumerate(members):
+            for b in members[i+1:]:
+                deg_a = (a.get("degree") or "").strip().lower()
+                deg_b = (b.get("degree") or "").strip().lower()
+                if deg_a == deg_b:
+                    continue  # already caught by exact dedup
+                sim = _similarity(deg_a, deg_b)
+                if sim >= 0.75:
+                    winner = _pick_winner([a, b], FIELDS)
+                    needs_review.append({
+                        "winner": winner,
+                        "members": [a, b],
+                        "similarity_score": round(sim, 3),
+                        "reason": f"Similar degrees at same institution: '{a.get('degree')}' vs '{b.get('degree')}'",
+                    })
+
+    return {"auto_merge": auto_merge, "needs_review": needs_review, "junk": junk}
 
 
 # ---------------------------------------------------------------------------
 # 3. Certifications
 # ---------------------------------------------------------------------------
 
+def _is_junk_certification(entry: dict) -> str | None:
+    """Return a reason string if this certification entry is junk, else None."""
+    name = (entry.get("name") or "").strip()
+    if not name:
+        return "Empty certification name"
+
+    lower = name.lower()
+
+    # Very long names are usually descriptions
+    if len(name) > 80:
+        return f"Name too long ({len(name)} chars) — likely misclassified content"
+
+    # Sentence fragments
+    if any(c in name for c in ".!?;") and len(name) > 40:
+        return "Contains punctuation and too long — likely a sentence fragment"
+
+    # Things that aren't certifications
+    non_cert_markers = (
+        "award", "volunteer", "member", "speaker", "about me", "summary",
+        "experience", "education", "hobby", "objective", "reference",
+    )
+    if any(m in lower for m in non_cert_markers):
+        return f"Not a certification (contains '{next(m for m in non_cert_markers if m in lower)}')"
+
+    return None
+
+
 def group_certifications(certs: list) -> dict:
-    """Group certifications by name (exact = auto_merge, synonym = needs_review)."""
+    """Group certifications by name (exact = auto_merge, synonym = needs_review). Detect junk."""
     FIELDS = ["name", "issuer", "issued_date", "expiry_date", "is_active", "cert_id"]
 
     def _cert_canon(name: str) -> str:
         key = (name or "").strip().lower()
         return CERT_SYNONYMS.get(key, key)
 
-    # Prefer active records
     def _cert_winner(members: list) -> dict:
         active = [m for m in members if m.get("is_active")]
         pool = active if active else members
         return _pick_winner(pool, FIELDS)
 
+    # First pass: detect junk
+    junk = []
+    clean_certs = []
+    for c in certs:
+        reason = _is_junk_certification(c)
+        if reason:
+            junk.append({"id": c["id"], "content_preview": (c.get("name") or "")[:100], "reason": reason})
+        else:
+            clean_certs.append(c)
+
     # Exact (case-insensitive) name buckets
     exact_buckets: dict[str, list] = {}
-    for c in certs:
+    for c in clean_certs:
         key = (c.get("name") or "").strip().lower()
         exact_buckets.setdefault(key, []).append(c)
 
     auto_merge = []
     needs_review = []
-    processed_keys = set()
 
     for key, members in exact_buckets.items():
         if len(members) > 1:
             winner = _cert_winner(members)
             auto_merge.append(_make_group(winner, members))
-        processed_keys.add(key)
 
-    # Synonym grouping — group remaining single-record keys by canonical synonym
+    # Synonym grouping
     canon_buckets: dict[str, list] = {}
     for key, members in exact_buckets.items():
         if len(members) == 1:
@@ -356,7 +522,7 @@ def group_certifications(certs: list) -> dict:
             winner = _cert_winner(members)
             needs_review.append(_make_group(winner, members))
 
-    return {"auto_merge": auto_merge, "needs_review": needs_review, "junk": []}
+    return {"auto_merge": auto_merge, "needs_review": needs_review, "junk": junk}
 
 
 # ---------------------------------------------------------------------------
