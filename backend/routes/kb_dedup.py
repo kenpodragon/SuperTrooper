@@ -97,38 +97,35 @@ def apply():
     reclassified = 0
     errors = []
 
-    for merge in merges:
-        winner_id = merge.get("winner_id")
-        loser_ids = merge.get("loser_ids", [])
-        if winner_id is None or not loser_ids:
-            errors.append(f"Invalid merge entry: {merge}")
-            continue
-        try:
-            result = kb_dedup_engine.execute_merge(exec_entity, winner_id, loser_ids)
-            merged += result.get("merged", 0)
-        except Exception as e:
-            errors.append(f"Merge winner={winner_id}: {e}")
+    # Run all operations in a single transaction so partial failures roll back
+    try:
+        with db.get_conn() as conn:
+            for merge in merges:
+                winner_id = merge.get("winner_id")
+                loser_ids = merge.get("loser_ids", [])
+                if winner_id is None or not loser_ids:
+                    errors.append(f"Invalid merge entry: {merge}")
+                    continue
+                result = kb_dedup_engine.execute_merge(exec_entity, winner_id, loser_ids, conn=conn)
+                merged += result.get("merged", 0)
+                errors.extend(result.get("errors", []))
 
-    if deletes:
-        try:
-            result = kb_dedup_engine.execute_delete(exec_entity, deletes)
-            deleted += result.get("deleted", 0)
-            errors.extend(result.get("errors", []))
-        except Exception as e:
-            errors.append(f"Delete: {e}")
+            if deletes:
+                result = kb_dedup_engine.execute_delete(exec_entity, deletes, conn=conn)
+                deleted += result.get("deleted", 0)
+                errors.extend(result.get("errors", []))
 
-    if reclassifications:
-        for item in reclassifications:
-            target_table = item.get("target_table")
-            if not target_table:
-                errors.append(f"Reclassification missing target_table: {item}")
-                continue
-            try:
-                result = kb_dedup_engine.execute_reclassify(exec_entity, target_table, [item])
+            for item in reclassifications:
+                target_table = item.get("target_table")
+                if not target_table:
+                    errors.append(f"Reclassification missing target_table: {item}")
+                    continue
+                result = kb_dedup_engine.execute_reclassify(exec_entity, target_table, [item], conn=conn)
                 reclassified += result.get("reclassified", 0)
                 errors.extend(result.get("errors", []))
-            except Exception as e:
-                errors.append(f"Reclassify id={item.get('id')}: {e}")
+    except Exception as e:
+        errors.append(f"Transaction failed, all changes rolled back: {e}")
+        return jsonify({"merged": 0, "deleted": 0, "reclassified": 0, "errors": errors}), 500
 
     return jsonify({"merged": merged, "deleted": deleted, "reclassified": reclassified, "errors": errors}), 200
 
