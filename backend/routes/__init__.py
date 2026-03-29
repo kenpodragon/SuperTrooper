@@ -41,6 +41,7 @@ from routes.profile import bp as profile_bp
 from routes.jd_fetch import bp as jd_fetch_bp
 from routes.google_oauth import bp as google_oauth_bp
 from routes.bullet_ops import bp as bullet_ops_bp
+from routes.kb_dedup import bp as kb_dedup_bp
 
 ALL_BLUEPRINTS = [
     career_bp,
@@ -84,4 +85,5 @@ ALL_BLUEPRINTS = [
     jd_fetch_bp,
     google_oauth_bp,
     bullet_ops_bp,
+    kb_dedup_bp,
 ]
