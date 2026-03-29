@@ -19,6 +19,7 @@ import MarketIntel from './pages/market/MarketIntel';
 import LinkedInHub from './pages/linkedin/LinkedInHub';
 import Profile from './pages/profile/Profile';
 import BulletBrowser from './pages/bullets/BulletBrowser';
+import KnowledgeBase from './pages/knowledge-base/KnowledgeBase';
 import ResumeBuilder from './pages/resume-builder/ResumeBuilder';
 
 const queryClient = new QueryClient({
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="resume-builder" element={<ResumeBuilder />} />
             <Route path="resume-builder/:id" element={<ResumeBuilder />} />
             <Route path="bullets" element={<BulletBrowser />} />
+            <Route path="knowledge-base" element={<KnowledgeBase />} />
             <Route path="contacts" element={<Contacts />} />
             <Route path="interviews" element={<Interviews />} />
             <Route path="companies" element={<Companies />} />

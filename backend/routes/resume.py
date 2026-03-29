@@ -9,6 +9,7 @@ import db
 from docx import Document
 from ai_providers.router import route_inference
 from PIL import Image, ImageDraw, ImageFont
+from template_dedup import check_duplicates, compute_hash
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +367,7 @@ def generate_from_recipe(recipe_id):
         return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
 
     tmpl = db.query_one(
-        "SELECT template_blob, template_map FROM resume_templates WHERE id = %s AND is_active = TRUE",
+        "SELECT template_blob, template_map FROM resume_templates WHERE id = %s",
         (recipe_row["template_id"],),
     )
     if not tmpl:
@@ -449,7 +450,18 @@ def generate_from_recipe(recipe_id):
     doc.save(output)
     output.seek(0)
 
-    filename = f"resume_recipe_{recipe_id}.docx"
+    # Build filename: {Name}_{TargetRole}_{Date}.docx
+    import re as _re
+    from datetime import date as _date
+    _name_part = (resolved_content.get("HEADER_NAME") or "Resume").strip().replace(" ", "")
+    _raw_role = recipe_row.get("headline") or recipe_row.get("name") or "General"
+    # Clean up onboard auto-names: strip "Onboard: " prefix, file extensions, hash chars
+    _raw_role = _re.sub(r'^Onboard:\s*', '', _raw_role)
+    _raw_role = _re.sub(r'\.docx$', '', _raw_role, flags=_re.IGNORECASE)
+    _raw_role = _re.sub(r'[#]+', '', _raw_role)
+    _role_part = _re.sub(r'[^a-zA-Z0-9_\-]', '_', _raw_role.strip())[:40].strip('_')
+    _date_part = _date.today().strftime("%Y%m%d")
+    filename = f"{_name_part}_{_role_part}_{_date_part}.docx"
 
     # If ?format=json, save to disk and return JSON metadata instead of file download
     if request.args.get("format") == "json":
@@ -648,6 +660,211 @@ def delete_certification(cert_id):
 
 
 # ---------------------------------------------------------------------------
+# Languages
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/languages", methods=["GET"])
+def get_languages():
+    """Get language entries."""
+    rows = db.query("SELECT * FROM languages ORDER BY sort_order")
+    return jsonify({"languages": rows, "count": len(rows)})
+
+
+@bp.route("/api/languages", methods=["POST"])
+def create_language():
+    """Add a new language."""
+    data = request.get_json(force=True)
+    if not data.get("name"):
+        return jsonify({"error": "name is required"}), 400
+
+    valid_proficiencies = ["native", "fluent", "professional", "conversational", "basic"]
+    proficiency = data.get("proficiency", "conversational")
+    if proficiency not in valid_proficiencies:
+        return jsonify({"error": f"proficiency must be one of: {', '.join(valid_proficiencies)}"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO languages (name, proficiency, sort_order)
+        VALUES (%s,%s,%s)
+        RETURNING *
+        """,
+        (data["name"], proficiency, data.get("sort_order", 0)),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/languages/<int:lang_id>", methods=["PATCH"])
+def update_language(lang_id):
+    """Update a language."""
+    data = request.get_json(force=True)
+    allowed = ["name", "proficiency", "sort_order"]
+    sets, params = [], []
+
+    valid_proficiencies = ["native", "fluent", "professional", "conversational", "basic"]
+    if "proficiency" in data and data["proficiency"] not in valid_proficiencies:
+        return jsonify({"error": f"proficiency must be one of: {', '.join(valid_proficiencies)}"}), 400
+
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(lang_id)
+    row = db.execute_returning(
+        f"UPDATE languages SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/languages/<int:lang_id>", methods=["DELETE"])
+def delete_language(lang_id):
+    """Delete a language."""
+    count = db.execute("DELETE FROM languages WHERE id = %s", (lang_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": lang_id}), 200
+
+
+# ---------------------------------------------------------------------------
+# Summary Variants
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/summary-variants", methods=["GET"])
+def get_summary_variants():
+    """Get summary variant entries."""
+    rows = db.query("SELECT * FROM summary_variants ORDER BY sort_order")
+    return jsonify({"summary_variants": rows, "count": len(rows)})
+
+
+@bp.route("/api/summary-variants", methods=["POST"])
+def create_summary_variant():
+    """Add a new summary variant."""
+    data = request.get_json(force=True)
+    if not data.get("role_type") or not data.get("text"):
+        return jsonify({"error": "role_type and text are required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO summary_variants (role_type, text, sort_order)
+        VALUES (%s,%s,%s)
+        RETURNING *
+        """,
+        (data["role_type"], data["text"], data.get("sort_order", 0)),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/summary-variants/<int:sv_id>", methods=["PATCH"])
+def update_summary_variant(sv_id):
+    """Update a summary variant."""
+    data = request.get_json(force=True)
+    allowed = ["role_type", "text", "sort_order"]
+    sets, params = [], []
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(sv_id)
+    row = db.execute_returning(
+        f"UPDATE summary_variants SET {', '.join(sets)}, updated_at = NOW() WHERE id = %s RETURNING *",
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/summary-variants/<int:sv_id>", methods=["DELETE"])
+def delete_summary_variant(sv_id):
+    """Delete a summary variant."""
+    count = db.execute("DELETE FROM summary_variants WHERE id = %s", (sv_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": sv_id}), 200
+
+
+# ---------------------------------------------------------------------------
+# Skills CRUD — lives in career.py (routes/career.py)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# References
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/references", methods=["GET"])
+def get_references():
+    """Get professional references."""
+    rows = db.query('SELECT * FROM "references" ORDER BY sort_order')
+    return jsonify({"references": rows, "count": len(rows)})
+
+
+@bp.route("/api/references", methods=["POST"])
+def create_reference():
+    """Add a new reference."""
+    data = request.get_json(force=True)
+    if not data.get("name"):
+        return jsonify({"error": "name is required"}), 400
+
+    row = db.execute_returning(
+        """
+        INSERT INTO "references" (name, title, company, relationship, email, phone,
+                                  linkedin_url, notes, ok_to_contact, career_history_id, sort_order)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            data["name"], data.get("title"), data.get("company"),
+            data.get("relationship"), data.get("email"), data.get("phone"),
+            data.get("linkedin_url"), data.get("notes"),
+            data.get("ok_to_contact", True),
+            data.get("career_history_id"), data.get("sort_order", 0),
+        ),
+    )
+    return jsonify(row), 201
+
+
+@bp.route("/api/references/<int:ref_id>", methods=["PATCH"])
+def update_reference(ref_id):
+    """Update a reference."""
+    data = request.get_json(force=True)
+    allowed = ["name", "title", "company", "relationship", "email", "phone",
+               "linkedin_url", "notes", "ok_to_contact", "career_history_id", "sort_order"]
+    sets, params = [], []
+    for key in allowed:
+        if key in data:
+            sets.append(f"{key} = %s")
+            params.append(data[key])
+    if not sets:
+        return jsonify({"error": "No valid fields to update"}), 400
+
+    params.append(ref_id)
+    row = db.execute_returning(
+        f'UPDATE "references" SET {", ".join(sets)} WHERE id = %s RETURNING *',
+        params,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row), 200
+
+
+@bp.route("/api/references/<int:ref_id>", methods=["DELETE"])
+def delete_reference(ref_id):
+    """Delete a reference."""
+    count = db.execute('DELETE FROM "references" WHERE id = %s', (ref_id,))
+    if count == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"deleted": ref_id}), 200
+
+
+# ---------------------------------------------------------------------------
 # Resume Templates
 # ---------------------------------------------------------------------------
 
@@ -719,7 +936,12 @@ def delete_template(template_id):
 
 @bp.route("/api/resume/templates/upload", methods=["POST"])
 def upload_template():
-    """Upload a .docx file as a new template."""
+    """Upload a .docx file as a new template. Detects duplicates (exact + near).
+
+    Query params:
+        force=true — skip duplicate check and insert anyway
+        check_only=true — only check for duplicates, don't insert
+    """
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded. Use multipart form with 'file' field."}), 400
     f = request.files["file"]
@@ -727,13 +949,49 @@ def upload_template():
         return jsonify({"error": "Only .docx files are supported"}), 400
     blob = f.read()
     name = request.form.get("name", f.filename.rsplit(".", 1)[0])
+    force = request.args.get("force", "").lower() == "true"
+    check_only = request.args.get("check_only", "").lower() == "true"
+
+    # Duplicate detection
+    if not force:
+        dedup = check_duplicates(blob, "full")
+        if dedup["exact_match"]:
+            return jsonify({
+                "duplicate": True,
+                "exact_match": dedup["exact_match"],
+                "message": "This template already exists. Use ?force=true to upload anyway.",
+                "analysis_mode": dedup["analysis_mode"],
+            }), 409
+        if dedup["near_matches"] and check_only:
+            return jsonify({
+                "duplicate": False,
+                "near_matches": dedup["near_matches"],
+                "content_hash": dedup["content_hash"],
+                "message": "Similar templates found. Review matches or use ?force=true to upload.",
+                "analysis_mode": dedup["analysis_mode"],
+            }), 200
+        if check_only:
+            return jsonify({
+                "duplicate": False,
+                "near_matches": [],
+                "content_hash": dedup["content_hash"],
+                "message": "No duplicates found.",
+                "analysis_mode": dedup["analysis_mode"],
+            }), 200
+
+    content_hash = compute_hash(blob)
+    # Force upload: set hash to NULL to bypass unique constraint (intentional duplicate)
+    store_hash = None if force else content_hash
     row = db.query_one(
-        """INSERT INTO resume_templates (name, filename, template_blob, template_type, is_active)
-           VALUES (%s, %s, %s, 'full', true)
+        """INSERT INTO resume_templates (name, filename, template_blob, template_type, is_active, content_hash)
+           VALUES (%s, %s, %s, 'full', true, %s)
            RETURNING id, name, filename, created_at""",
-        (name, f.filename, blob),
+        (name, f.filename, blob, store_hash),
     )
-    return jsonify(row), 201
+    resp = dict(row)
+    if force:
+        resp["forced"] = True
+    return jsonify(resp), 201
 
 
 @bp.route("/api/resume/templates/<int:template_id>/download", methods=["GET"])
@@ -1174,7 +1432,12 @@ def generate_resume():
     doc.save(output)
     output.seek(0)
 
-    filename = f"resume_{version}_{variant}.docx"
+    # Build filename: {Name}_{TargetRole}_{Date}.docx
+    from datetime import date as _date
+    _name_part = (content_map.get("HEADER_NAME") or "Resume").strip().replace(" ", "")
+    _role_part = (variant or version or "General").strip().replace(" ", "_")[:40]
+    _date_part = _date.today().strftime("%Y%m%d")
+    filename = f"{_name_part}_{_role_part}_{_date_part}.docx"
     return send_file(
         output,
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -2022,13 +2285,13 @@ def ai_generate_slot(recipe_id):
 
         # Load voice rules
         voice_rows = db.query(
-            "SELECT rule_text FROM voice_rules WHERE is_active = true AND category = 'resume_rule' LIMIT 10"
+            "SELECT rule_text FROM voice_rules WHERE category = 'resume_rule' ORDER BY sort_order LIMIT 10"
         )
         voice_rules = "\n".join(r["rule_text"] for r in voice_rows)
 
         # Load banned words
         banned_rows = db.query(
-            "SELECT rule_text FROM voice_rules WHERE is_active = true AND category = 'banned_word'"
+            "SELECT rule_text FROM voice_rules WHERE category = 'banned_word' ORDER BY sort_order"
         )
         banned_words = [r["rule_text"].lower() for r in banned_rows]
 

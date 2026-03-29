@@ -1,3 +1,11 @@
+# Database dumps and data — never commit
+*.dump
+*.sql.gz
+db_dumps/
+db_data/
+local_code/db_dumps/
+local_code/db_data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

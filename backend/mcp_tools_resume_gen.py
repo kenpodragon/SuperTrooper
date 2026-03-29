@@ -59,19 +59,24 @@ def register_resume_gen_tools(mcp):
 
     @mcp.tool()
     def upload_template(name: str = "", file_path: str = "", description: str = "",
-                        template_type: str = "full") -> dict:
+                        template_type: str = "full", force: bool = False) -> dict:
         """Register a new resume template from a .docx file path.
+
+        Detects exact duplicates by content hash and near-duplicates via
+        structural comparison (AI-enhanced when AI is enabled).
 
         Args:
             name: Template name (required).
             file_path: Path to the .docx template file (required).
             description: Optional description.
             template_type: Template type (full, section, header). Default 'full'.
+            force: Skip duplicate detection and insert anyway. Default False.
         """
         if not name or not file_path:
             return {"error": "name and file_path are required"}
 
         from pathlib import Path as _Path
+        from template_dedup import check_duplicates, compute_hash
         p = _Path(file_path)
         if not p.exists():
             return {"error": f"File not found: {file_path}"}
@@ -79,12 +84,36 @@ def register_resume_gen_tools(mcp):
         with open(file_path, "rb") as f:
             blob = f.read()
 
+        if not force:
+            dedup = check_duplicates(blob, template_type)
+            if dedup["exact_match"]:
+                return {
+                    "duplicate": True,
+                    "exact_match": dedup["exact_match"],
+                    "message": "This template already exists. Use force=True to upload anyway.",
+                    "analysis_mode": dedup["analysis_mode"],
+                }
+            if dedup["near_matches"]:
+                return {
+                    "duplicate": False,
+                    "near_matches": dedup["near_matches"],
+                    "content_hash": dedup["content_hash"],
+                    "message": "Similar templates found. Review or use force=True to upload.",
+                    "analysis_mode": dedup["analysis_mode"],
+                }
+
+        content_hash = compute_hash(blob)
+        store_hash = None if force else content_hash
         row = db.execute_returning(
-            """INSERT INTO resume_templates (name, filename, template_blob, description, template_type)
-               VALUES (%s, %s, %s, %s, %s) RETURNING id, name, filename, description, is_active, template_type, created_at""",
-            (name, p.name, blob, description or None, template_type),
+            """INSERT INTO resume_templates (name, filename, template_blob, description, template_type, content_hash)
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, name, filename, description, is_active, template_type, created_at""",
+            (name, p.name, blob, description or None, template_type, store_hash),
         )
-        return row or {"error": "Failed to upload template"}
+        if not row:
+            return {"error": "Failed to upload template"}
+        if force:
+            row["forced"] = True
+        return row
 
     @mcp.tool()
     def activate_template(template_id: int = 0) -> dict:
@@ -240,6 +269,41 @@ def register_resume_gen_tools(mcp):
             "job_header": ", ",
         }
 
+        def _fill_run(run, text, bold=None):
+            """Fill a run with text, converting \\t to proper <w:tab/> XML elements.
+
+            Word ignores literal tab characters in <w:t>; it needs <w:tab/>
+            elements between <w:t> segments for tab stops to work.
+            """
+            from lxml import etree
+            W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+            if bold is not None:
+                run.bold = bold
+
+            if "\t" not in text:
+                run.text = text
+                return
+
+            # Clear existing text content from the run element
+            r_elem = run._element
+            # Remove all existing w:t and w:tab children
+            for child in list(r_elem):
+                tag = etree.QName(child.tag).localname if isinstance(child.tag, str) else ""
+                if tag in ("t", "tab", "br"):
+                    r_elem.remove(child)
+
+            # Split on tabs and interleave w:t and w:tab
+            parts = text.split("\t")
+            for i, part in enumerate(parts):
+                if i > 0:
+                    # Insert <w:tab/> before each segment after the first
+                    tab_elem = etree.SubElement(r_elem, f"{{{W}}}tab")
+                t_elem = etree.SubElement(r_elem, f"{{{W}}}t")
+                t_elem.text = part
+                # Preserve leading/trailing spaces
+                t_elem.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+
         # === RECIPE PATH ===
         if recipe_id > 0:
             recipe_row = db.query_one("SELECT * FROM resume_recipes WHERE id = %s", (recipe_id,))
@@ -292,24 +356,22 @@ def register_resume_gen_tools(mcp):
                     sep = BOLD_SEPS[slot_type]
                     idx = text.find(sep)
                     if idx >= 0 and para.runs:
-                        para.runs[0].text = text[:idx]
-                        para.runs[0].bold = True
+                        _fill_run(para.runs[0], text[:idx], bold=True)
                         if len(para.runs) > 1:
-                            para.runs[1].text = text[idx:]
-                            para.runs[1].bold = None
+                            _fill_run(para.runs[1], text[idx:], bold=None)
                             for run in para.runs[2:]:
                                 run.text = ""
                                 run.bold = None
                         else:
-                            para.runs[0].text = text
+                            _fill_run(para.runs[0], text, bold=True)
                     else:
                         if para.runs:
-                            para.runs[0].text = text
+                            _fill_run(para.runs[0], text)
                             for run in para.runs[1:]:
                                 run.text = ""
                 else:
                     if para.runs:
-                        para.runs[0].text = text
+                        _fill_run(para.runs[0], text)
                         for run in para.runs[1:]:
                             run.text = ""
                     else:
@@ -497,7 +559,8 @@ def register_resume_gen_tools(mcp):
             header = db.query_one("SELECT full_name FROM resume_header LIMIT 1")
             cand_name = (header.get("full_name") or "Resume").replace(" ", "_").replace("/", "_") if header else "Resume"
             today = datetime.date.today().isoformat()
-            output_path = f"Output/{cand_name}_{version}_{variant}_{today}.docx"
+            target = (variant or version or "General").replace(" ", "_").replace("/", "_")
+            output_path = f"Output/{cand_name}_{target}_{today}.docx"
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         doc.save(str(out))

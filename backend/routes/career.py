@@ -366,7 +366,8 @@ def list_skills():
     """All skills with optional category filter."""
     category = request.args.get("category")
     proficiency = request.args.get("proficiency")
-    limit = int(request.args.get("limit", 100))
+    search = request.args.get("search")
+    limit = int(request.args.get("limit", 500))
     offset = int(request.args.get("offset", 0))
 
     clauses, params = [], []
@@ -376,6 +377,9 @@ def list_skills():
     if proficiency:
         clauses.append("proficiency = %s")
         params.append(proficiency)
+    if search:
+        clauses.append("name ILIKE %s")
+        params.append(f"%{search}%")
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = db.query(
@@ -388,7 +392,8 @@ def list_skills():
         """,
         params + [limit, offset],
     )
-    return jsonify(rows), 200
+    total = db.query_one(f"SELECT count(*) as total FROM skills {where}", params if params else None)
+    return jsonify({"skills": rows, "count": total["total"] if total else len(rows)}), 200
 
 
 @bp.route("/api/skills", methods=["POST"])

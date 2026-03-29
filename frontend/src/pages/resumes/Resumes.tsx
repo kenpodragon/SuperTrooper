@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, recipes } from '../../api/client';
@@ -52,10 +52,12 @@ interface AtsScoreResult {
   ai_error?: string;
 }
 
+const PAGE_SIZE = 25;
+
 export default function Resumes() {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<'recipes' | 'templates'>('recipes');
+  const [tab, setTab] = useState<'recipes' | 'templates' | 'ats'>('recipes');
   const [view, setView] = useState<'list' | 'detail'>('list');
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -65,6 +67,11 @@ export default function Resumes() {
   const [atsForm, setAtsForm] = useState({ resume_text: '', jd_text: '', use_ai: false });
   const [jdUrl, setJdUrl] = useState('');
   const [jdFetching, setJdFetching] = useState(false);
+
+  // Search, sort, pagination state
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState<'name' | 'date'>('date');
+  const [page, setPage] = useState(1);
 
   const { data: recipeList, isLoading: loadingRecipes } = useQuery({
     queryKey: ['recipes'],
@@ -78,6 +85,30 @@ export default function Resumes() {
   });
 
   const recipeItems: Recipe[] = Array.isArray(recipeList) ? recipeList : (recipeList as unknown as { recipes?: Recipe[] })?.recipes ?? [];
+
+  // Filtered + sorted + paginated recipes
+  const filtered = useMemo(() => {
+    let items = [...recipeItems];
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      items = items.filter(r =>
+        r.name.toLowerCase().includes(q) ||
+        (r.description || '').toLowerCase().includes(q)
+      );
+    }
+    if (sortBy === 'name') {
+      items.sort((a, b) => a.name.localeCompare(b.name));
+    } else {
+      items.sort((a, b) => (b.id - a.id)); // newest first by id
+    }
+    return items;
+  }, [recipeItems, search, sortBy]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Reset page when search changes
+  const handleSearch = (v: string) => { setSearch(v); setPage(1); };
 
   const createRecipe = useMutation({
     mutationFn: (data: typeof createForm) => api.post<Recipe>('/resume/recipes', data),
@@ -123,7 +154,6 @@ export default function Resumes() {
       if (contentType.includes('application/json')) {
         return res.json() as Promise<GenerateResult>;
       }
-      // File download response
       const blob = await res.blob();
       const disposition = res.headers.get('content-disposition') || '';
       const match = disposition.match(/filename="?([^"]+)"?/);
@@ -174,20 +204,15 @@ export default function Resumes() {
 
         {detail && (
           <div className="space-y-6">
-            {/* Recipe Info */}
             <div className="bg-white rounded-lg border border-gray-200 p-4">
               <div className="flex justify-between items-start mb-3">
                 <div>
                   <p className="text-sm text-gray-500">{detail.description || 'No description'}</p>
                   {detail.headline && <p className="text-sm text-gray-700 mt-1 italic">{detail.headline}</p>}
                 </div>
-                <div className="flex gap-2">
-                  {detail.is_active && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Active</span>}
-                  <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded">Template #{detail.template_id}</span>
-                </div>
+                <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded">Template #{detail.template_id}</span>
               </div>
 
-              {/* Sections */}
               <h3 className="text-sm font-semibold text-gray-900 mt-4 mb-2">Sections</h3>
               {(detail.sections ?? []).length === 0 && <p className="text-sm text-gray-400">No sections configured</p>}
               {(detail.sections ?? []).map((s, idx) => (
@@ -198,7 +223,6 @@ export default function Resumes() {
               ))}
             </div>
 
-            {/* Actions */}
             <div className="flex gap-3">
               <button
                 onClick={() => generateResume.mutate(selectedId)}
@@ -222,7 +246,6 @@ export default function Resumes() {
               </button>
             </div>
 
-            {/* Generation Result */}
             {genResult && (
               <div className={`p-4 rounded-lg border ${genResult.status === 'ok' || genResult.output_path ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
                 <p className="text-sm font-medium">{genResult.status === 'ok' || genResult.output_path ? 'Resume Generated' : 'Generation Failed'}</p>
@@ -239,9 +262,9 @@ export default function Resumes() {
   // List view
   return (
     <div>
-      {/* Tab Bar */}
+      {/* Tab Bar — 3 tabs */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border, #e5e7eb)', marginBottom: 24 }}>
-        {(['recipes', 'templates'] as const).map((t) => (
+        {(['recipes', 'templates', 'ats'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -254,11 +277,10 @@ export default function Resumes() {
               border: 'none',
               borderBottom: tab === t ? '2px solid var(--accent, #3b82f6)' : '2px solid transparent',
               cursor: 'pointer',
-              textTransform: 'capitalize',
               marginBottom: -1,
             }}
           >
-            {t}
+            {t === 'ats' ? 'ATS Checker' : t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
       </div>
@@ -266,9 +288,227 @@ export default function Resumes() {
       {/* Templates tab */}
       {tab === 'templates' && <TemplatesBrowser />}
 
+      {/* ATS Checker tab */}
+      {tab === 'ats' && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">ATS Score Checker</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Resume Text</label>
+              <div className="flex gap-2 mb-2">
+                <select
+                  className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  defaultValue=""
+                  onChange={async (e) => {
+                    const id = Number(e.target.value);
+                    if (!id) return;
+                    try {
+                      const detail = await api.get<{ resolved_preview?: Record<string, unknown> }>(`/resume/recipes/${id}?resolve=true`);
+                      if (detail.resolved_preview) {
+                        const rp = detail.resolved_preview;
+                        const lines: string[] = [];
+                        for (const [key, val] of Object.entries(rp)) {
+                          if (Array.isArray(val)) {
+                            lines.push(`${key}:`);
+                            val.forEach(v => lines.push(`  - ${typeof v === 'string' ? v : JSON.stringify(v)}`));
+                          } else if (typeof val === 'string') {
+                            lines.push(`${key}: ${val}`);
+                          }
+                        }
+                        setAtsForm(p => ({ ...p, resume_text: lines.join('\n') }));
+                      }
+                    } catch {
+                      alert('Failed to load recipe content');
+                    }
+                  }}
+                >
+                  <option value="">Select a recipe to load...</option>
+                  {recipeItems.map((r: Recipe) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
+              <textarea
+                rows={5}
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={atsForm.resume_text}
+                onChange={e => setAtsForm(p => ({ ...p, resume_text: e.target.value }))}
+                placeholder="Select a recipe above or paste resume text..."
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Job Description</label>
+              <div className="flex gap-2 mb-2">
+                <input
+                  type="text"
+                  className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  value={jdUrl}
+                  onChange={e => setJdUrl(e.target.value)}
+                  placeholder="Paste JD URL to auto-fetch..."
+                />
+                <button
+                  onClick={() => fetchJdFromUrl(jdUrl)}
+                  disabled={jdFetching || !jdUrl.trim()}
+                  className="px-3 py-1.5 bg-blue-50 text-blue-600 text-xs rounded hover:bg-blue-100 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {jdFetching ? 'Fetching...' : 'Fetch JD'}
+                </button>
+              </div>
+              <textarea
+                rows={5}
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={atsForm.jd_text}
+                onChange={e => setAtsForm(p => ({ ...p, jd_text: e.target.value }))}
+                placeholder="Paste job description or use URL above..."
+              />
+            </div>
+          </div>
+          <div className="mt-3 flex items-center gap-4">
+            <button
+              onClick={() => runAtsScore.mutate(atsForm)}
+              disabled={runAtsScore.isPending || !atsForm.resume_text || !atsForm.jd_text}
+              className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+            >
+              {runAtsScore.isPending ? 'Scoring...' : 'Check ATS Score'}
+            </button>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <button
+                type="button"
+                onClick={() => setAtsForm(p => ({ ...p, use_ai: !p.use_ai }))}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                  atsForm.use_ai ? 'bg-blue-500' : 'bg-gray-300'
+                }`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                  atsForm.use_ai ? 'translate-x-4' : 'translate-x-0.5'
+                }`} />
+              </button>
+              <span className="text-xs text-gray-600">Use AI</span>
+            </label>
+          </div>
+
+          {atsResult && (
+            <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+              {(atsResult.ats_score ?? atsResult.score) != null && (
+                <div className="flex items-center gap-4 mb-3">
+                  <p className="text-lg font-semibold text-gray-900">
+                    ATS Score: {atsResult.ats_score ?? atsResult.score}/100
+                  </p>
+                  {atsResult.match_percentage != null && (
+                    <span className="text-sm text-gray-500">
+                      ({atsResult.keywords_found}/{atsResult.keywords_checked} keywords, {atsResult.match_percentage}% match)
+                    </span>
+                  )}
+                </div>
+              )}
+              {atsResult.keyword_matches && atsResult.keyword_matches.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs font-medium text-green-600 mb-1">Found Keywords</p>
+                  <div className="flex flex-wrap gap-1">
+                    {atsResult.keyword_matches.filter(k => k.found).map(k => (
+                      <span key={k.keyword} className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">
+                        {k.keyword}{k.resume_count && k.resume_count > 1 ? ` (${k.resume_count}x)` : ''}
+                      </span>
+                    ))}
+                  </div>
+                  {atsResult.keyword_matches.some(k => !k.found) && (
+                    <>
+                      <p className="text-xs font-medium text-red-600 mb-1 mt-2">Missing Keywords</p>
+                      <div className="flex flex-wrap gap-1">
+                        {atsResult.keyword_matches.filter(k => !k.found).map(k => (
+                          <span key={k.keyword} className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded">
+                            {k.keyword}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              {atsResult.formatting_flags && (
+                <div className="mt-2">
+                  <p className="text-xs font-medium text-gray-500 mb-1">
+                    Formatting: {atsResult.formatting_flags.ats_safe ? '✓ ATS Safe' : '⚠ Issues Found'}
+                  </p>
+                  {atsResult.formatting_flags.issues && atsResult.formatting_flags.issues.length > 0 && (
+                    <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                      {atsResult.formatting_flags.issues.map((f, i) => <li key={i}>{f}</li>)}
+                    </ul>
+                  )}
+                </div>
+              )}
+              {atsResult.missing_keywords && atsResult.missing_keywords.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs font-medium text-gray-500 mb-1">Missing Keywords</p>
+                  <div className="flex flex-wrap gap-1">
+                    {atsResult.missing_keywords.map(k => (
+                      <span key={k} className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded">{k}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {atsResult.feedback && atsResult.feedback.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs font-medium text-gray-500 mb-1">Feedback</p>
+                  <ul className="list-disc list-inside text-sm text-gray-600 space-y-1">
+                    {atsResult.feedback.map((f, i) => <li key={i}>{f}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {atsResult.ai_analysis && (
+                <div className="mt-3 border-t border-gray-200 pt-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-bold text-blue-600 uppercase">AI Analysis</span>
+                    {atsResult.ai_analysis.ai_score != null && (
+                      <span className="text-xs text-gray-500">AI Score: {atsResult.ai_analysis.ai_score}/100</span>
+                    )}
+                  </div>
+                  {atsResult.ai_analysis.overall_assessment && (
+                    <p className="text-sm text-gray-700 mb-3">{atsResult.ai_analysis.overall_assessment}</p>
+                  )}
+                  {atsResult.ai_analysis.strengths && atsResult.ai_analysis.strengths.length > 0 && (
+                    <div className="mb-2">
+                      <p className="text-xs font-medium text-green-600 mb-1">Strengths</p>
+                      <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                        {atsResult.ai_analysis.strengths.map((s, i) => <li key={i}>{s}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {atsResult.ai_analysis.weaknesses && atsResult.ai_analysis.weaknesses.length > 0 && (
+                    <div className="mb-2">
+                      <p className="text-xs font-medium text-red-600 mb-1">Gaps</p>
+                      <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                        {atsResult.ai_analysis.weaknesses.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {atsResult.ai_analysis.suggestions && atsResult.ai_analysis.suggestions.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-blue-600 mb-1">Suggestions</p>
+                      <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                        {atsResult.ai_analysis.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+              {atsResult.ai_error && (
+                <p className="mt-2 text-xs text-amber-600">AI unavailable, showing keyword analysis only: {atsResult.ai_error}</p>
+              )}
+              {atsResult.analysis_mode && (
+                <p className="mt-2 text-xs text-gray-400 text-right">
+                  Analysis: {atsResult.analysis_mode === 'ai' ? 'AI + Keywords' : 'Keywords only'}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Recipes tab */}
       {tab === 'recipes' && <>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-900">Resume Builder</h1>
         <div className="flex gap-2">
           <button
@@ -286,9 +526,29 @@ export default function Resumes() {
         </div>
       </div>
 
+      {/* Search + Sort */}
+      <div className="flex items-center gap-3 mb-4">
+        <input
+          type="text"
+          className="flex-1 max-w-sm border border-gray-200 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+          value={search}
+          onChange={e => handleSearch(e.target.value)}
+          placeholder="Search recipes..."
+        />
+        <select
+          className="border border-gray-200 rounded px-2 py-1.5 text-sm"
+          value={sortBy}
+          onChange={e => setSortBy(e.target.value as 'name' | 'date')}
+        >
+          <option value="date">Newest first</option>
+          <option value="name">Name A-Z</option>
+        </select>
+        <span className="text-xs text-gray-400">{filtered.length} recipes</span>
+      </div>
+
       {/* Create Form */}
       {showCreate && (
-        <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+        <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Create Recipe</h2>
           <div className="grid grid-cols-2 gap-4 max-w-lg">
             <div className="col-span-2">
@@ -334,11 +594,10 @@ export default function Resumes() {
         </div>
       )}
 
-      {/* Recipes */}
+      {/* Recipe List */}
       <div className="bg-white rounded-lg border border-gray-200 p-4">
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">Recipes</h2>
         {loadingRecipes && <p className="text-sm text-gray-400">Loading...</p>}
-        {recipeItems.map((r: Recipe) => (
+        {paginated.map((r: Recipe) => (
           <div key={r.id} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
             <div
               className="cursor-pointer hover:text-blue-600"
@@ -348,7 +607,6 @@ export default function Resumes() {
               <p className="text-xs text-gray-400">{r.description || 'No description'}</p>
             </div>
             <div className="flex gap-2 items-center">
-              {r.is_active && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Active</span>}
               <button
                 onClick={() => generateResume.mutate(r.id)}
                 disabled={generateResume.isPending}
@@ -371,223 +629,42 @@ export default function Resumes() {
             </div>
           </div>
         ))}
-        {!loadingRecipes && recipeItems.length === 0 && <p className="text-sm text-gray-400">No recipes found</p>}
-      </div>
+        {!loadingRecipes && filtered.length === 0 && <p className="text-sm text-gray-400">{search ? 'No recipes match your search' : 'No recipes found'}</p>}
 
-      {/* ATS Score Tool */}
-      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">ATS Score Checker</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Resume Text</label>
-            <div className="flex gap-2 mb-2">
-              <select
-                className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-                defaultValue=""
-                onChange={async (e) => {
-                  const id = Number(e.target.value);
-                  if (!id) return;
-                  try {
-                    const detail = await api.get<{ resolved_preview?: Record<string, unknown> }>(`/resume/recipes/${id}?resolve=true`);
-                    if (detail.resolved_preview) {
-                      // Flatten resolved dict to readable text
-                      const rp = detail.resolved_preview;
-                      const lines: string[] = [];
-                      for (const [key, val] of Object.entries(rp)) {
-                        if (Array.isArray(val)) {
-                          lines.push(`${key}:`);
-                          val.forEach(v => lines.push(`  - ${typeof v === 'string' ? v : JSON.stringify(v)}`));
-                        } else if (typeof val === 'string') {
-                          lines.push(`${key}: ${val}`);
-                        }
-                      }
-                      setAtsForm(p => ({ ...p, resume_text: lines.join('\n') }));
-                    }
-                  } catch {
-                    alert('Failed to load recipe content');
-                  }
-                }}
-              >
-                <option value="">Select a recipe to load...</option>
-                {recipeItems.map((r: Recipe) => (
-                  <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
-              </select>
-            </div>
-            <textarea
-              rows={5}
-              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-              value={atsForm.resume_text}
-              onChange={e => setAtsForm(p => ({ ...p, resume_text: e.target.value }))}
-              placeholder="Select a recipe above or paste resume text..."
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Job Description</label>
-            <div className="flex gap-2 mb-2">
-              <input
-                type="text"
-                className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-                value={jdUrl}
-                onChange={e => setJdUrl(e.target.value)}
-                placeholder="Paste JD URL to auto-fetch..."
-              />
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
+            <span className="text-xs text-gray-400">
+              Showing {(page - 1) * PAGE_SIZE + 1}-{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+            </span>
+            <div className="flex gap-1">
               <button
-                onClick={() => fetchJdFromUrl(jdUrl)}
-                disabled={jdFetching || !jdUrl.trim()}
-                className="px-3 py-1.5 bg-blue-50 text-blue-600 text-xs rounded hover:bg-blue-100 disabled:opacity-50 whitespace-nowrap"
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="px-2 py-1 text-xs border rounded hover:bg-gray-50 disabled:opacity-30"
               >
-                {jdFetching ? 'Fetching...' : 'Fetch JD'}
+                Prev
+              </button>
+              {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                const p = i + 1;
+                return (
+                  <button
+                    key={p}
+                    onClick={() => setPage(p)}
+                    className={`px-2 py-1 text-xs border rounded ${page === p ? 'bg-blue-50 text-blue-600 border-blue-200' : 'hover:bg-gray-50'}`}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={page === totalPages}
+                className="px-2 py-1 text-xs border rounded hover:bg-gray-50 disabled:opacity-30"
+              >
+                Next
               </button>
             </div>
-            <textarea
-              rows={5}
-              className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-              value={atsForm.jd_text}
-              onChange={e => setAtsForm(p => ({ ...p, jd_text: e.target.value }))}
-              placeholder="Paste job description or use URL above..."
-            />
-          </div>
-        </div>
-        <div className="mt-3 flex items-center gap-4">
-          <button
-            onClick={() => runAtsScore.mutate(atsForm)}
-            disabled={runAtsScore.isPending || !atsForm.resume_text || !atsForm.jd_text}
-            className="px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
-          >
-            {runAtsScore.isPending ? 'Scoring...' : 'Check ATS Score'}
-          </button>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <button
-              type="button"
-              onClick={() => setAtsForm(p => ({ ...p, use_ai: !p.use_ai }))}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                atsForm.use_ai ? 'bg-blue-500' : 'bg-gray-300'
-              }`}
-            >
-              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                atsForm.use_ai ? 'translate-x-4' : 'translate-x-0.5'
-              }`} />
-            </button>
-            <span className="text-xs text-gray-600">Use AI</span>
-          </label>
-        </div>
-
-        {atsResult && (
-          <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-            {(atsResult.ats_score ?? atsResult.score) != null && (
-              <div className="flex items-center gap-4 mb-3">
-                <p className="text-lg font-semibold text-gray-900">
-                  ATS Score: {atsResult.ats_score ?? atsResult.score}/100
-                </p>
-                {atsResult.match_percentage != null && (
-                  <span className="text-sm text-gray-500">
-                    ({atsResult.keywords_found}/{atsResult.keywords_checked} keywords, {atsResult.match_percentage}% match)
-                  </span>
-                )}
-              </div>
-            )}
-            {atsResult.keyword_matches && atsResult.keyword_matches.length > 0 && (
-              <div className="mt-2">
-                <p className="text-xs font-medium text-green-600 mb-1">Found Keywords</p>
-                <div className="flex flex-wrap gap-1">
-                  {atsResult.keyword_matches.filter(k => k.found).map(k => (
-                    <span key={k.keyword} className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">
-                      {k.keyword}{k.resume_count && k.resume_count > 1 ? ` (${k.resume_count}x)` : ''}
-                    </span>
-                  ))}
-                </div>
-                {atsResult.keyword_matches.some(k => !k.found) && (
-                  <>
-                    <p className="text-xs font-medium text-red-600 mb-1 mt-2">Missing Keywords</p>
-                    <div className="flex flex-wrap gap-1">
-                      {atsResult.keyword_matches.filter(k => !k.found).map(k => (
-                        <span key={k.keyword} className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded">
-                          {k.keyword}
-                        </span>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-            {atsResult.formatting_flags && (
-              <div className="mt-2">
-                <p className="text-xs font-medium text-gray-500 mb-1">
-                  Formatting: {atsResult.formatting_flags.ats_safe ? '✓ ATS Safe' : '⚠ Issues Found'}
-                </p>
-                {atsResult.formatting_flags.issues && atsResult.formatting_flags.issues.length > 0 && (
-                  <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
-                    {atsResult.formatting_flags.issues.map((f, i) => <li key={i}>{f}</li>)}
-                  </ul>
-                )}
-              </div>
-            )}
-            {atsResult.missing_keywords && atsResult.missing_keywords.length > 0 && (
-              <div className="mt-2">
-                <p className="text-xs font-medium text-gray-500 mb-1">Missing Keywords</p>
-                <div className="flex flex-wrap gap-1">
-                  {atsResult.missing_keywords.map(k => (
-                    <span key={k} className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded">{k}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-            {atsResult.feedback && atsResult.feedback.length > 0 && (
-              <div className="mt-2">
-                <p className="text-xs font-medium text-gray-500 mb-1">Feedback</p>
-                <ul className="list-disc list-inside text-sm text-gray-600 space-y-1">
-                  {atsResult.feedback.map((f, i) => <li key={i}>{f}</li>)}
-                </ul>
-              </div>
-            )}
-
-            {/* AI Analysis */}
-            {atsResult.ai_analysis && (
-              <div className="mt-3 border-t border-gray-200 pt-3">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-blue-600 uppercase">AI Analysis</span>
-                  {atsResult.ai_analysis.ai_score != null && (
-                    <span className="text-xs text-gray-500">AI Score: {atsResult.ai_analysis.ai_score}/100</span>
-                  )}
-                </div>
-                {atsResult.ai_analysis.overall_assessment && (
-                  <p className="text-sm text-gray-700 mb-3">{atsResult.ai_analysis.overall_assessment}</p>
-                )}
-                {atsResult.ai_analysis.strengths && atsResult.ai_analysis.strengths.length > 0 && (
-                  <div className="mb-2">
-                    <p className="text-xs font-medium text-green-600 mb-1">Strengths</p>
-                    <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
-                      {atsResult.ai_analysis.strengths.map((s, i) => <li key={i}>{s}</li>)}
-                    </ul>
-                  </div>
-                )}
-                {atsResult.ai_analysis.weaknesses && atsResult.ai_analysis.weaknesses.length > 0 && (
-                  <div className="mb-2">
-                    <p className="text-xs font-medium text-red-600 mb-1">Gaps</p>
-                    <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
-                      {atsResult.ai_analysis.weaknesses.map((w, i) => <li key={i}>{w}</li>)}
-                    </ul>
-                  </div>
-                )}
-                {atsResult.ai_analysis.suggestions && atsResult.ai_analysis.suggestions.length > 0 && (
-                  <div>
-                    <p className="text-xs font-medium text-blue-600 mb-1">Suggestions</p>
-                    <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
-                      {atsResult.ai_analysis.suggestions.map((s, i) => <li key={i}>{s}</li>)}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
-            {atsResult.ai_error && (
-              <p className="mt-2 text-xs text-amber-600">AI unavailable, showing keyword analysis only: {atsResult.ai_error}</p>
-            )}
-            {atsResult.analysis_mode && (
-              <p className="mt-2 text-xs text-gray-400 text-right">
-                Analysis: {atsResult.analysis_mode === 'ai' ? 'AI + Keywords' : 'Keywords only'}
-              </p>
-            )}
           </div>
         )}
       </div>

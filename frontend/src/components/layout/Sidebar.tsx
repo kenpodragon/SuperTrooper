@@ -8,6 +8,7 @@ const nav = [
   { to: '/jobs', label: 'Saved Jobs', icon: '🔍' },
   { to: '/resumes', label: 'Resumes', icon: '📄' },
   { to: '/bullets', label: 'Bullets', icon: '🎯' },
+  { to: '/knowledge-base', label: 'Knowledge Base', icon: '📚' },
   { to: '/contacts', label: 'Contacts', icon: '👥' },
   { to: '/interviews', label: 'Interviews', icon: '🎯' },
   { to: '/companies', label: 'Companies', icon: '🏢' },

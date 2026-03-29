@@ -58,12 +58,12 @@ export default function Dashboard() {
 
   const weeklyDigest = useQuery({
     queryKey: ['weekly-digest'],
-    queryFn: () => api.get<WeeklyDigest>('/reporting/weekly-digest'),
+    queryFn: () => api.get<WeeklyDigest>('/analytics/weekly-digest'),
   });
 
   const marketSignals = useQuery({
     queryKey: ['market-signals'],
-    queryFn: () => api.get<{ count: number; signals: MarketSignal[] }>('/market-intelligence/signals?limit=5').then(r => r.signals),
+    queryFn: () => api.get<{ count: number; signals: MarketSignal[] }>('/market-intelligence?limit=5').then(r => r.signals),
   });
 
   const staleAlerts = useQuery({

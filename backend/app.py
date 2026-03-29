@@ -23,7 +23,7 @@ def create_app():
     app.json.default = db.serialize  # handle dates, decimals in JSON
 
     # CORS — allow everything on localhost (single-user, local only)
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    CORS(app, resources={r"/api/*": {"origins": "*", "expose_headers": ["Content-Disposition"]}})
 
     # Register blueprints
     from routes import ALL_BLUEPRINTS

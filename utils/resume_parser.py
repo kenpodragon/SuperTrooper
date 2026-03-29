@@ -58,10 +58,50 @@ SECTION_KEYWORDS = {
     'professional development': 'education',
     'training': 'education',
     'keywords': 'keywords',
+    'previous positions': 'additional',
+    'previous experience': 'additional',
+    'earlier career': 'additional',
+    'other experience': 'additional',
+    'organizations': 'additional',
+    'patents': 'additional',
+    'recommendations': 'additional',
 }
 
 # Bullet prefix characters
 BULLET_CHARS = set('•●○▪▸►–—‣⁃◦◆◇■□▶')
+
+# Action verbs that signal achievement bullets (past tense)
+_ACHIEVEMENT_VERBS = {
+    'achieved', 'administered', 'advanced', 'analyzed', 'applied', 'architected',
+    'attracted', 'automated', 'boosted', 'built', 'catalyzed', 'centralized',
+    'championed', 'coached', 'co-led', 'collaborated', 'completed', 'conceived',
+    'conceptualized', 'consolidated', 'contributed', 'converted', 'coordinated',
+    'created', 'cultivated', 'cut', 'decreased', 'defined', 'delivered',
+    'deployed', 'designed', 'developed', 'devised', 'directed', 'doubled',
+    'drove', 'earned', 'eliminated', 'enabled', 'engineered', 'enhanced',
+    'ensured', 'established', 'evaluated', 'exceeded', 'executed', 'expanded',
+    'expedited', 'facilitated', 'formulated', 'founded', 'generated', 'grew',
+    'guided', 'headed', 'hired', 'identified', 'implemented', 'improved',
+    'increased', 'influenced', 'initiated', 'innovated', 'instituted',
+    'integrated', 'introduced', 'launched', 'led', 'leveraged', 'maintained',
+    'managed', 'maximized', 'mentored', 'migrated', 'minimized', 'modernized',
+    'negotiated', 'onboarded', 'operated', 'optimized', 'orchestrated',
+    'organized', 'oversaw', 'partnered', 'performed', 'piloted', 'pioneered',
+    'planned', 'presented', 'prevented', 'produced', 'promoted', 'proposed',
+    'provided', 'published', 'raised', 'realized', 'rebuilt', 'recruited',
+    'redesigned', 'reduced', 'reengineered', 'restructured', 'revamped',
+    'reversed', 'revitalized', 'saved', 'scaled', 'secured', 'seamlessly',
+    'simplified', 'slashed', 'solved', 'spearheaded', 'standardized',
+    'streamlined', 'strengthened', 'structured', 'supervised', 'surpassed',
+    'trained', 'transformed', 'transitioned', 'tripled', 'unified', 'upgraded',
+    'utilized', 'won',
+}
+
+# Inline skill label patterns (e.g., "Key Skills: ...", "Core Competencies: ...")
+_INLINE_SKILLS_RE = re.compile(
+    r'^(?:Key\s+Skills|Core\s+Competencies|Technical\s+Skills|Areas?\s+of\s+Expertise)\s*:',
+    re.IGNORECASE,
+)
 
 
 def _extract_formatting(paragraph) -> dict:
@@ -127,6 +167,182 @@ def _is_bullet_text(text: str) -> bool:
     return False
 
 
+def _is_achievement_text(text: str) -> bool:
+    """Check if text looks like an achievement bullet (starts with action verb or has strong metrics)."""
+    words = text.split(None, 1)
+    if not words:
+        return False
+    first_word = words[0].lower().rstrip('.,;:')
+
+    if first_word in _ACHIEVEMENT_VERBS:
+        return True
+
+    # "Label: Action verb..." pattern (e.g., "Expansion Through Client Acquisition: Spearheaded...")
+    if ':' in text:
+        after_colon = text.split(':', 1)[1].strip()
+        after_words = after_colon.split(None, 1)
+        if after_words and after_words[0].lower().rstrip('.,;:') in _ACHIEVEMENT_VERBS:
+            return True
+
+    # Strong metrics signal: even without a recognized verb, numbers + context = achievement
+    has_metric = bool(re.search(
+        r'\d+%|\$[\d,.]+K?M?B?|\d+x\b|\d+\+?\s*(?:team|engineer|member|staff|people|user|client|customer)',
+        text, re.IGNORECASE,
+    ))
+    if has_metric and len(text) > 60:
+        return True
+
+    return False
+
+
+def _looks_like_company_name(text: str, prev_type: str | None) -> bool:
+    """Check if short (<80 char) non-bold text is a standalone company name.
+
+    Heuristics:
+    - Appears after end of a previous job (bullet, job_intro) or section_header
+    - Short, no colon (not a skill label), not starting with common description words
+    - Title-case or all-caps typical of company names
+    """
+    # Only plausible between jobs
+    if prev_type not in ('bullet', 'job_intro', 'section_header', None):
+        return False
+    # Skill labels like "Key Skills: ..."
+    if ':' in text:
+        return False
+    # Very short text (under ~50 chars) that looks like a proper noun
+    stripped = text.strip()
+    if len(stripped) > 60:
+        return False
+    # Reject bracket-tagged metadata like "[Source: V32]", "[Listed under...]"
+    if stripped.startswith('['):
+        return False
+    # Reject if it starts with a lowercase word (description, not a name)
+    if stripped and stripped[0].islower():
+        return False
+    # Reject narrative sentences ("As the CTO...", "During my time...", "From 2012...")
+    narrative_starts = {'as an', 'as the', 'at ', 'during', 'from ', 'i demo', 'i served',
+                        'expert', 'well-vers', 'master', 'my toolkit', 'proficient',
+                        'honored', 'salaka', 'in my role'}
+    lower = stripped.lower()
+    if any(lower.startswith(ns) for ns in narrative_starts):
+        return False
+    # Reject skill/tech lists (multiple tech words with no company structure)
+    tech_words = {'python', 'java', 'aws', 'sql', 'docker', 'azure', 'react', 'node',
+                  'c++', 'c#', 'kubernetes', 'terraform', 'atlassian', 'tensor', 'apache'}
+    words_lower = [w.lower().rstrip('.,;') for w in stripped.split()]
+    if len(words_lower) >= 3 and sum(1 for w in words_lower if w in tech_words) >= 2:
+        return False
+    # Reject pipe-delimited lines (role summaries, not company names)
+    if '|' in stripped:
+        return False
+    # Reject if it reads like a description ("provider", "startup", "agency")
+    desc_words = {'provider', 'serving', 'specializing', 'offering', 'delivering',
+                  'connecting', 'helping', 'supporting', 'focused on', 'software development,',
+                  'strategic partner', 'process st'}
+    if any(dw in lower for dw in desc_words):
+        return False
+    return True
+
+
+def _is_junk_employer(text: str) -> bool:
+    """Reject text that should never become a career_history employer.
+
+    Catches: narrative sentences, skill lists, template placeholders,
+    section headers, metadata tags, single generic words.
+    """
+    stripped = text.strip()
+    lower = stripped.lower()
+
+    # Bracket-tagged metadata: [Source: V32], [Listed under...]
+    if stripped.startswith('['):
+        return True
+    # Template placeholders: (A2) Company Name..., (C3) Location...
+    if re.match(r'^\([A-Z]\d\)', stripped):
+        return True
+    # Narrative sentences starting with pronouns/prepositions
+    narrative_re = re.compile(
+        r'^(as an?|as the|at |during|from \d|i [a-z]|expert|well[- ]vers|'
+        r'master|my |proficient|honored|salaka|in my |successfully |'
+        r'kind regards|page \d)',
+        re.IGNORECASE,
+    )
+    if narrative_re.match(stripped):
+        return True
+    # Skill/tech lists (3+ words with 2+ tech keywords)
+    tech_words = {'python', 'java', 'aws', 'sql', 'docker', 'azure', 'react', 'node',
+                  'c++', 'c#', 'kubernetes', 'terraform', 'atlassian', 'tensor', 'apache',
+                  'tomcat', 'javascript', 'typescript', 'php', 'mysql', 'ruby', 'golang'}
+    words_lower = [w.lower().rstrip('.,;') for w in stripped.split()]
+    if len(words_lower) >= 3 and sum(1 for w in words_lower if w in tech_words) >= 2:
+        return True
+    # Single generic words that aren't companies
+    generic_singles = {'unknown', 'publishing', 'ergebnisse', 'social impact', 'languages',
+                       'training', 'organizations', 'patents', 'recruitment', 'manufacturing',
+                       'c#', 'c++', 'java', 'python', 'previous positions'}
+    if lower in generic_singles:
+        return True
+    # Title-as-employer: starts with a job title prefix (CTO/, Director,, VP , Senior )
+    if re.match(r'^(CTO/|Director[,\s]|VP\s|Senior\s|Chief\s)', stripped) and ',' in stripped:
+        return True
+    # Too long to be a company name (>80 chars = likely a description)
+    if len(stripped) > 80:
+        return True
+    # Pipe-delimited summary lines
+    if '|' in stripped and stripped.count('|') >= 2:
+        return True
+    # German/non-English text patterns
+    if any(w in lower for w in ['gründer', 'direktor', 'für', 'endergebnis', 'ergebnisse',
+                                 'anwendungsentwick', 'dezember', 'januar', 'gegenwart',
+                                 'jahre', 'monate']):
+        return True
+    # Job titles masquerading as employers (start with title words, no company after)
+    title_as_emp = re.match(
+        r'^(Chief|Director|VP|Vice President|Senior|Lead|Head)\s',
+        stripped, re.IGNORECASE,
+    )
+    if title_as_emp and not _LOCATION_RE.search(stripped):
+        # Has title words but no location → likely a title not a company
+        # Exception: if it also contains a real company name indicator
+        if not any(w in lower for w in ['inc', 'llc', 'corp', 'associates', 'solutions',
+                                         'consulting', 'tsolutions', 'smtc', 'atex',
+                                         'newscycle', 'granted', 'tutor', 'nova',
+                                         'datavers', 'mealmatch', 'wall street']):
+            return True
+    # Questions/conversational text
+    if lower.startswith('is there') or lower.startswith('what ') or lower.startswith('how '):
+        return True
+    # Personal names (not companies)
+    if lower in ('stephen salaka', 'stephen a salaka', 'stephen a. salaka'):
+        return True
+    # Transcript/document references
+    if 'transcript' in lower:
+        return True
+    # Generic terms, section headers, and non-company text
+    generic_terms = {'cloud computing', 'lean six sigma master black belt trainer',
+                     'city and state: melbourne, fl', 'eagle scout',
+                     'rejection response', 'distributed development system and platform',
+                     'thoughtchain distributed ai processing'}
+    if lower in generic_terms or lower.rstrip(' ,') in generic_terms:
+        return True
+    # Skills lists masquerading as employers (comma-separated technical terms)
+    if lower.count(',') >= 2 and any(w in lower for w in ['coding', 'migrations', 'quality',
+                                                            'development,', 'management,']):
+        return True
+    # Contains literal placeholder text
+    if 'location' == lower.split(',')[-1].strip().lower():
+        return True
+    # Embedded tab characters (malformed parse artifacts)
+    if '\t' in stripped:
+        return True
+    # Parenthetical with no content: "... ()" or "... ( )" at end
+    if re.search(r'\(\s*\)\s*$', stripped):
+        return True
+    # "Manager Foo, State" pattern — title + store, not a company
+    if re.match(r'^(Manager|Customer Service)\s', stripped, re.IGNORECASE):
+        return True
+    return False
+
+
 def _match_section_keyword(text: str) -> str | None:
     """Match text against known section header keywords. Returns section category or None."""
     lower = text.strip().lower()
@@ -175,32 +391,46 @@ def _classify_paragraph(
 
     # --- Within specific sections ---
     if current_section == 'experience' or current_section == 'additional':
-        # Bullet items (explicit bullet chars)
+        # 1. Bullet items (explicit bullet chars)
         if _is_bullet_text(text):
             return 'bullet', current_section
 
-        # Non-bold longer text = job intro / description
-        if not bold and len(text) > 80:
-            return 'job_intro', current_section
+        # 2. Inline skills line ("Key Skills: ...", "Core Competencies: ...")
+        if _INLINE_SKILLS_RE.match(text):
+            return 'skills', current_section
 
-        # Bold text with a colon pattern = achievement bullet (check BEFORE date
-        # pattern so bullets mentioning dates like "October 2025" aren't misclassified)
+        # 3. Bold text with colon = achievement bullet (check BEFORE date
+        #    pattern so bullets mentioning dates like "October 2025" aren't misclassified)
         if bold and ':' in text and len(text) > 50:
             return 'bullet', current_section
 
-        # Job header: has date pattern, typically bold or short
+        # 4. Job header: has date pattern (title or company line with dates)
         if _has_date_pattern(text):
             return 'job_header', current_section
 
-        # Bold short text under experience could be a job title
+        # 5. Bold short text after job_header/section_header = job title
         if bold and len(text) < 120 and prev_type in ('job_header', 'section_header'):
             return 'job_header', current_section
 
-        # Short non-bold text that isn't a header
-        if len(text) < 80 and not bold:
+        # 6. Non-bold company line with location/industry markers
+        if not bold and _is_company_line(text):
+            return 'job_header', current_section
+
+        # 7. Non-bold achievement text (starts with action verb or has strong metrics)
+        if not bold and _is_achievement_text(text):
+            return 'bullet', current_section
+
+        # 8. Short non-bold text: standalone company name vs job intro
+        if not bold and len(text) < 80:
+            if _looks_like_company_name(text, prev_type):
+                return 'job_header', current_section
             return 'job_intro', current_section
 
-        # Fallback for experience content: bold longer text is likely a bullet
+        # 9. Non-bold longer text without action verbs = job intro (description)
+        if not bold and len(text) > 80:
+            return 'job_intro', current_section
+
+        # 10. Bold longer text = bullet
         if bold and len(text) > 50:
             return 'bullet', current_section
 
@@ -415,6 +645,8 @@ def _parse_company_line(text: str) -> dict:
 
     employer = re.sub(r'\s*,\s*$', '', text.strip()).strip()
     employer = re.sub(r'\s{2,}', ' ', employer).strip(' ,\t')
+    # Remove empty trailing parens from parse artifacts
+    employer = re.sub(r'\s*\(\s*\)\s*$', '', employer).strip()
 
     is_current = end_date is not None and end_date.lower() in ('present', 'current')
 
@@ -435,6 +667,8 @@ def _parse_company_line(text: str) -> dict:
 def _parse_title_dates(text: str) -> tuple[str, str | None, str | None]:
     """Extract title and optional date range from a title line."""
     start, end = None, None
+
+    # Try standard dash/en-dash separator first
     m = _DATE_RANGE_RE.search(text)
     if m:
         start = m.group(1).strip()
@@ -446,6 +680,44 @@ def _parse_title_dates(text: str) -> tuple[str, str | None, str | None]:
             start = m.group(1).strip()
             end = m.group(2).strip()
             text = text[:m.start()].strip().rstrip(',').strip()
+
+    # Also try pipe-separated dates: "Title  Aug 2021 | Jan 2024"
+    if not start:
+        pipe_date = re.search(
+            r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{4})'
+            r'\s*\|\s*'
+            r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{4}|[Pp]resent|[Cc]urrent)',
+            text,
+        )
+        if pipe_date:
+            start = pipe_date.group(1).strip()
+            end = pipe_date.group(2).strip()
+            text = text[:pipe_date.start()].strip().rstrip(',|').strip()
+
+    # Try tab-separated dates: "Title\tAug 2021 - Jan 2024"
+    if not start and '\t' in text:
+        parts = text.split('\t', 1)
+        if len(parts) == 2:
+            m2 = _DATE_RANGE_RE.search(parts[1])
+            if not m2:
+                m2 = _YEAR_RANGE_RE.search(parts[1])
+            if m2:
+                start = m2.group(1).strip()
+                end = m2.group(2).strip()
+                text = parts[0].strip()
+
+    # Clean up title artifacts
+    text = text.strip('\t ,|')
+    # Remove dangling open parens with no close: "CTO/Co-Founder ("
+    text = re.sub(r'\s*\(\s*$', '', text)
+    # Remove empty parens: "Director ()"
+    text = re.sub(r'\s*\(\s*\)\s*$', '', text)
+    # Remove [Source: ...] tags
+    text = re.sub(r'\[Source:[^\]]*\]', '', text)
+    # Remove "Listed under..." prefix
+    text = re.sub(r'^Listed under.*?:\s*', '', text)
+    # Collapse multiple spaces
+    text = re.sub(r'\s{2,}', ' ', text).strip()
     return text, start, end
 
 
@@ -560,11 +832,56 @@ def parse_resume_for_kb(file_path: str) -> dict:
             summary_parts.append(text)
             continue
 
-        # -- Skills / Keywords (pipe or comma separated) --
+        # -- Skills / Keywords (pipe, comma, or tab separated) --
         if ptype in ('skills', 'keywords'):
-            for part in re.split(r'[|,]', text):
-                skill = part.strip()
-                if skill and len(skill) < 60:
+            # Split on pipes first (most common in skill lines), then tabs
+            for chunk in re.split(r'[|\t]', text):
+                # Then split on commas, but protect numbers like "32,000"
+                for part in re.split(r',\s+(?![0-9])', chunk):
+                    skill = part.strip().strip('•–—·')
+                    if not skill or len(skill) > 55 or len(skill) < 2:
+                        continue
+                    # Reject sentence-like fragments
+                    words = skill.split()
+                    if len(words) > 7:
+                        continue
+                    if re.match(r'^\d', skill) and not re.match(r'^\d+\+?\s*(years?|yrs?)', skill, re.I):
+                        continue  # starts with number but isn't "5+ years"
+                    # Reject if ends with period or closing paren (sentence fragment)
+                    if skill.endswith('.') or skill.endswith(')'):
+                        continue
+                    # Reject if contains % or $ (metric, not a skill)
+                    if '%' in skill or '$' in skill:
+                        continue
+                    # Reject conjunction fragments ("and AWS", "or Python")
+                    if re.match(r'^(and|or|with|the|for|to|of|in|a|an)\s', skill, re.I):
+                        continue
+                    # Reject category headers with colon ("Database Platforms: MySQL")
+                    if ':' in skill:
+                        # Split and keep only the part after colon as the skill
+                        after_colon = skill.split(':', 1)[1].strip()
+                        if after_colon and len(after_colon) > 2 and len(after_colon) < 50:
+                            skill = after_colon
+                            words = skill.split()
+                        else:
+                            continue
+                    # Reject single common words that aren't skills
+                    if len(words) == 1 and len(skill) < 4:
+                        continue
+                    # Reject phrases that START with a verb (achievement language)
+                    first_word_lower = words[0].lower().rstrip('.,;:')
+                    if first_word_lower in _ACHIEVEMENT_VERBS:
+                        continue
+                    # Also reject requirement-like words
+                    if first_word_lower in {'must', 'ability', 'required', 'need', 'needs',
+                                            'requires', 'able', 'responsible'}:
+                        continue
+                    # Reject if it reads like a sentence (>4 words with common sentence words)
+                    if len(words) > 4:
+                        filler = {'with', 'that', 'this', 'from', 'into', 'have', 'been',
+                                  'able', 'level', 'high', 'our', 'their', 'your'}
+                        if sum(1 for w in words if w.lower() in filler) >= 2:
+                            continue
                     skills.append(skill)
             continue
 
@@ -573,9 +890,13 @@ def parse_resume_for_kb(file_path: str) -> dict:
             education.append(text)
             continue
 
-        # -- Certifications --
+        # -- Certifications (may be tab-separated on one line) --
         if ptype == 'certification':
-            certifications.append(text)
+            # Split on tabs first (some resumes put 2 certs per line)
+            for chunk in re.split(r'\t+', text):
+                cert = chunk.strip()
+                if cert and len(cert) > 3:
+                    certifications.append(cert)
             continue
 
         # -- Experience section content --
@@ -585,12 +906,15 @@ def parse_resume_for_kb(file_path: str) -> dict:
                 # In additional section, try one-liner parse
                 if in_additional:
                     entry = _parse_oneliner(text)
-                    if entry:
+                    if entry and not _is_junk_employer(entry['employer']):
                         career_history.append(entry)
                         continue
 
                 # Determine if this is a company line or title line
                 if _is_company_line(text):
+                    # Reject junk ONLY when it would become an employer
+                    if _is_junk_employer(text):
+                        continue
                     if current_job:
                         career_history.append(current_job)
                     current_job = _parse_company_line(text)
@@ -604,23 +928,37 @@ def parse_resume_for_kb(file_path: str) -> dict:
                         current_job['end_date'] = None if end.lower() in ('present', 'current') else end
                         current_job['is_current'] = end.lower() in ('present', 'current')
                 elif current_job is not None and current_job['title']:
-                    # Additional role at same company — split into separate entry
-                    career_history.append(current_job)
-                    title, start, end = _parse_title_dates(text)
-                    current_job = {
-                        'employer': current_job['employer'],
-                        'title': title,
-                        'start_date': start or current_job.get('start_date'),
-                        'end_date': (None if end and end.lower() in ('present', 'current') else end) or current_job.get('end_date'),
-                        'location': current_job.get('location'),
-                        'industry': current_job.get('industry'),
-                        'intro_text': '',
-                        'is_current': bool(end and end.lower() in ('present', 'current')),
-                        'bullets': [],
-                        'notes': current_job.get('notes'),
-                    }
+                    # Decide: another role at same company, or a new company?
+                    # If text has title words or date patterns → title at same company
+                    # If neither → likely a new company name
+                    has_title_words = bool(_TITLE_WORDS.search(text))
+                    has_dates = _has_date_pattern(text)
+                    if has_title_words or has_dates:
+                        # Additional role at same company — split into separate entry
+                        career_history.append(current_job)
+                        title, start, end = _parse_title_dates(text)
+                        current_job = {
+                            'employer': current_job['employer'],
+                            'title': title,
+                            'start_date': start or current_job.get('start_date'),
+                            'end_date': (None if end and end.lower() in ('present', 'current') else end) or current_job.get('end_date'),
+                            'location': current_job.get('location'),
+                            'industry': current_job.get('industry'),
+                            'intro_text': '',
+                            'is_current': bool(end and end.lower() in ('present', 'current')),
+                            'bullets': [],
+                            'notes': current_job.get('notes'),
+                        }
+                    else:
+                        # No title words or dates — treat as new company
+                        if _is_junk_employer(text):
+                            continue
+                        career_history.append(current_job)
+                        current_job = _parse_company_line(text)
                 else:
                     # No current job context — treat as company
+                    if _is_junk_employer(text):
+                        continue
                     if current_job:
                         career_history.append(current_job)
                     current_job = _parse_company_line(text)

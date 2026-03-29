@@ -1,6 +1,6 @@
 # Database Dictionary — SuperTroopers
 
-**Last updated:** 2026-03-25 (Session 24)
+**Last updated:** 2026-03-26 (Session 27)
 **Database:** PostgreSQL 17 + pgvector 0.8.2
 **Connection:** localhost:5555, db=supertroopers, user=supertroopers
 
@@ -12,14 +12,16 @@
 
 | Table | Rows | Migration | Purpose |
 |-------|------|-----------|---------|
-| career_history | 19 | 001 | Employer records with dates, industry, team size |
-| bullets | 232 | 001 | Resume bullet atoms with STAR, tags, role/industry suitability |
-| skills | 255 | 001+002 | Skills inventory with proficiency and category |
+| career_history | 165 | 001 | Employer records with dates, industry, team size |
+| bullets | 233 | 001 | Resume bullet atoms with STAR, tags, role/industry suitability |
+| skills | 1,259 | 001+002 | Skills inventory with proficiency and category |
 | summary_variants | 8 | 001 | Professional summaries by role type (CTO, VP Eng, etc.) |
+| languages | 0 | 033 | Language proficiency (native/fluent/professional/conversational/basic) |
+| references | 0 | 033 | Professional references with relationship, contact info, OK-to-contact flag |
 | companies | 173 | 001 | Target companies with scoring, sector, priority |
 | applications | 62 | 001 | Job application pipeline tracker |
 | interviews | 38 | 001 | Individual interview events linked to applications |
-| contacts | 26 | 001 | Professional network with relationship strength |
+| contacts | 14,478 | 001 | Professional network with relationship strength |
 | emails | 7,215 | 001 | Parsed Gmail messages by category |
 | documents | 134 | 001 | Indexed files (resumes, cover letters, coaching materials) |
 | resume_versions | 127 | 001+004 | Resume version registry with spec JSONB |
@@ -27,11 +29,11 @@
 | voice_rules | 173 | 003 | Voice guide rules for content generation validation |
 | salary_benchmarks | 12 | 003 | Role-by-role salary ranges with COLA mapping |
 | cola_markets | 7 | 003 | Cost of living reference data by market |
-| resume_templates | 4 | 004+005 | .docx template blob + template_map JSONB |
+| resume_templates | 246 | 004+005+032 | .docx template blob + template_map JSONB + content_hash dedup |
 | resume_header | 1 | 004 | Candidate contact info for resume headers |
 | education | 4 | 004 | Degree and certificate entries |
 | certifications | 8 | 004 | Professional certifications |
-| resume_recipes | 10 | 006+030 | Recipe-based resume assembly. V2 format: array-based sections (migration 030) |
+| resume_recipes | 249 | 006+030 | Recipe-based resume assembly. V2 format: array-based sections (migration 030) |
 | saved_jobs | 0 | 007 | Job evaluation queue before applying |
 | gap_analyses | 0 | 007 | Persisted gap analysis results |
 | application_status_history | 0 | 007 | Auto-logged status transitions |
@@ -39,7 +41,7 @@
 | follow_ups | 0 | 007 | Follow-up attempts per application |
 | interview_prep | 0 | 007 | Company-specific interview prep materials |
 | interview_debriefs | 0 | 007 | Structured post-interview capture |
-| outreach_messages | 7,324 | 007 | Sent/received messages across channels |
+| outreach_messages | 41,626 | 007 | Sent/received messages across channels |
 | referrals | 0 | 007 | Contact referrals to jobs |
 | activity_log | 0 | 007 | Action audit trail |
 | linkedin_scraped_posts | 819 | 028 | Scraped LinkedIn posts with engagement metrics |
