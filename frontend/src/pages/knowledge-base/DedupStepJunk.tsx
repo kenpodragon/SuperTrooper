@@ -47,7 +47,7 @@ export default function DedupStepJunk({ entityType, items, onComplete }: Props) 
         // keep = no action
       }
 
-      await api.post('/api/kb/dedup/apply', { entity_type: entityType, merges: [], deletes, reclassify });
+      await api.post('/kb/dedup/apply', { entity_type: entityType, merges: [], deletes, reclassify });
     },
     onSuccess: onComplete,
   });

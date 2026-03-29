@@ -122,7 +122,7 @@ export default function KbDedupWizard({ isOpen, onClose }: KbDedupWizardProps) {
 
   const scanMutation = useMutation({
     mutationFn: (entityType: string) =>
-      api.post<ScanResult>('/api/kb/dedup/scan', { entity_type: entityType, use_ai: true }),
+      api.post<ScanResult>('/kb/dedup/scan', { entity_type: entityType, use_ai: true }),
     onSuccess: (result) => {
       setScanResult(result);
       const entityKey = ENTITY_STEPS[entityIdx].key;

@@ -39,7 +39,7 @@ export function SummaryRoleTypeEditor({ suggestions, onComplete }: Props) {
           reassignments[oldLabel] = newLabel.trim();
         }
       }
-      await api.post('/api/kb/dedup/summaries/role-types', { reassignments });
+      await api.post('/kb/dedup/summaries/role-types', { reassignments });
       onComplete();
     } catch (err: any) {
       setError(err?.message ?? 'Failed to save role types');

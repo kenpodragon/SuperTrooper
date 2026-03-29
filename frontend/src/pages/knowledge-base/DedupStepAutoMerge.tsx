@@ -34,11 +34,11 @@ export default function DedupStepAutoMerge({ entityType, groups, onComplete }: P
         winner_id: winnerOverrides[g.group_id] ?? g.winner_id,
         member_ids: g.members.map((m: any) => m.id),
       }));
-      await api.post('/api/kb/dedup/apply', { entity_type: entityType, merges, deletes: [], reclassify: [] });
+      await api.post('/kb/dedup/apply', { entity_type: entityType, merges, deletes: [], reclassify: [] });
 
       const employerGroups = activeGroups.filter((g) => g.canonical_name);
       for (const g of employerGroups) {
-        await api.post('/api/kb/dedup/employer-rename', {
+        await api.post('/kb/dedup/employer-rename', {
           group_id: g.group_id,
           canonical_name: g.canonical_name,
           member_ids: g.members.map((m: any) => m.id),

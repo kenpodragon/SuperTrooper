@@ -50,7 +50,7 @@ export function SummarySplitReview({ mixedContent, onComplete }: Props) {
           extract_bullets: item.bullet_portions,
           career_history_id: item.career_history_id ?? null,
         }));
-      await api.post('/api/kb/dedup/summaries/split', { splits });
+      await api.post('/kb/dedup/summaries/split', { splits });
       onComplete();
     } catch (err: any) {
       setError(err?.message ?? 'Failed to confirm splits');
