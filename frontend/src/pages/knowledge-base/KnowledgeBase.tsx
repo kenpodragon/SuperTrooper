@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import AiToggle from './AiToggle';
+import KbDedupWizard from './KbDedupWizard';
 
 // ---- Types ----
 
@@ -721,10 +723,32 @@ function SummariesTab() {
 
 export default function KnowledgeBase() {
   const [activeTab, setActiveTab] = useState<TabKey>('skills');
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const { data: settings } = useQuery<{ ai_enabled: boolean }>({
+    queryKey: ['settings'],
+    queryFn: () => api.get('/settings'),
+  });
 
   return (
     <div>
-      <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f1f5f9', marginBottom: 24 }}>Knowledge Base</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f1f5f9', margin: 0 }}>Knowledge Base</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <AiToggle />
+          {settings?.ai_enabled && (
+            <button
+              onClick={() => setWizardOpen(true)}
+              style={{
+                padding: '8px 16px', fontSize: '14px', fontWeight: 500,
+                color: '#fff', background: '#7c3aed', border: 'none',
+                borderRadius: '8px', cursor: 'pointer',
+              }}
+            >
+              Clean Up Knowledge Base
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #334155', marginBottom: 24 }}>
@@ -756,6 +780,8 @@ export default function KnowledgeBase() {
       {activeTab === 'languages' && <LanguagesTab />}
       {activeTab === 'references' && <ReferencesTab />}
       {activeTab === 'summaries' && <SummariesTab />}
+
+      <KbDedupWizard isOpen={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>
   );
 }
