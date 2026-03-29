@@ -2,9 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies + LibreOffice for .docx→PDF thumbnail generation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc curl \
+    libreoffice-writer-nogui \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (for Claude CLI)

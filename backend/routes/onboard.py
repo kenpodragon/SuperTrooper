@@ -338,7 +338,8 @@ def _insert_skill(cur, name, category=None, proficiency=None):
 
 def _store_original_template(cur, filename, docx_bytes):
     """Store the uploaded resume in resume_templates as uploaded_original.
-    Detects exact duplicates by content hash. Returns (template_id, is_duplicate).
+    Detects exact duplicates by content hash. Generates a PNG thumbnail.
+    Returns (template_id, is_duplicate).
     """
     content_hash = compute_hash(docx_bytes)
 
@@ -352,12 +353,17 @@ def _store_original_template(cur, filename, docx_bytes):
     if existing:
         return existing["id"], True
 
+    # Generate thumbnail (non-fatal — None on failure)
+    from utils.thumbnail import generate_thumbnail
+    preview = generate_thumbnail(docx_bytes)
+
     cur.execute(
         """INSERT INTO resume_templates
-               (name, filename, template_blob, template_type, is_active, content_hash)
-           VALUES (%s, %s, %s, 'uploaded_original', false, %s)
+               (name, filename, template_blob, template_type, is_active, content_hash, preview_blob)
+           VALUES (%s, %s, %s, 'uploaded_original', false, %s, %s)
            RETURNING id""",
-        (f"Upload: {filename}"[:100], filename[:200], psycopg2.Binary(docx_bytes), content_hash),
+        (f"Upload: {filename}"[:100], filename[:200], psycopg2.Binary(docx_bytes), content_hash,
+         psycopg2.Binary(preview) if preview else None),
     )
     return cur.fetchone()["id"], False
 

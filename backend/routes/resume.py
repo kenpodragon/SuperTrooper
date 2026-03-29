@@ -1683,80 +1683,29 @@ def compare_recipes():
 # ---------------------------------------------------------------------------
 
 def _generate_template_thumbnail(template_blob, template_name):
-    """Generate a 300x400 PNG layout diagram from a .docx template blob.
+    """Generate a 200x260 PNG thumbnail from a .docx template blob.
 
-    Parses the template paragraphs and renders colored blocks:
-    - Light blue for placeholder paragraphs (containing {{ }})
-    - Gray for regular text paragraphs
+    Uses LibreOffice headless to render the actual document as a real preview.
+    Falls back to a simple placeholder image if LibreOffice is unavailable.
     Returns PNG bytes.
     """
-    WIDTH, HEIGHT = 300, 400
-    MARGIN = 12
-    TOP_OFFSET = 40
-    BLOCK_HEIGHT = 14
-    BLOCK_GAP = 4
-    PLACEHOLDER_COLOR = (173, 216, 230)  # light blue
-    TEXT_COLOR = (200, 200, 200)  # light gray
-    BORDER_COLOR = (100, 100, 100)
+    from utils.thumbnail import generate_thumbnail
 
-    img = Image.new("RGB", (WIDTH, HEIGHT), "white")
+    # Try real rendering first
+    result = generate_thumbnail(template_blob)
+    if result:
+        return result
+
+    # Fallback: simple placeholder with template name
+    WIDTH, HEIGHT = 200, 260
+    img = Image.new("RGB", (WIDTH, HEIGHT), (240, 240, 240))
     draw = ImageDraw.Draw(img)
-
-    # Try to load a small font; fall back to default
     try:
-        title_font = ImageFont.truetype("arial.ttf", 14)
-        small_font = ImageFont.truetype("arial.ttf", 9)
+        font = ImageFont.truetype("arial.ttf", 12)
     except (OSError, IOError):
-        title_font = ImageFont.load_default()
-        small_font = title_font
-
-    # Draw template name at top
-    draw.text((MARGIN, 10), template_name[:40], fill="black", font=title_font)
-    draw.line([(MARGIN, 32), (WIDTH - MARGIN, 32)], fill=BORDER_COLOR, width=1)
-
-    # Parse .docx paragraphs
-    paragraphs = []
-    try:
-        doc = Document(io.BytesIO(template_blob))
-        for para in doc.paragraphs:
-            text = para.text.strip()
-            if not text:
-                continue
-            is_placeholder = "{{" in text and "}}" in text
-            # Extract placeholder name if present
-            slot_name = ""
-            if is_placeholder:
-                import re as _re
-                match = _re.search(r"\{\{\s*(\w+)", text)
-                if match:
-                    slot_name = match.group(1)
-            paragraphs.append({
-                "text": text[:50],
-                "is_placeholder": is_placeholder,
-                "slot_name": slot_name,
-            })
-    except Exception as e:
-        logger.warning("Failed to parse template docx for thumbnail: %s", e)
-        paragraphs = [{"text": "(unable to parse template)", "is_placeholder": False, "slot_name": ""}]
-
-    # Draw paragraph blocks
-    y = TOP_OFFSET
-    max_blocks = (HEIGHT - TOP_OFFSET - MARGIN) // (BLOCK_HEIGHT + BLOCK_GAP)
-    for i, para in enumerate(paragraphs[:max_blocks]):
-        color = PLACEHOLDER_COLOR if para["is_placeholder"] else TEXT_COLOR
-        block_width = WIDTH - 2 * MARGIN
-        draw.rectangle(
-            [(MARGIN, y), (MARGIN + block_width, y + BLOCK_HEIGHT)],
-            fill=color,
-            outline=BORDER_COLOR,
-        )
-        label = para["slot_name"] if para["slot_name"] else para["text"][:35]
-        draw.text((MARGIN + 4, y + 1), label, fill="black", font=small_font)
-        y += BLOCK_HEIGHT + BLOCK_GAP
-
-    if len(paragraphs) > max_blocks:
-        draw.text((MARGIN, y), f"... +{len(paragraphs) - max_blocks} more", fill="gray", font=small_font)
-
+        font = ImageFont.load_default()
+    draw.text((10, 120), template_name[:30], fill="black", font=font)
+    draw.text((10, 140), "(preview unavailable)", fill="gray", font=font)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
