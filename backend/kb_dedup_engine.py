@@ -11,8 +11,12 @@ Groups are lists of dicts, each with:
   (single-record groups have winner == members[0] and len(members) == 1)
 """
 
+import json
+import logging
 import re
 from difflib import SequenceMatcher
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Synonym / abbreviation maps
@@ -664,3 +668,314 @@ def group_references(references: list) -> dict:
             auto_merge.append(_make_group(winner, members))
 
     return {"auto_merge": auto_merge, "needs_review": [], "junk": []}
+
+
+# ---------------------------------------------------------------------------
+# AI-Enhanced Grouping
+# ---------------------------------------------------------------------------
+
+# Prompt templates
+
+DEDUP_PROMPT_TEMPLATE = """You are a duplicate-detection expert for a resume knowledge base.
+
+Entity type: {entity_type}
+Entries (JSON):
+{entries_json}
+
+Find groups of duplicates in the above entries. For each group, assign a confidence
+score (0.0–1.0) reflecting how certain you are these are duplicates. Also flag any
+entries that are junk (empty, nonsensical, or clearly invalid).
+
+Return ONLY valid JSON in this exact shape — no commentary, no markdown fences:
+{{
+  "groups": [
+    {{"ids": [1, 2], "canonical": "best display name", "confidence": 0.95, "reason": "exact match after normalization"}},
+    ...
+  ],
+  "junk": [
+    {{"id": 3, "reason": "empty content"}},
+    ...
+  ]
+}}
+
+Rules:
+- Only include groups with 2+ members.
+- confidence >= 0.85 means clearly the same item.
+- confidence 0.50–0.84 means probably the same but needs human review.
+- confidence < 0.50 means probably different — do NOT include in groups.
+- ids must be the "id" field from each entry exactly as given.
+"""
+
+SUMMARY_SPLIT_PROMPT = """You are reviewing a professional summary from a resume knowledge base.
+
+Summary text:
+{summary_text}
+
+Determine whether this text contains a mix of a true professional summary paragraph
+AND resume bullet content (action-verb phrases with metrics).
+
+Return ONLY valid JSON — no commentary, no markdown fences:
+{{
+  "summary_portion": "the narrative paragraph portion only",
+  "bullet_portions": ["bullet 1", "bullet 2"],
+  "is_mixed": true
+}}
+
+If the text is purely a summary paragraph with no bullet content, return:
+{{
+  "summary_portion": "<the full text>",
+  "bullet_portions": [],
+  "is_mixed": false
+}}
+"""
+
+ROLE_TYPE_PROMPT = """You are a career data expert. Below are professional summaries with their current role_type labels.
+
+Summaries (JSON):
+{summaries_json}
+
+For summaries where the current role_type looks auto-generated (starts with "auto_" or "type_")
+or is clearly wrong, suggest a better role_type label (e.g. "CTO", "VP Engineering",
+"Product Manager", "Software Engineer", "Data Scientist").
+
+Return ONLY valid JSON — no commentary, no markdown fences:
+{{
+  "suggestions": [
+    {{"id": 1, "current_role_type": "auto_type_1", "suggested_role_type": "VP Engineering"}},
+    ...
+  ]
+}}
+
+Only include entries where you have a meaningful suggestion. If the current label is already
+correct, omit it from suggestions.
+"""
+
+
+def _build_entries_json(entity_type: str, entries: list) -> str:
+    """Build compact JSON for AI prompts — only relevant fields, long text truncated."""
+    _MAX_TEXT = 300  # chars
+
+    def _truncate(val, max_len=_MAX_TEXT):
+        if isinstance(val, str) and len(val) > max_len:
+            return val[:max_len] + "..."
+        return val
+
+    # Field sets per entity type (keep only what helps with dedup)
+    _FIELDS = {
+        "skills": ["id", "name", "category", "proficiency"],
+        "education": ["id", "institution", "degree", "field_of_study", "start_date", "end_date"],
+        "certifications": ["id", "name", "issuer", "issued_date", "is_active"],
+        "career_history": ["id", "company", "employer", "title", "start_date", "end_date"],
+        "bullets": ["id", "content", "text", "bullet", "career_history_id"],
+        "summaries": ["id", "content", "text", "summary", "role_type"],
+        "languages": ["id", "language", "name", "proficiency"],
+        "references": ["id", "name", "company", "organization", "title", "email"],
+    }
+    fields = _FIELDS.get(entity_type, None)
+
+    compact = []
+    for i, entry in enumerate(entries):
+        # Use entry's own "id" if present, else use positional index (1-based)
+        row: dict = {"id": entry.get("id", i + 1)}
+        if fields:
+            for f in fields:
+                if f == "id":
+                    continue
+                v = entry.get(f)
+                if v is not None and v != "" and v != []:
+                    row[f] = _truncate(v)
+        else:
+            for k, v in entry.items():
+                if k != "id":
+                    row[k] = _truncate(v)
+        compact.append(row)
+
+    return json.dumps(compact, indent=2)
+
+
+def _entries_by_id(entries: list) -> dict:
+    """Build id->entry lookup dict. Uses positional index (1-based) when no 'id' field."""
+    return {entry.get("id", i + 1): entry for i, entry in enumerate(entries)}
+
+
+def _python_group_for_type(entity_type: str):
+    """Return the Python fallback grouping function for an entity type."""
+    _MAP = {
+        "skills": group_skills,
+        "education": group_education,
+        "certifications": group_certifications,
+        "career_history": group_career_history,
+        "bullets": group_bullets,
+        "summaries": group_summaries,
+        "languages": group_languages,
+        "references": group_references,
+    }
+    return _MAP.get(entity_type)
+
+
+def _parse_ai_dedup_response(ai_result: dict, entries: list) -> dict:
+    """Convert raw AI JSON response into the standard grouping result shape.
+
+    Confidence >= 0.85 -> auto_merge
+    Confidence 0.50-0.84 -> needs_review
+    Junk items -> junk list
+    """
+    id_map = _entries_by_id(entries)
+    FIELDS = list(entries[0].keys()) if entries else []
+
+    auto_merge = []
+    needs_review = []
+    junk = []
+
+    for group_def in ai_result.get("groups", []):
+        ids = group_def.get("ids", [])
+        confidence = float(group_def.get("confidence", 0.0))
+        if confidence < 0.50 or len(ids) < 2:
+            continue
+        members = [id_map[i] for i in ids if i in id_map]
+        if len(members) < 2:
+            continue
+        winner = _pick_winner(members, FIELDS)
+        group = _make_group(winner, members)
+        group["confidence"] = confidence
+        group["reason"] = group_def.get("reason", "")
+        if confidence >= 0.85:
+            auto_merge.append(group)
+        else:
+            needs_review.append(group)
+
+    for junk_def in ai_result.get("junk", []):
+        jid = junk_def.get("id")
+        if jid in id_map:
+            entry = id_map[jid]
+            grp = _make_group(entry, [entry])
+            grp["reason"] = junk_def.get("reason", "")
+            junk.append(grp)
+
+    return {"auto_merge": auto_merge, "needs_review": needs_review, "junk": junk}
+
+
+def ai_enhanced_group(entity_type: str, entries: list) -> dict:
+    """AI-enhanced duplicate grouping for any entity type.
+
+    Falls back to Python grouping if AI is unavailable or errors out.
+
+    Args:
+        entity_type: One of skills/education/certifications/career_history/
+                     bullets/summaries/languages/references
+        entries:     List of records to deduplicate
+
+    Returns:
+        Standard {"auto_merge": [...], "needs_review": [...], "junk": [...]} dict
+        (or career_history shape for that entity type).
+        Includes "analysis_mode": "ai"|"rule_based" key.
+    """
+    from ai_providers.router import route_inference
+
+    python_fn = _python_group_for_type(entity_type)
+    if python_fn is None:
+        raise ValueError(f"Unknown entity_type: {entity_type!r}")
+
+    entries_json = _build_entries_json(entity_type, entries)
+    prompt = DEDUP_PROMPT_TEMPLATE.format(
+        entity_type=entity_type,
+        entries_json=entries_json,
+    )
+
+    def _python_fallback(_ctx):
+        return python_fn(entries)
+
+    def _ai_handler(provider):
+        raw = provider.generate(prompt, response_format="json")
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        return _parse_ai_dedup_response(raw, entries)
+
+    return route_inference(
+        task=f"dedup_group_{entity_type}",
+        context={"entity_type": entity_type, "count": len(entries)},
+        python_fallback=_python_fallback,
+        ai_handler=_ai_handler,
+    )
+
+
+def ai_split_summary(summary_text: str) -> dict:
+    """AI-powered summary content splitting.
+
+    Separates professional summary narrative from embedded bullet content.
+    Falls back to heuristic _looks_like_bullet() splitting if AI unavailable.
+
+    Returns:
+        {"summary_portion": str, "bullet_portions": [...], "is_mixed": bool,
+         "analysis_mode": "ai"|"rule_based"}
+    """
+    from ai_providers.router import route_inference
+
+    prompt = SUMMARY_SPLIT_PROMPT.format(summary_text=summary_text)
+
+    def _python_fallback(_ctx):
+        lines = [ln.strip() for ln in summary_text.splitlines() if ln.strip()]
+        bullets = [ln for ln in lines if _looks_like_bullet(ln)]
+        non_bullets = [ln for ln in lines if not _looks_like_bullet(ln)]
+        return {
+            "summary_portion": " ".join(non_bullets),
+            "bullet_portions": bullets,
+            "is_mixed": len(bullets) > 0,
+        }
+
+    def _ai_handler(provider):
+        raw = provider.generate(prompt, response_format="json")
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        return raw
+
+    return route_inference(
+        task="split_summary",
+        context={"text_length": len(summary_text)},
+        python_fallback=_python_fallback,
+        ai_handler=_ai_handler,
+    )
+
+
+def ai_suggest_role_types(summaries: list) -> dict:
+    """AI suggests meaningful role_types based on summary content.
+
+    Args:
+        summaries: List of summary records with at least
+                   {"id": N, "content": "...", "role_type": "..."}
+
+    Returns:
+        {"suggestions": [{"id": N, "current_role_type": "...",
+                          "suggested_role_type": "..."}],
+         "analysis_mode": "ai"|"rule_based"}
+    """
+    from ai_providers.router import route_inference
+
+    summaries_json = _build_entries_json("summaries", summaries)
+    prompt = ROLE_TYPE_PROMPT.format(summaries_json=summaries_json)
+
+    def _python_fallback(_ctx):
+        suggestions = []
+        for i, s in enumerate(summaries):
+            sid = s.get("id", i + 1)
+            role_type = s.get("role_type") or ""
+            if re.match(r"^(auto_|type_)", role_type, re.IGNORECASE):
+                suggestions.append({
+                    "id": sid,
+                    "current_role_type": role_type,
+                    "suggested_role_type": "needs_review",
+                })
+        return {"suggestions": suggestions}
+
+    def _ai_handler(provider):
+        raw = provider.generate(prompt, response_format="json")
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        return raw
+
+    return route_inference(
+        task="suggest_role_types",
+        context={"count": len(summaries)},
+        python_fallback=_python_fallback,
+        ai_handler=_ai_handler,
+    )
