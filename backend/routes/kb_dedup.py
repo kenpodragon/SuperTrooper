@@ -91,10 +91,12 @@ def apply():
     merges = data.get("merges", [])
     deletes = data.get("deletes", [])
     reclassifications = data.get("reclassifications", [])
+    splits = data.get("splits", [])
 
     merged = 0
     deleted = 0
     reclassified = 0
+    split_count = 0
     errors = []
 
     # Run all operations in a single transaction so partial failures roll back
@@ -123,11 +125,29 @@ def apply():
                 result = kb_dedup_engine.execute_reclassify(exec_entity, target_table, [item], conn=conn)
                 reclassified += result.get("reclassified", 0)
                 errors.extend(result.get("errors", []))
+
+            # Process splits (compound entries → individual entries)
+            for split_item in splits:
+                split_id = split_item.get("id")
+                if not split_id:
+                    errors.append(f"Split missing id: {split_item}")
+                    continue
+                if entity_type == "skills" and "extracted_skills" in split_item:
+                    result = kb_dedup_engine.execute_split_skill(
+                        split_id, split_item["extracted_skills"], conn=conn)
+                    split_count += result.get("created", 0)
+                elif entity_type == "certifications" and "extracted_certs" in split_item:
+                    result = kb_dedup_engine.execute_split_certification(
+                        split_id, split_item["extracted_certs"], conn=conn)
+                    split_count += result.get("created", 0)
+                else:
+                    errors.append(f"Unsupported split for entity_type={entity_type}")
+
     except Exception as e:
         errors.append(f"Transaction failed, all changes rolled back: {e}")
-        return jsonify({"merged": 0, "deleted": 0, "reclassified": 0, "errors": errors}), 500
+        return jsonify({"merged": 0, "deleted": 0, "reclassified": 0, "split": 0, "errors": errors}), 500
 
-    return jsonify({"merged": merged, "deleted": deleted, "reclassified": reclassified, "errors": errors}), 200
+    return jsonify({"merged": merged, "deleted": deleted, "reclassified": reclassified, "split": split_count, "errors": errors}), 200
 
 
 @bp.route("/api/kb/dedup/employer-rename", methods=["POST"])

@@ -250,53 +250,87 @@ def _make_group(winner: dict, members: list) -> dict:
 # 1. Skills
 # ---------------------------------------------------------------------------
 
-def _is_junk_skill(name: str) -> str | None:
-    """Return a reason string if this skill name is junk, else None."""
-    n = (name or "").strip()
+def _classify_skill(entry: dict) -> dict | None:
+    """Classify a skill entry. Returns a junk dict with action info, or None if clean.
+
+    Possible actions in returned dict:
+    - "delete": junk, should be removed
+    - "split": contains multiple skills, should be split into individual entries
+    - "reclassify": belongs in another table (education, etc.)
+    """
+    n = (entry.get("name") or "").strip()
     if not n:
-        return "Empty skill name"
-    # Slash-separated skill lists (e.g. "JavaScript/PHP/ASP(.NET)/HTML") — should be split
+        return {"id": entry.get("id", 0), "content_preview": "", "reason": "Empty skill name", "action": "delete"}
+
+    lower = n.lower()
+
+    # Slash-separated skill lists — split into individual skills
     if n.count("/") >= 3:
-        return "Slash-separated list — should be split into individual skills"
-    # Semicolon-separated lists
+        parts = [p.strip() for p in n.split("/") if p.strip()]
+        return {
+            "id": entry.get("id", 0), "content_preview": n[:100],
+            "reason": f"Slash-separated list — contains {len(parts)} skills",
+            "action": "split", "extracted_skills": parts,
+        }
+
+    # Semicolon-separated lists — split into individual skills
     if n.count(";") >= 2:
-        return "Semicolon-separated list — should be split into individual skills"
-    # Too long — real skills are rarely > 50 chars
+        parts = [p.strip() for p in n.split(";") if p.strip()]
+        return {
+            "id": entry.get("id", 0), "content_preview": n[:100],
+            "reason": f"Semicolon-separated list — contains {len(parts)} skills",
+            "action": "split", "extracted_skills": parts,
+        }
+
+    # Education entry that landed in skills — reclassify
+    edu_markers = ("mba", "phd", "ph.d", "m.s.", "b.s.", "master of business", "bachelor of")
+    if any(lower.startswith(m) or f" {m}" in lower for m in edu_markers):
+        return {
+            "id": entry.get("id", 0), "content_preview": n[:100],
+            "reason": "Looks like an education entry, not a skill",
+            "action": "reclassify",
+            "suggested_reclassify": {"target_table": "education"},
+        }
+
+    # Too long — likely a sentence fragment
     if len(n) > 50:
-        return f"Too long ({len(n)} chars) — likely a sentence fragment, not a skill"
-    # Contains sentence-ending punctuation (but not periods in abbreviations like .NET or A.I.)
-    if any(c in n for c in "!?;"):
-        return "Contains sentence punctuation — likely a sentence fragment"
+        return {"id": entry.get("id", 0), "content_preview": n[:100],
+                "reason": f"Too long ({len(n)} chars) — likely a sentence fragment", "action": "delete"}
+
+    # Sentence-ending punctuation
+    if any(c in n for c in "!?"):
+        return {"id": entry.get("id", 0), "content_preview": n[:100],
+                "reason": "Contains sentence punctuation", "action": "delete"}
     if "." in n and len(n) > 35:
-        # Long string with periods — likely a sentence
-        return "Long text with periods — likely a sentence fragment"
-    # Starts with lowercase gerund/verb — sentence fragment
+        return {"id": entry.get("id", 0), "content_preview": n[:100],
+                "reason": "Long text with periods — likely a sentence fragment", "action": "delete"}
+
+    # Gerund/verb-starting sentence fragments
     frag_starts = (
         "ensuring", "fostering", "leveraging", "whether", "through", "working",
         "supporting", "particularly", "performing", "utilizing", "managing",
         "leading", "building", "driving", "delivering", "overseeing",
         "architecting", "designing", "implementing", "developing",
     )
-    lower = n.lower()
     if any(lower.startswith(w) for w in frag_starts) and " " in n:
-        return "Starts with gerund/verb — likely a sentence fragment, not a skill"
-    # Contains phrases that indicate it's a description, not a skill
+        return {"id": entry.get("id", 0), "content_preview": n[:100],
+                "reason": "Starts with gerund/verb — sentence fragment", "action": "delete"}
+
+    # Descriptive phrases
     desc_phrases = (
-        "let's connect", "about me", "master of", "bachelor", "associate",
-        "i'm always", "open to", "feel free", "don't hesitate",
-        "years of experience", "proven track record",
+        "let's connect", "about me", "i'm always", "open to", "feel free",
+        "don't hesitate", "years of experience", "proven track record",
     )
     if any(p in lower for p in desc_phrases):
-        return "Contains descriptive phrase — not a skill name"
-    # Location patterns (city, state format)
-    if n.count(",") >= 1 and any(c.isupper() for c in n.split(",")[-1].strip()[:2]):
-        import re
-        if re.match(r".*,\s*[A-Z]{2}\b", n):
-            return "Looks like a location (City, ST), not a skill"
-    # Education entry that landed in skills
-    edu_markers = ("mba", "phd", "ph.d", "m.s.", "b.s.", "master of business", "bachelor of")
-    if any(lower.startswith(m) or f" {m}" in lower for m in edu_markers):
-        return "Looks like an education entry, not a skill"
+        return {"id": entry.get("id", 0), "content_preview": n[:100],
+                "reason": "Descriptive phrase, not a skill", "action": "delete"}
+
+    # Location patterns
+    import re
+    if re.match(r".*,\s*[A-Z]{2}\b", n):
+        return {"id": entry.get("id", 0), "content_preview": n[:100],
+                "reason": "Looks like a location (City, ST)", "action": "delete"}
+
     return None
 
 
@@ -305,17 +339,17 @@ def group_skills(skills: list) -> dict:
 
     auto_merge  — same canonical name (case-insensitive / synonym resolution)
     needs_review — different canonical names but same synonym canonical (abbreviation)
-    junk — entries that are not real skills (sentence fragments, descriptions, etc.)
+    junk — entries that are not real skills, with actionable suggestions (split, reclassify, delete)
     """
     FIELDS = ["name", "category", "proficiency", "last_used_year", "years_experience"]
 
-    # First pass: detect junk
+    # First pass: classify each skill
     junk = []
     clean_skills = []
     for s in skills:
-        reason = _is_junk_skill(s.get("name", ""))
-        if reason:
-            junk.append({"id": s["id"], "content_preview": s.get("name", "")[:100], "reason": reason})
+        classification = _classify_skill(s)
+        if classification:
+            junk.append(classification)
         else:
             clean_skills.append(s)
 
@@ -344,37 +378,52 @@ def group_skills(skills: list) -> dict:
 # 2. Education
 # ---------------------------------------------------------------------------
 
-def _is_junk_education(entry: dict) -> str | None:
-    """Return a reason string if this education entry is junk, else None."""
+def _classify_education(entry: dict) -> dict | None:
+    """Classify an education entry. Returns junk dict with action, or None if clean."""
     degree = (entry.get("degree") or "").strip()
     institution = (entry.get("institution") or "").strip()
     field = (entry.get("field") or "").strip()
+    eid = entry.get("id", 0)
+    preview = f"{degree} — {institution}"[:100]
 
     if not degree and not institution:
-        return "Missing both degree and institution"
+        return {"id": eid, "content_preview": preview, "reason": "Missing both degree and institution", "action": "delete"}
 
-    lower_deg = degree.lower()
-    lower_inst = institution.lower()
-    combined = f"{lower_deg} {lower_inst} {field.lower()}"
+    combined = f"{degree} {institution} {field}".lower()
 
-    # Awards, volunteer, memberships, speaker engagements — not education
-    non_edu_markers = (
-        "award", "volunteer", "member", "speaker", "consult", "about me",
-        "additional", "interests", "hobby", "hobbies", "objective",
-        "summary", "profile", "experience", "employment", "reference",
-    )
-    if any(m in combined for m in non_edu_markers):
-        return f"Looks like a non-education entry (contains '{next(m for m in non_edu_markers if m in combined)}')"
+    # Awards — reclassify as career achievement/bullet
+    if "award" in combined:
+        return {"id": eid, "content_preview": preview,
+                "reason": "Award entry, not education",
+                "action": "reclassify", "suggested_reclassify": {"target_table": "bullets"}}
 
-    # Very long degree names are usually descriptions
+    # Job descriptions / experience entries
+    exp_markers = ("consult", "developed", "grew", "managed", "secured", "worked with",
+                   "as the senior", "as japan", "technologies:")
+    matched = next((m for m in exp_markers if m in combined), None)
+    if matched:
+        return {"id": eid, "content_preview": preview,
+                "reason": f"Job description/experience entry (contains '{matched}')",
+                "action": "reclassify", "suggested_reclassify": {"target_table": "bullets"}}
+
+    # Volunteer, memberships, speaker — not education
+    non_edu_markers = ("volunteer", "member", "speaker", "about me", "hobby",
+                       "hobbies", "objective", "summary", "profile", "reference")
+    matched = next((m for m in non_edu_markers if m in combined), None)
+    if matched:
+        return {"id": eid, "content_preview": preview,
+                "reason": f"Non-education entry (contains '{matched}')", "action": "delete"}
+
+    # Very long degree names
     if len(degree) > 80:
-        return f"Degree name too long ({len(degree)} chars) — likely misclassified content"
+        return {"id": eid, "content_preview": preview,
+                "reason": f"Degree name too long ({len(degree)} chars) — likely misclassified",
+                "action": "delete"}
 
-    # No institution at all
-    if not institution and degree:
-        # Could be valid if it's a well-known cert-like education (e.g. "GED")
-        if len(degree) > 30:
-            return "Long degree text with no institution — likely misclassified"
+    # No institution with long degree text
+    if not institution and len(degree) > 30:
+        return {"id": eid, "content_preview": preview,
+                "reason": "Long degree text with no institution", "action": "delete"}
 
     return None
 
@@ -384,17 +433,13 @@ def group_education(entries: list) -> dict:
     FIELDS = ["institution", "degree", "field_of_study", "start_date", "end_date",
               "gpa", "honors", "location"]
 
-    # First pass: detect junk
+    # First pass: classify each entry
     junk = []
     clean_entries = []
     for e in entries:
-        reason = _is_junk_education(e)
-        if reason:
-            junk.append({
-                "id": e["id"],
-                "content_preview": f"{e.get('degree', '')} — {e.get('institution', '')}"[:100],
-                "reason": reason,
-            })
+        classification = _classify_education(e)
+        if classification:
+            junk.append(classification)
         else:
             clean_entries.append(e)
 
@@ -446,29 +491,40 @@ def group_education(entries: list) -> dict:
 # 3. Certifications
 # ---------------------------------------------------------------------------
 
-def _is_junk_certification(entry: dict) -> str | None:
-    """Return a reason string if this certification entry is junk, else None."""
+def _classify_certification(entry: dict) -> dict | None:
+    """Classify a certification entry. Returns junk dict with action, or None if clean."""
     name = (entry.get("name") or "").strip()
+    cid = entry.get("id", 0)
+
     if not name:
-        return "Empty certification name"
+        return {"id": cid, "content_preview": "", "reason": "Empty certification name", "action": "delete"}
 
     lower = name.lower()
 
-    # Very long names are usually descriptions
+    # Compound certs with slash or semicolons — split
+    if name.count("/") >= 2 and len(name) > 50:
+        parts = [p.strip() for p in name.split("/") if p.strip()]
+        return {"id": cid, "content_preview": name[:100],
+                "reason": f"Compound certification — contains {len(parts)} certs",
+                "action": "split", "extracted_certs": parts}
+
+    # Very long names with URLs
     if len(name) > 80:
-        return f"Name too long ({len(name)} chars) — likely misclassified content"
+        return {"id": cid, "content_preview": name[:100],
+                "reason": f"Too long ({len(name)} chars) — likely misclassified", "action": "delete"}
 
     # Sentence fragments
-    if any(c in name for c in ".!?;") and len(name) > 40:
-        return "Contains punctuation and too long — likely a sentence fragment"
+    if any(c in name for c in "!?") or ("." in name and len(name) > 40 and "http" not in lower):
+        return {"id": cid, "content_preview": name[:100],
+                "reason": "Contains punctuation — likely a sentence fragment", "action": "delete"}
 
-    # Things that aren't certifications
-    non_cert_markers = (
-        "award", "volunteer", "member", "speaker", "about me", "summary",
-        "experience", "education", "hobby", "objective", "reference",
-    )
-    if any(m in lower for m in non_cert_markers):
-        return f"Not a certification (contains '{next(m for m in non_cert_markers if m in lower)}')"
+    # Non-certifications
+    non_cert_markers = ("award", "volunteer", "speaker", "about me", "summary",
+                        "experience", "hobby", "objective", "reference")
+    matched = next((m for m in non_cert_markers if m in lower), None)
+    if matched:
+        return {"id": cid, "content_preview": name[:100],
+                "reason": f"Not a certification (contains '{matched}')", "action": "delete"}
 
     return None
 
@@ -486,13 +542,13 @@ def group_certifications(certs: list) -> dict:
         pool = active if active else members
         return _pick_winner(pool, FIELDS)
 
-    # First pass: detect junk
+    # First pass: classify each cert
     junk = []
     clean_certs = []
     for c in certs:
-        reason = _is_junk_certification(c)
-        if reason:
-            junk.append({"id": c["id"], "content_preview": (c.get("name") or "")[:100], "reason": reason})
+        classification = _classify_certification(c)
+        if classification:
+            junk.append(classification)
         else:
             clean_certs.append(c)
 
@@ -1473,3 +1529,99 @@ def execute_summary_split(
                 _run(cur)
 
     return {"summary_updated": True, "bullets_created": bullets_created}
+
+
+def execute_split_skill(skill_id: int, new_skill_names: list, conn=None) -> dict:
+    """Delete a compound skill and insert individual skills from it.
+
+    Args:
+        skill_id:        ID of the skill to delete.
+        new_skill_names: List of individual skill name strings to insert.
+        conn:            Optional existing psycopg2 connection.
+
+    Returns {"deleted": 1, "created": N}
+    """
+    import db
+
+    created = 0
+
+    def _run(cur):
+        nonlocal created
+        # Get the original skill's category (inherit to children)
+        cur.execute("SELECT category FROM skills WHERE id = %s", [skill_id])
+        row = cur.fetchone()
+        category = row["category"] if row else None
+
+        # Delete the compound skill
+        cur.execute("DELETE FROM skills WHERE id = %s", [skill_id])
+
+        # Insert individual skills (skip if already exists)
+        for name in new_skill_names:
+            name = name.strip()
+            if not name:
+                continue
+            cur.execute("SELECT id FROM skills WHERE lower(name) = lower(%s)", [name])
+            if cur.fetchone():
+                continue  # already exists, skip
+            cur.execute(
+                "INSERT INTO skills (name, category) VALUES (%s, %s)",
+                [name, category],
+            )
+            created += 1
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            _run(cur)
+    else:
+        with db.get_conn() as _conn:
+            with _conn.cursor() as cur:
+                _run(cur)
+
+    return {"deleted": 1, "created": created}
+
+
+def execute_split_certification(cert_id: int, new_cert_names: list, conn=None) -> dict:
+    """Delete a compound certification and insert individual certs.
+
+    Args:
+        cert_id:         ID of the certification to delete.
+        new_cert_names:  List of individual certification name strings to insert.
+        conn:            Optional existing psycopg2 connection.
+
+    Returns {"deleted": 1, "created": N}
+    """
+    import db
+
+    created = 0
+
+    def _run(cur):
+        nonlocal created
+        # Get original issuer
+        cur.execute("SELECT issuer FROM certifications WHERE id = %s", [cert_id])
+        row = cur.fetchone()
+        issuer = row["issuer"] if row else None
+
+        cur.execute("DELETE FROM certifications WHERE id = %s", [cert_id])
+
+        for name in new_cert_names:
+            name = name.strip()
+            if not name:
+                continue
+            cur.execute("SELECT id FROM certifications WHERE lower(name) = lower(%s)", [name])
+            if cur.fetchone():
+                continue
+            cur.execute(
+                "INSERT INTO certifications (name, issuer) VALUES (%s, %s)",
+                [name, issuer],
+            )
+            created += 1
+
+    if conn is not None:
+        with conn.cursor() as cur:
+            _run(cur)
+    else:
+        with db.get_conn() as _conn:
+            with _conn.cursor() as cur:
+                _run(cur)
+
+    return {"deleted": 1, "created": created}
