@@ -706,26 +706,43 @@ def group_bullets(bullets: list) -> dict:
     # Also group bullets with no job_id together
     job_buckets["_no_job"] = no_job
 
+    def _get_text(b):
+        return (b.get("content") or b.get("text") or b.get("bullet") or "")[:200]
+
     def _process_bucket(bucket_items):
+        # Pre-compute word sets and texts for fast filtering
+        texts = [_get_text(b) for b in bucket_items]
+        word_sets = [set(re.findall(r'\w{4,}', t.lower())) for t in texts]
+
         used = [False] * len(bucket_items)
         for i in range(len(bucket_items)):
             if used[i]:
                 continue
-            text_i = bucket_items[i].get("content") or bucket_items[i].get("text") or bucket_items[i].get("bullet") or ""
+            text_i = texts[i]
+            words_i = word_sets[i]
             group_members = [bucket_items[i]]
             used[i] = True
             best_sim_for_group = 0.0
             for j in range(i + 1, len(bucket_items)):
                 if used[j]:
                     continue
-                text_j = bucket_items[j].get("content") or bucket_items[j].get("text") or bucket_items[j].get("bullet") or ""
+                text_j = texts[j]
+                # Quick pre-filters
+                len_ratio = min(len(text_i), len(text_j)) / max(len(text_i), len(text_j), 1)
+                if len_ratio < 0.6:
+                    continue
+                words_j = word_sets[j]
+                if words_i and words_j:
+                    overlap = len(words_i & words_j) / max(len(words_i | words_j), 1)
+                    if overlap < 0.4:
+                        continue
                 sim = _similarity(text_i, text_j)
                 if sim >= 0.75:
                     group_members.append(bucket_items[j])
                     used[j] = True
                     best_sim_for_group = max(best_sim_for_group, sim)
             if len(group_members) > 1:
-                # Winner = longest bullet
+                # Winner = longest bullet (use full text, not truncated)
                 winner = max(group_members, key=lambda r: len(r.get("content") or r.get("text") or r.get("bullet") or ""))
                 group = _make_group(winner, group_members)
                 if best_sim_for_group >= 0.95:
@@ -736,35 +753,46 @@ def group_bullets(bullets: list) -> dict:
     for bucket in job_buckets.values():
         _process_bucket(bucket)
 
-    # Second pass: cross-job dedup.
-    # Collect one representative (winner) per intra-job group plus all singletons,
-    # then compare across different career_history_id buckets.  Cross-job near-exact
-    # duplicates (>= 0.95) go to needs_review (never auto_merge — user must decide
-    # which job record to keep the bullet under).
-    cross_job_singles: list = []  # (career_history_id, bullet_record)
+    # Second pass: cross-job dedup using word-set pre-filter for speed.
+    # Build word-set fingerprints, only compare bullets with >= 60% word overlap.
+    def _words(text):
+        return set(re.findall(r'\w{4,}', text.lower()))
+
+    cross_items = []
     for jid, bucket in job_buckets.items():
         for b in bucket:
-            cross_job_singles.append((jid, b))
+            text = (b.get("content") or b.get("text") or b.get("bullet") or "")[:200]
+            cross_items.append((jid, b, _words(text), text))
 
-    cj_used = [False] * len(cross_job_singles)
-    for i in range(len(cross_job_singles)):
-        if cj_used[i]:
+    cj_used = set()
+    for i in range(len(cross_items)):
+        if i in cj_used:
             continue
-        jid_i, b_i = cross_job_singles[i]
-        text_i = b_i.get("content") or b_i.get("text") or b_i.get("bullet") or ""
+        jid_i, b_i, words_i, text_i = cross_items[i]
+        if not words_i:
+            continue
         group_members = [b_i]
-        for j in range(i + 1, len(cross_job_singles)):
-            if cj_used[j]:
+        for j in range(i + 1, len(cross_items)):
+            if j in cj_used:
                 continue
-            jid_j, b_j = cross_job_singles[j]
+            jid_j, b_j, words_j, text_j = cross_items[j]
             if jid_i == jid_j:
-                continue  # same job — already handled in first pass
-            text_j = b_j.get("content") or b_j.get("text") or b_j.get("bullet") or ""
+                continue
+            # Quick pre-filters before expensive SequenceMatcher
+            if not words_j:
+                continue
+            # Length check — very different lengths can't be 95% similar
+            len_ratio = min(len(text_i), len(text_j)) / max(len(text_i), len(text_j), 1)
+            if len_ratio < 0.7:
+                continue
+            overlap = len(words_i & words_j) / max(len(words_i | words_j), 1)
+            if overlap < 0.6:
+                continue
             if _similarity(text_i, text_j) >= 0.95:
                 group_members.append(b_j)
-                cj_used[j] = True
+                cj_used.add(j)
         if len(group_members) > 1:
-            cj_used[i] = True
+            cj_used.add(i)
             winner = max(group_members, key=lambda r: len(r.get("content") or r.get("text") or r.get("bullet") or ""))
             needs_review.append(_make_group(winner, group_members))
 
