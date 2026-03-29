@@ -48,24 +48,33 @@ type EntityKey = (typeof ENTITY_STEPS)[number]['key'];
 // ---- Helpers -------------------------------------------------------------
 
 function firstSubStageFor(entityKey: EntityKey, result: ScanResult): SubStage {
+  const autoMerge = result.auto_merge ?? [];
+  const needsReview = result.needs_review ?? [];
+  const junk = result.junk ?? [];
+  const employerMerge = result.employer_merge ?? [];
+  const roleMerge = result.role_merge ?? [];
+  const mixedContent = result.mixed_content ?? [];
+  const roleTypeSuggestions = result.role_type_suggestions ?? [];
+
   const isEmpty =
-    result.auto_merge.length === 0 &&
-    result.needs_review.length === 0 &&
-    result.junk.length === 0 &&
-    (result.employer_merge?.length ?? 0) === 0 &&
-    (result.role_merge?.length ?? 0) === 0 &&
-    (result.mixed_content?.length ?? 0) === 0 &&
-    (result.role_type_suggestions?.length ?? 0) === 0;
+    autoMerge.length === 0 && needsReview.length === 0 && junk.length === 0 &&
+    employerMerge.length === 0 && roleMerge.length === 0 &&
+    mixedContent.length === 0 && roleTypeSuggestions.length === 0;
 
   if (isEmpty) return 'skipped';
+
+  if (entityKey === 'career_history') {
+    // Career history uses employer_merge/role_merge instead of auto_merge
+    return 'auto_merge';
+  }
 
   if (entityKey === 'summaries') {
     return 'summary_role_types';
   }
 
-  if (result.auto_merge.length > 0) return 'auto_merge';
-  if (result.needs_review.length > 0) return 'review';
-  if (result.junk.length > 0) return 'junk';
+  if (autoMerge.length > 0) return 'auto_merge';
+  if (needsReview.length > 0) return 'review';
+  if (junk.length > 0) return 'junk';
   return 'skipped';
 }
 
@@ -74,27 +83,31 @@ function nextSubStage(
   result: ScanResult,
   entityKey: EntityKey,
 ): SubStage {
+  const autoMerge = result.auto_merge ?? [];
+  const needsReview = result.needs_review ?? [];
+  const junk = result.junk ?? [];
+
   switch (current) {
     case 'summary_role_types':
       if ((result.mixed_content?.length ?? 0) > 0) return 'summary_split';
-      if (result.auto_merge.length > 0) return 'auto_merge';
-      if (result.needs_review.length > 0) return 'review';
-      if (result.junk.length > 0) return 'junk';
+      if (autoMerge.length > 0) return 'auto_merge';
+      if (needsReview.length > 0) return 'review';
+      if (junk.length > 0) return 'junk';
       return 'done';
 
     case 'summary_split':
-      if (result.auto_merge.length > 0) return 'auto_merge';
-      if (result.needs_review.length > 0) return 'review';
-      if (result.junk.length > 0) return 'junk';
+      if (autoMerge.length > 0) return 'auto_merge';
+      if (needsReview.length > 0) return 'review';
+      if (junk.length > 0) return 'junk';
       return 'done';
 
     case 'auto_merge':
-      if (result.needs_review.length > 0) return 'review';
-      if (result.junk.length > 0) return 'junk';
+      if (needsReview.length > 0) return 'review';
+      if (junk.length > 0) return 'junk';
       return 'done';
 
     case 'review':
-      if (result.junk.length > 0) return 'junk';
+      if (junk.length > 0) return 'junk';
       return 'done';
 
     case 'junk':
@@ -321,7 +334,11 @@ export default function KbDedupWizard({ isOpen, onClose }: KbDedupWizardProps) {
           {subStage === 'auto_merge' && scanResult && (
             <DedupStepAutoMerge
               entityType={currentEntity.key}
-              groups={scanResult.auto_merge}
+              groups={
+                currentEntity.key === 'career_history'
+                  ? [...(scanResult.employer_merge ?? []), ...(scanResult.role_merge ?? [])]
+                  : (scanResult.auto_merge ?? [])
+              }
               onComplete={advanceSubStage}
             />
           )}
@@ -329,7 +346,7 @@ export default function KbDedupWizard({ isOpen, onClose }: KbDedupWizardProps) {
           {subStage === 'review' && scanResult && (
             <DedupStepReview
               entityType={currentEntity.key}
-              groups={scanResult.needs_review}
+              groups={scanResult.needs_review ?? []}
               onComplete={advanceSubStage}
             />
           )}
@@ -337,7 +354,7 @@ export default function KbDedupWizard({ isOpen, onClose }: KbDedupWizardProps) {
           {subStage === 'junk' && scanResult && (
             <DedupStepJunk
               entityType={currentEntity.key}
-              items={scanResult.junk}
+              items={scanResult.junk ?? []}
               onComplete={advanceSubStage}
             />
           )}
