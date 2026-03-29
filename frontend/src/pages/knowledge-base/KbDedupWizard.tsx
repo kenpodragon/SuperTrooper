@@ -4,8 +4,8 @@ import { api } from '../../api/client';
 import DedupStepAutoMerge from './DedupStepAutoMerge';
 import DedupStepReview from './DedupStepReview';
 import DedupStepJunk from './DedupStepJunk';
-import SummaryRoleTypeEditor from './SummaryRoleTypeEditor';
-import SummarySplitReview from './SummarySplitReview';
+import { SummaryRoleTypeEditor } from './SummaryRoleTypeEditor';
+import { SummarySplitReview } from './SummarySplitReview';
 
 // ---- Types ---------------------------------------------------------------
 
@@ -322,7 +322,7 @@ export default function KbDedupWizard({ isOpen, onClose }: KbDedupWizardProps) {
             <DedupStepAutoMerge
               entityType={currentEntity.key}
               groups={scanResult.auto_merge}
-              onDone={advanceSubStage}
+              onComplete={advanceSubStage}
             />
           )}
 
@@ -330,7 +330,7 @@ export default function KbDedupWizard({ isOpen, onClose }: KbDedupWizardProps) {
             <DedupStepReview
               entityType={currentEntity.key}
               groups={scanResult.needs_review}
-              onDone={advanceSubStage}
+              onComplete={advanceSubStage}
             />
           )}
 
@@ -338,21 +338,21 @@ export default function KbDedupWizard({ isOpen, onClose }: KbDedupWizardProps) {
             <DedupStepJunk
               entityType={currentEntity.key}
               items={scanResult.junk}
-              onDone={advanceSubStage}
+              onComplete={advanceSubStage}
             />
           )}
 
           {subStage === 'summary_role_types' && scanResult && (
             <SummaryRoleTypeEditor
               suggestions={scanResult.role_type_suggestions ?? []}
-              onDone={advanceSubStage}
+              onComplete={advanceSubStage}
             />
           )}
 
           {subStage === 'summary_split' && scanResult && (
             <SummarySplitReview
-              groups={scanResult.mixed_content ?? []}
-              onDone={advanceSubStage}
+              mixedContent={scanResult.mixed_content ?? []}
+              onComplete={advanceSubStage}
             />
           )}
         </div>
