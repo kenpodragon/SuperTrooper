@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import AiToggle from './AiToggle';
 import KbDedupWizard from './KbDedupWizard';
+import ImportResumesModal from './ImportResumesModal';
 
 // ---- Types ----
 
@@ -724,6 +725,7 @@ function SummariesTab() {
 export default function KnowledgeBase() {
   const [activeTab, setActiveTab] = useState<TabKey>('skills');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const { data: settings } = useQuery<{ ai_enabled: boolean }>({
     queryKey: ['settings'],
     queryFn: () => api.get('/settings'),
@@ -734,6 +736,16 @@ export default function KnowledgeBase() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f1f5f9', margin: 0 }}>Knowledge Base</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <button
+            onClick={() => setImportOpen(true)}
+            style={{
+              padding: '8px 16px', fontSize: '14px', fontWeight: 500,
+              color: '#fff', background: '#2563eb', border: 'none',
+              borderRadius: '8px', cursor: 'pointer',
+            }}
+          >
+            Import Resumes
+          </button>
           <AiToggle />
           {settings?.ai_enabled && (
             <button
@@ -782,6 +794,7 @@ export default function KnowledgeBase() {
       {activeTab === 'summaries' && <SummariesTab />}
 
       <KbDedupWizard isOpen={wizardOpen} onClose={() => setWizardOpen(false)} />
+      <ImportResumesModal isOpen={importOpen} onClose={() => setImportOpen(false)} />
     </div>
   );
 }

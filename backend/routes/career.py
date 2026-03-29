@@ -32,7 +32,7 @@ def list_career_history():
         f"""
         SELECT id, employer, title, start_date, end_date, location, industry,
                team_size, budget_usd, revenue_impact, is_current, linkedin_dates,
-               notes, created_at, updated_at
+               notes, created_at, updated_at, is_company_entry
         FROM career_history
         {where}
         ORDER BY start_date DESC NULLS LAST
@@ -154,7 +154,7 @@ def list_bullets():
     limit = int(request.args.get("limit", 50))
     offset = int(request.args.get("offset", 0))
 
-    career_history_id = request.args.get("career_history_id", type=int)
+    career_history_id_raw = request.args.get("career_history_id")
 
     clauses, params = [], []
     if text_q:
@@ -169,9 +169,12 @@ def list_bullets():
     if industry:
         clauses.append("%s = ANY(b.industry_suitability)")
         params.append(industry)
-    if career_history_id:
-        clauses.append("b.career_history_id = %s")
-        params.append(career_history_id)
+    if career_history_id_raw is not None:
+        if career_history_id_raw.lower() == "none":
+            clauses.append("b.career_history_id IS NULL")
+        else:
+            clauses.append("b.career_history_id = %s")
+            params.append(int(career_history_id_raw))
     if bullet_type:
         if bullet_type.startswith("!"):
             clauses.append("b.type != %s")

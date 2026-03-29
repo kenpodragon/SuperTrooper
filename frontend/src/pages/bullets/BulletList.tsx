@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import BulletCard, { type Bullet } from './BulletCard';
 import AiInstructionModal from './AiInstructionModal';
+import { HIGHLIGHTS_ID } from './MoveCloneModal';
 
 interface BulletListProps {
   jobId: number;
@@ -24,20 +25,23 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
   const [newBulletText, setNewBulletText] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
+  const isHighlights = jobId === HIGHLIGHTS_ID;
+  const chIdParam = isHighlights ? 'none' : String(jobId);
+
   const { data: bullets = [], isLoading } = useQuery<Bullet[]>({
     queryKey: ['bullets', jobId],
-    queryFn: () => api.get(`/bullets?career_history_id=${jobId}&type=!synopsis`),
+    queryFn: () => api.get(`/bullets?career_history_id=${chIdParam}&type=!synopsis`),
   });
 
   const { data: staleData } = useQuery<{ count: number }>({
     queryKey: ['stale-count', jobId],
-    queryFn: () => api.get(`/bullets/stale-count?career_history_id=${jobId}`),
+    queryFn: () => api.get(`/bullets/stale-count${isHighlights ? '' : `?career_history_id=${jobId}`}`),
   });
 
   const staleCount = staleData?.count ?? 0;
 
   const analyzeMutation = useMutation({
-    mutationFn: () => api.post('/bullets/analyze', { career_history_id: jobId }),
+    mutationFn: () => api.post('/bullets/analyze', { career_history_id: isHighlights ? null : jobId }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['bullets', jobId] });
       queryClient.invalidateQueries({ queryKey: ['stale-count', jobId] });
@@ -47,8 +51,8 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
   const addMutation = useMutation({
     mutationFn: (text: string) =>
       api.post('/bullets', {
-        career_history_id: jobId,
-        type: 'achievement',
+        career_history_id: isHighlights ? null : jobId,
+        type: isHighlights ? 'highlight' : 'achievement',
         text,
         display_order: bullets.length,
       }),
@@ -61,8 +65,8 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
   const generateMutation = useMutation({
     mutationFn: (instruction: string) =>
       api.post('/bullets/generate', {
-        career_history_id: jobId,
-        type: 'achievement',
+        career_history_id: isHighlights ? null : jobId,
+        type: isHighlights ? 'highlight' : 'achievement',
         instruction,
       }),
     onSuccess: () => {
@@ -73,7 +77,7 @@ export default function BulletList({ jobId, aiEnabled, onAiToggle }: BulletListP
 
   const reorderMutation = useMutation({
     mutationFn: (items: Array<{ id: number; order: number }>) =>
-      api.post('/bullets/reorder', { career_history_id: jobId, items }),
+      api.post('/bullets/reorder', { career_history_id: isHighlights ? null : jobId, items }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['bullets', jobId] }),
   });
 

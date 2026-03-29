@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import AiInstructionModal from './AiInstructionModal';
+import { HIGHLIGHTS_ID } from './MoveCloneModal';
 
 interface Synopsis {
   id: number;
@@ -15,9 +16,10 @@ interface Synopsis {
 interface SynopsisEditorProps {
   jobId: number;
   aiEnabled: boolean;
+  label?: string;
 }
 
-export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps) {
+export default function SynopsisEditor({ jobId, aiEnabled, label }: SynopsisEditorProps) {
   const [activeTab, setActiveTab] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState('');
@@ -28,9 +30,13 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
   const [inlineAiInstruction, setInlineAiInstruction] = useState('');
   const queryClient = useQueryClient();
 
+  const isHighlights = jobId === HIGHLIGHTS_ID;
+  const chIdParam = isHighlights ? 'none' : String(jobId);
+  const chIdPayload = isHighlights ? null : jobId;
+
   const { data: synopses = [], isLoading } = useQuery<Synopsis[]>({
     queryKey: ['synopses', jobId],
-    queryFn: () => api.get(`/bullets?career_history_id=${jobId}&type=synopsis`),
+    queryFn: () => api.get(`/bullets?career_history_id=${chIdParam}&type=synopsis`),
   });
 
   const active = synopses.find((s) => s.id === activeTab) || synopses[0] || null;
@@ -38,7 +44,7 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
   const createMutation = useMutation({
     mutationFn: () =>
       api.post('/bullets', {
-        career_history_id: jobId,
+        career_history_id: chIdPayload,
         type: 'synopsis',
         text: '',
         display_order: 0,
@@ -58,7 +64,7 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
   const generateMutation = useMutation({
     mutationFn: (prompt: string) =>
       api.post('/bullets/generate', {
-        career_history_id: jobId,
+        career_history_id: chIdPayload,
         type: 'synopsis',
         instruction: prompt,
       }),
@@ -117,7 +123,9 @@ export default function SynopsisEditor({ jobId, aiEnabled }: SynopsisEditorProps
     <div className="border-b border-blue-800 bg-blue-900/30">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-blue-800/50">
-        <span className="text-xs font-semibold text-blue-400 uppercase tracking-wider">Synopsis</span>
+        <span className="text-xs font-semibold text-blue-400 uppercase tracking-wider">
+          {label || (isHighlights ? 'Professional Summary' : 'Synopsis')}
+        </span>
         <span className="bg-blue-500/20 text-blue-300 text-xs px-1.5 py-0.5 rounded-full">
           {synopses.length}
         </span>

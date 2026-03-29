@@ -1135,7 +1135,11 @@ def ai_enhanced_group(entity_type: str, entries: list) -> dict:
     def _python_fallback(_ctx):
         return python_fn(entries)
 
-    def _ai_handler(provider):
+    def _ai_handler(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        if provider is None:
+            return python_fn(entries)
         raw = provider.generate(prompt, response_format="json")
         if isinstance(raw, str):
             raw = json.loads(raw)
@@ -1173,7 +1177,11 @@ def ai_split_summary(summary_text: str) -> dict:
             "is_mixed": len(bullets) > 0,
         }
 
-    def _ai_handler(provider):
+    def _ai_handler(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        if provider is None:
+            return _python_fallback(ctx)
         raw = provider.generate(prompt, response_format="json")
         if isinstance(raw, str):
             raw = json.loads(raw)
@@ -1217,7 +1225,11 @@ def ai_suggest_role_types(summaries: list) -> dict:
                 })
         return {"suggestions": suggestions}
 
-    def _ai_handler(provider):
+    def _ai_handler(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
+        if provider is None:
+            return _python_fallback(ctx)
         raw = provider.generate(prompt, response_format="json")
         if isinstance(raw, str):
             raw = json.loads(raw)

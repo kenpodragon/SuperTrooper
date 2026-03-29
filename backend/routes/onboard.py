@@ -267,11 +267,13 @@ def _insert_career_history(cur, entry):
     if existing:
         return existing["id"]
 
+    is_company = entry.get("is_company_entry", False)
     cur.execute(
         """INSERT INTO career_history
                (employer, title, start_date, end_date, location, industry,
-                team_size, budget_usd, revenue_impact, is_current, intro_text, notes)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                team_size, budget_usd, revenue_impact, is_current, intro_text, notes,
+                is_company_entry)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
            RETURNING id""",
         (
             employer,
@@ -286,9 +288,22 @@ def _insert_career_history(cur, entry):
             entry.get("is_current", False),
             entry.get("intro_text"),
             entry.get("notes"),
+            is_company,
         ),
     )
-    return cur.fetchone()["id"]
+    new_id = cur.fetchone()["id"]
+
+    # Also create a synopsis bullet if intro_text exists
+    intro = entry.get("intro_text")
+    if intro and intro.strip():
+        cur.execute(
+            """INSERT INTO bullets (career_history_id, text, type, display_order, source_file)
+               VALUES (%s, %s, 'synopsis', 0, 'onboard:intro_text')
+               ON CONFLICT (career_history_id, type, md5(text)) DO NOTHING""",
+            (new_id, intro.strip()),
+        )
+
+    return new_id
 
 
 def _insert_bullet(cur, career_history_id, bullet_text, source_file):
@@ -901,6 +916,21 @@ Rules:
                                 "text_preview": bullet_text[:80],
                             })
 
+                # Auto-create company overview entries for any new employers
+                if career_ids:
+                    cur.execute(
+                        """INSERT INTO career_history (employer, title, is_company_entry)
+                           SELECT DISTINCT ch.employer, '_COMPANY_OVERVIEW', TRUE
+                           FROM career_history ch
+                           WHERE ch.id = ANY(%s)
+                             AND ch.is_company_entry = FALSE
+                             AND ch.employer NOT IN (
+                                 SELECT employer FROM career_history WHERE is_company_entry = TRUE
+                             )
+                           ON CONFLICT (employer, title) DO NOTHING""",
+                        (career_ids,),
+                    )
+
                 # Skills
                 for skill in parsed.get("skills", []):
                     name = skill if isinstance(skill, str) else skill.get("name", "")
@@ -1121,6 +1151,14 @@ Rules:
                                 (role_type, summary_text),
                             )
                             summary_id = cur.fetchone()["id"]
+
+                        # Also create a top-level synopsis bullet (career_history_id=NULL)
+                        cur.execute(
+                            """INSERT INTO bullets (career_history_id, text, type, display_order, source_file)
+                               VALUES (NULL, %s, 'synopsis', 0, %s)
+                               ON CONFLICT (career_history_id, type, md5(text)) DO NOTHING""",
+                            (summary_text.strip(), filename),
+                        )
 
                 report["steps"]["db_insert"] = {
                     "career_history_ids": career_ids,
@@ -1566,7 +1604,12 @@ def onboard_quick_setup():
 
 @bp.route("/api/onboard/upload", methods=["POST"])
 def upload():
-    """Accept one or more .docx/.pdf files and run the full onboarding pipeline."""
+    """Accept one or more .docx/.pdf files and run the full onboarding pipeline.
+
+    Form fields:
+        files: one or more .docx/.pdf files
+        ai_enabled: "true"/"false" — override AI setting for this batch (optional)
+    """
     if "files" not in request.files:
         return jsonify({"error": "No files provided. Use field name 'files'."}), 400
 
@@ -1574,21 +1617,43 @@ def upload():
     if not files:
         return jsonify({"error": "No files provided."}), 400
 
-    results = []
-    for f in files:
-        fname = f.filename or "unknown"
-        ext = Path(fname).suffix.lower()
-        if ext not in (".docx", ".pdf"):
-            results.append({
-                "filename": fname,
-                "status": "failed",
-                "errors": [f"Unsupported file type: {ext}. Only .docx and .pdf accepted."],
-            })
-            continue
+    # Per-request AI override: temporarily toggle settings if provided
+    ai_override = request.form.get("ai_enabled")
+    original_ai = None
+    want_ai = False
+    if ai_override is not None:
+        want_ai = ai_override.lower() == "true"
+        try:
+            row = db.query_one("SELECT ai_enabled FROM settings WHERE id = 1")
+            original_ai = row["ai_enabled"] if row else False
+            if original_ai != want_ai:
+                db.execute("UPDATE settings SET ai_enabled = %s WHERE id = 1", (want_ai,))
+        except Exception:
+            original_ai = None
 
-        file_bytes = f.read()
-        report = _process_file(fname, file_bytes, ext)
-        results.append(report)
+    try:
+        results = []
+        for f in files:
+            fname = f.filename or "unknown"
+            ext = Path(fname).suffix.lower()
+            if ext not in (".docx", ".pdf"):
+                results.append({
+                    "filename": fname,
+                    "status": "failed",
+                    "errors": [f"Unsupported file type: {ext}. Only .docx and .pdf accepted."],
+                })
+                continue
+
+            file_bytes = f.read()
+            report = _process_file(fname, file_bytes, ext)
+            results.append(report)
+    finally:
+        # Restore original AI setting
+        if original_ai is not None and original_ai != want_ai:
+            try:
+                db.execute("UPDATE settings SET ai_enabled = %s WHERE id = 1", (original_ai,))
+            except Exception:
+                pass
 
     # Build next_steps guidance based on what was extracted
     next_steps = _build_onboard_next_steps(results)

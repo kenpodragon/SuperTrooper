@@ -19,6 +19,7 @@ export interface CareerJob {
   notes?: string | null;
   metadata?: Record<string, string> | null;
   bullet_count?: number;
+  is_company_entry?: boolean;
 }
 
 interface JobCardProps {

@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import AiInstructionModal from './AiInstructionModal';
 import DuplicateWarning from './DuplicateWarning';
+import MoveCloneModal from './MoveCloneModal';
 
 export interface Bullet {
   id: number;
@@ -71,6 +72,7 @@ export default function BulletCard({
   const [dupWarning, setDupWarning] = useState<{
     open: boolean; withinJob: DuplicateMatch[]; crossJob: DuplicateMatch[]; pendingText?: string;
   }>({ open: false, withinJob: [], crossJob: [] });
+  const [moveCloneOpen, setMoveCloneOpen] = useState(false);
   const queryClient = useQueryClient();
 
   const isStale =
@@ -328,9 +330,16 @@ export default function BulletCard({
                 onClick={() => cloneMutation.mutate()}
                 disabled={cloneMutation.isPending}
                 className="text-xs text-gray-400 hover:text-blue-300 disabled:opacity-50"
-                title="Clone"
+                title="Clone in place"
               >
                 📋
+              </button>
+              <button
+                onClick={() => setMoveCloneOpen(true)}
+                className="text-xs text-gray-400 hover:text-cyan-300"
+                title="Move or copy to another job"
+              >
+                ↗️
               </button>
               <button
                 onClick={handleDelete}
@@ -395,6 +404,15 @@ export default function BulletCard({
         }}
         withinJob={dupWarning.withinJob}
         crossJob={dupWarning.crossJob}
+      />
+
+      {/* Move/Clone to Another Job Modal */}
+      <MoveCloneModal
+        isOpen={moveCloneOpen}
+        bulletId={bullet.id}
+        currentJobId={bullet.career_history_id}
+        onClose={() => setMoveCloneOpen(false)}
+        onComplete={onRefresh}
       />
     </div>
   );

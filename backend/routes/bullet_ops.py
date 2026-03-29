@@ -55,6 +55,107 @@ def clone_bullet(bullet_id):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/bullets/<id>/move-to
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/bullets/<int:bullet_id>/move-to", methods=["POST"])
+def move_bullet(bullet_id):
+    """Move a bullet to a different job (or to highlights with career_history_id=null).
+
+    Body: {"career_history_id": int|null}
+    """
+    original = db.query_one("SELECT * FROM bullets WHERE id = %s", (bullet_id,))
+    if not original:
+        return jsonify({"error": "Not found"}), 404
+
+    data = request.get_json(force=True) or {}
+    target_id = data.get("career_history_id")  # None means highlights
+
+    # Validate target exists (if not null)
+    if target_id is not None:
+        target = db.query_one("SELECT id FROM career_history WHERE id = %s", (target_id,))
+        if not target:
+            return jsonify({"error": f"Target job {target_id} not found"}), 404
+
+    # Get next display_order in target
+    if target_id is not None:
+        max_order = db.query_one(
+            "SELECT COALESCE(MAX(display_order), 0) AS mx FROM bullets WHERE career_history_id = %s",
+            (target_id,),
+        )
+    else:
+        max_order = db.query_one(
+            "SELECT COALESCE(MAX(display_order), 0) AS mx FROM bullets WHERE career_history_id IS NULL",
+        )
+    next_order = (max_order["mx"] or 0) + 1
+
+    row = db.execute_returning(
+        """
+        UPDATE bullets SET career_history_id = %s, display_order = %s, updated_at = NOW()
+        WHERE id = %s RETURNING *
+        """,
+        (target_id, next_order, bullet_id),
+    )
+    return jsonify(row), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/bullets/<id>/copy-to
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/bullets/<int:bullet_id>/copy-to", methods=["POST"])
+def copy_bullet_to(bullet_id):
+    """Copy a bullet to a different job (or to highlights with career_history_id=null).
+
+    Body: {"career_history_id": int|null}
+    """
+    original = db.query_one("SELECT * FROM bullets WHERE id = %s", (bullet_id,))
+    if not original:
+        return jsonify({"error": "Not found"}), 404
+
+    data = request.get_json(force=True) or {}
+    target_id = data.get("career_history_id")  # None means highlights
+
+    # Validate target exists (if not null)
+    if target_id is not None:
+        target = db.query_one("SELECT id FROM career_history WHERE id = %s", (target_id,))
+        if not target:
+            return jsonify({"error": f"Target job {target_id} not found"}), 404
+
+    # Get next display_order in target
+    if target_id is not None:
+        max_order = db.query_one(
+            "SELECT COALESCE(MAX(display_order), 0) AS mx FROM bullets WHERE career_history_id = %s",
+            (target_id,),
+        )
+    else:
+        max_order = db.query_one(
+            "SELECT COALESCE(MAX(display_order), 0) AS mx FROM bullets WHERE career_history_id IS NULL",
+        )
+    next_order = (max_order["mx"] or 0) + 1
+
+    row = db.execute_returning(
+        """
+        INSERT INTO bullets (
+            career_history_id, text, type, star_situation, star_task,
+            star_action, star_result, metrics_json, tags, role_suitability,
+            industry_suitability, detail_recall, source_file, display_order,
+            content_hash, ai_analysis
+        )
+        SELECT
+            %s, text, type, star_situation, star_task,
+            star_action, star_result, metrics_json, tags, role_suitability,
+            industry_suitability, detail_recall, source_file, %s,
+            content_hash, ai_analysis
+        FROM bullets WHERE id = %s
+        RETURNING *
+        """,
+        (target_id, next_order, bullet_id),
+    )
+    return jsonify(row), 201
+
+
+# ---------------------------------------------------------------------------
 # POST /api/bullets/reorder
 # ---------------------------------------------------------------------------
 

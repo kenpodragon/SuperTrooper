@@ -3,12 +3,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import JobCard, { type CareerJob } from './JobCard';
 import MergeDuplicatesModal from './MergeDuplicatesModal';
+import { HIGHLIGHTS_ID } from './MoveCloneModal';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 interface JobListProps {
   selectedJobId: number | null;
   onSelectJob: (id: number | null) => void;
+  highlightBulletCount: number;
 }
 
 interface CareerJobRow {
@@ -90,7 +92,7 @@ function jobDateRange(job: CareerJob): string {
   return `${s}–${e}`;
 }
 
-export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
+export default function JobList({ selectedJobId, onSelectJob, highlightBulletCount }: JobListProps) {
   const [search, setSearch] = useState('');
   const [collapsedCompanies, setCollapsedCompanies] = useState<Set<string>>(new Set());
   const [editingCompany, setEditingCompany] = useState<string | null>(null);
@@ -134,16 +136,21 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
     );
   }, [enrichedJobs, search]);
 
-  // Group by employer
+  // Group by employer, separating company entries from roles
   const companyGroups = useMemo(() => {
     const groups: Record<string, CareerJob[]> = {};
+    const companyEntries: Record<string, CareerJob> = {};
     for (const job of filtered) {
       const key = job.employer || 'Unknown';
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(job);
+      if (job.is_company_entry) {
+        companyEntries[key] = job;
+      } else {
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(job);
+      }
     }
     // Sort jobs within each group by start_date descending
-    const result: CompanyGroup[] = Object.entries(groups).map(([employer, jobs]) => ({
+    const result: (CompanyGroup & { companyEntryId?: number })[] = Object.entries(groups).map(([employer, jobs]) => ({
       employer,
       jobs: jobs.sort((a, b) => {
         const da = a.start_date || '';
@@ -151,7 +158,19 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
         return db.localeCompare(da);
       }),
       totalBullets: jobs.reduce((sum, j) => sum + (j.bullet_count || 0), 0),
+      companyEntryId: companyEntries[employer]?.id,
     }));
+    // Also include companies that only have a company entry (no roles yet)
+    for (const [employer, entry] of Object.entries(companyEntries)) {
+      if (!groups[employer]) {
+        result.push({
+          employer,
+          jobs: [],
+          totalBullets: entry.bullet_count || 0,
+          companyEntryId: entry.id,
+        });
+      }
+    }
     // Sort groups: most recent job's start_date first
     result.sort((a, b) => {
       const da = a.jobs[0]?.start_date || '';
@@ -275,6 +294,26 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
 
       {/* Grouped job list */}
       <div className="flex-1 overflow-y-auto">
+        {/* Pinned: Top Resume Highlights */}
+        <div
+          className={`border-b border-gray-800 cursor-pointer ${
+            selectedJobId === HIGHLIGHTS_ID ? 'bg-yellow-900/20' : 'hover:bg-gray-800/50'
+          }`}
+          onClick={() => onSelectJob(HIGHLIGHTS_ID)}
+        >
+          <div className="flex items-center gap-2 px-3 py-2.5">
+            <span className="text-yellow-400 text-sm">&#9733;</span>
+            <span className={`flex-1 text-sm font-semibold ${
+              selectedJobId === HIGHLIGHTS_ID ? 'text-yellow-300' : 'text-yellow-400/80'
+            }`}>
+              Top Resume Highlights
+            </span>
+            <span className="text-xs text-gray-500 shrink-0">
+              {highlightBulletCount} bullet{highlightBulletCount !== 1 ? 's' : ''}
+            </span>
+          </div>
+        </div>
+
         {isLoading ? (
           <div className="p-4 text-gray-500 text-sm">Loading career history...</div>
         ) : visibleGroups.length === 0 ? (
@@ -351,6 +390,30 @@ export default function JobList({ selectedJobId, onSelectJob }: JobListProps) {
                     </>
                   )}
                 </div>
+
+                {/* Company overview entry */}
+                {!isCollapsed && group.companyEntryId && (
+                  <div
+                    className={`pl-6 pr-3 py-1.5 cursor-pointer flex items-center gap-2 ${
+                      selectedJobId === group.companyEntryId
+                        ? 'bg-amber-900/30 border-l-2 border-amber-500'
+                        : 'hover:bg-gray-800/50 border-l-2 border-transparent'
+                    }`}
+                    onClick={() => onSelectJob(group.companyEntryId!)}
+                  >
+                    <span className="text-amber-400/80 text-xs">&#9670;</span>
+                    <span className={`text-xs font-medium ${
+                      selectedJobId === group.companyEntryId ? 'text-amber-300' : 'text-amber-400/60'
+                    }`}>
+                      Company Overview
+                    </span>
+                    {bulletCountMap[group.companyEntryId] > 0 && (
+                      <span className="text-xs text-gray-600 ml-auto">
+                        {bulletCountMap[group.companyEntryId]}
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {/* Jobs under this company */}
                 {!isCollapsed &&

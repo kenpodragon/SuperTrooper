@@ -284,16 +284,25 @@ def _is_junk_employer(text: str) -> bool:
     # Title-as-employer: starts with a job title prefix (CTO/, Director,, VP , Senior )
     if re.match(r'^(CTO/|Director[,\s]|VP\s|Senior\s|Chief\s)', stripped) and ',' in stripped:
         return True
-    # Too long to be a company name (>80 chars = likely a description)
-    if len(stripped) > 80:
+    # Too long to be a company name — but strip out location, industry tags,
+    # and date ranges first since those inflate the line legitimately.
+    name_only = re.sub(r'\{[^}]*\}', '', stripped)          # {industry tag}
+    name_only = re.sub(r'\([^)]*\)', '', name_only)          # (parenthetical)
+    name_only = re.sub(r'\t.*', '', name_only)               # tab-separated dates
+    name_only = re.sub(r',\s*[A-Z]{2}\b.*', '', name_only)  # , FL location onwards
+    name_only = name_only.strip(' ,\t')
+    if len(name_only) > 80:
         return True
     # Pipe-delimited summary lines
     if '|' in stripped and stripped.count('|') >= 2:
         return True
-    # German/non-English text patterns
-    if any(w in lower for w in ['gründer', 'direktor', 'für', 'endergebnis', 'ergebnisse',
-                                 'anwendungsentwick', 'dezember', 'januar', 'gegenwart',
-                                 'jahre', 'monate']):
+    # German/non-English text patterns (word-boundary match to avoid false positives
+    # like 'januar' matching English 'January')
+    _german_re = re.compile(
+        r'\b(gründer|direktor|für|endergebnis|ergebnisse|anwendungsentwick'
+        r'|dezember|gegenwart|jahre|monate)\b', re.IGNORECASE
+    )
+    if _german_re.search(lower):
         return True
     # Job titles masquerading as employers (start with title words, no company after)
     title_as_emp = re.match(
@@ -331,8 +340,9 @@ def _is_junk_employer(text: str) -> bool:
     # Contains literal placeholder text
     if 'location' == lower.split(',')[-1].strip().lower():
         return True
-    # Embedded tab characters (malformed parse artifacts)
-    if '\t' in stripped:
+    # Embedded tab characters — only reject if the text is MOSTLY tabs/whitespace
+    # (malformed artifact).  Company lines from .docx often have tab-separated dates.
+    if '\t' in stripped and len(stripped.replace('\t', '').strip()) < 10:
         return True
     # Parenthetical with no content: "... ()" or "... ( )" at end
     if re.search(r'\(\s*\)\s*$', stripped):
@@ -405,12 +415,33 @@ def _classify_paragraph(
             return 'bullet', current_section
 
         # 4. Job header: has date pattern (title or company line with dates)
-        if _has_date_pattern(text):
+        #    But only for short-ish text — long prose that happens to mention
+        #    a date ("October 2025 launch") is not a job header.
+        if _has_date_pattern(text) and len(text) < 200:
             return 'job_header', current_section
 
         # 5. Bold short text after job_header/section_header = job title
+        #    BUT only if it actually looks like a title (has title words, is
+        #    reasonably short, or has a date pattern).  Long bold prose that
+        #    starts with a sentence is an intro/bullet, not a title.
         if bold and len(text) < 120 and prev_type in ('job_header', 'section_header'):
-            return 'job_header', current_section
+            has_title_words = bool(_TITLE_WORDS.search(text))
+            has_dates = _has_date_pattern(text)
+            # Sentence-like: starts with verb phrase or "Recruited/Responsible/In this..."
+            first_word = text.split()[0].lower().rstrip('.,;:') if text.split() else ''
+            is_prose = (first_word in _ACHIEVEMENT_VERBS
+                        or first_word in ('recruited', 'responsible', 'in', 'as', 'i',
+                                          'the', 'a', 'an', 'this', 'my', 'our')
+                        or len(text) > 80)
+            if (has_title_words or has_dates) and not is_prose:
+                return 'job_header', current_section
+            elif is_prose:
+                # Bold intro text or achievement bullet
+                if ':' in text and len(text) > 50:
+                    return 'bullet', current_section
+                return 'job_intro', current_section
+            else:
+                return 'job_header', current_section
 
         # 6. Non-bold company line with location/industry markers
         if not bold and _is_company_line(text):
@@ -805,6 +836,34 @@ def parse_resume_for_kb(file_path: str) -> dict:
     certifications = []
     highlights = []
     summary_parts = []
+    # Track company-level content: intro text and bullets seen between a company
+    # header and its first role title.  These belong to the company, not the role.
+    company_intro_parts: list[str] = []
+    company_bullets: list[str] = []
+    awaiting_title = False  # True after company line, before first title
+    first_bullet_after_title = False  # True after title set, before first bullet
+
+    def _flush_company_entry():
+        """If company-level content accumulated, create a company overview entry."""
+        nonlocal company_intro_parts, company_bullets, awaiting_title
+        if current_job and (company_intro_parts or company_bullets):
+            company_entry = {
+                'employer': current_job['employer'],
+                'title': '_COMPANY_OVERVIEW',
+                'start_date': current_job.get('start_date'),
+                'end_date': current_job.get('end_date'),
+                'location': current_job.get('location'),
+                'industry': current_job.get('industry'),
+                'intro_text': ' '.join(company_intro_parts),
+                'is_current': False,
+                'is_company_entry': True,
+                'bullets': list(company_bullets),
+                'notes': None,
+            }
+            career_history.append(company_entry)
+        company_intro_parts = []
+        company_bullets = []
+        awaiting_title = False
 
     for para in paragraphs:
         ptype = para['type']
@@ -813,6 +872,8 @@ def parse_resume_for_kb(file_path: str) -> dict:
 
         # -- Section header: "Additional Work Experience" flips one-liner mode --
         if ptype == 'section_header':
+            if awaiting_title:
+                _flush_company_entry()
             if current_job:
                 career_history.append(current_job)
                 current_job = None
@@ -905,6 +966,8 @@ def parse_resume_for_kb(file_path: str) -> dict:
             if ptype == 'job_header':
                 # In additional section, try one-liner parse
                 if in_additional:
+                    if awaiting_title:
+                        _flush_company_entry()
                     entry = _parse_oneliner(text)
                     if entry and not _is_junk_employer(entry['employer']):
                         career_history.append(entry)
@@ -915,13 +978,19 @@ def parse_resume_for_kb(file_path: str) -> dict:
                     # Reject junk ONLY when it would become an employer
                     if _is_junk_employer(text):
                         continue
+                    # Flush any pending company content from previous company
+                    if awaiting_title:
+                        _flush_company_entry()
                     if current_job:
                         career_history.append(current_job)
                     current_job = _parse_company_line(text)
+                    awaiting_title = True  # Mark: we have a company, waiting for title
                 elif current_job is not None and not current_job['title']:
-                    # First title for current company
+                    # First title for current company — flush company content first
+                    _flush_company_entry()
                     title, start, end = _parse_title_dates(text)
                     current_job['title'] = title
+                    first_bullet_after_title = True
                     if start:
                         current_job['start_date'] = start
                     if end:
@@ -929,8 +998,6 @@ def parse_resume_for_kb(file_path: str) -> dict:
                         current_job['is_current'] = end.lower() in ('present', 'current')
                 elif current_job is not None and current_job['title']:
                     # Decide: another role at same company, or a new company?
-                    # If text has title words or date patterns → title at same company
-                    # If neither → likely a new company name
                     has_title_words = bool(_TITLE_WORDS.search(text))
                     has_dates = _has_date_pattern(text)
                     if has_title_words or has_dates:
@@ -949,36 +1016,125 @@ def parse_resume_for_kb(file_path: str) -> dict:
                             'bullets': [],
                             'notes': current_job.get('notes'),
                         }
+                        first_bullet_after_title = True
                     else:
                         # No title words or dates — treat as new company
                         if _is_junk_employer(text):
                             continue
+                        if awaiting_title:
+                            _flush_company_entry()
                         career_history.append(current_job)
                         current_job = _parse_company_line(text)
+                        awaiting_title = True
                 else:
                     # No current job context — treat as company
                     if _is_junk_employer(text):
                         continue
+                    if awaiting_title:
+                        _flush_company_entry()
                     if current_job:
                         career_history.append(current_job)
                     current_job = _parse_company_line(text)
+                    awaiting_title = True
 
             elif ptype == 'job_intro':
                 if current_job:
-                    if current_job['intro_text']:
-                        current_job['intro_text'] += ' ' + text
+                    if awaiting_title:
+                        # Company-level intro (before first role title)
+                        company_intro_parts.append(text)
                     else:
-                        current_job['intro_text'] = text
+                        if current_job['intro_text']:
+                            current_job['intro_text'] += ' ' + text
+                        else:
+                            current_job['intro_text'] = text
 
             elif ptype == 'bullet':
                 if current_job:
-                    current_job['bullets'].append(text)
+                    if awaiting_title:
+                        # Company-level bullet (before first role title)
+                        company_bullets.append(text)
+                    else:
+                        # Check if this "bullet" is actually a role sub-header
+                        # (e.g., "Director of Software Engineering (Executive Leadership & Scaling)")
+                        # These appear as bold short lines with title words that match
+                        # a sibling role at the same company.
+                        is_role_subheader = False
+                        if len(text) < 100 and _TITLE_WORDS.search(text):
+                            # Look for a matching role in career_history with same employer
+                            text_lower = text.lower()
+                            for prev_job in career_history:
+                                if (prev_job['employer'] == current_job['employer']
+                                        and prev_job['title']
+                                        and prev_job['title'].lower().split(',')[0] in text_lower):
+                                    # Switch to this role
+                                    career_history.append(current_job)
+                                    # Remove prev_job from history (we'll re-use it)
+                                    career_history.remove(prev_job)
+                                    current_job = prev_job
+                                    is_role_subheader = True
+                                    break
+                            if not is_role_subheader and current_job['title']:
+                                # Check if it matches current_job's own title
+                                if current_job['title'].lower().split(',')[0] in text_lower:
+                                    is_role_subheader = True  # skip, already on this role
+                        if not is_role_subheader:
+                            # First prose paragraph after title = synopsis/intro
+                            # (long text without "Label:" pattern, not a bullet-char line)
+                            if (first_bullet_after_title
+                                    and len(text) > 100
+                                    and not re.match(r'^[^:]{5,40}:', text)):
+                                if current_job['intro_text']:
+                                    current_job['intro_text'] += ' ' + text
+                                else:
+                                    current_job['intro_text'] = text
+                            else:
+                                current_job['bullets'].append(text)
+                            first_bullet_after_title = False
 
         # -- Header / headline / unknown — skip for KB purposes --
 
+    # Flush any pending company content
+    if awaiting_title:
+        _flush_company_entry()
     # Flush last job
     if current_job:
         career_history.append(current_job)
+
+    # Post-processing: for single-role companies, copy role intro_text to
+    # a company entry too (Case 1: company → title → synopsis → bullets means
+    # the synopsis belongs to both company and role).
+    employer_roles: dict[str, list[dict]] = {}
+    for job in career_history:
+        if not job.get('is_company_entry'):
+            emp = job.get('employer', '')
+            if emp not in employer_roles:
+                employer_roles[emp] = []
+            employer_roles[emp].append(job)
+
+    for emp, roles in employer_roles.items():
+        if len(roles) == 1 and roles[0].get('intro_text'):
+            # Single-role company — create/update company entry with same intro
+            existing_co = next(
+                (j for j in career_history if j.get('is_company_entry') and j['employer'] == emp),
+                None,
+            )
+            if existing_co:
+                if not existing_co.get('intro_text'):
+                    existing_co['intro_text'] = roles[0]['intro_text']
+            else:
+                career_history.append({
+                    'employer': emp,
+                    'title': '_COMPANY_OVERVIEW',
+                    'start_date': roles[0].get('start_date'),
+                    'end_date': roles[0].get('end_date'),
+                    'location': roles[0].get('location'),
+                    'industry': roles[0].get('industry'),
+                    'intro_text': roles[0]['intro_text'],
+                    'is_current': False,
+                    'is_company_entry': True,
+                    'bullets': [],
+                    'notes': None,
+                })
 
     # Convert date strings to date objects for DB compatibility
     for job in career_history:

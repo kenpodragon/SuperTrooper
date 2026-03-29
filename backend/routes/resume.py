@@ -2444,9 +2444,13 @@ def recipe_best_picks(recipe_id):
             "analysis_mode": "rule_based",
         }
 
-    def _ai_handler(provider, _ctx=None):
+    def _ai_handler(ctx):
+        from ai_providers import get_provider
+        provider = get_provider()
         # Get top 20 bullets from fallback for AI to re-rank
         fallback = _python_fallback()
+        if provider is None:
+            return fallback
         top_bullets = fallback["ranked_bullets"][:20]
 
         if not top_bullets:
