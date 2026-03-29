@@ -616,11 +616,11 @@ def group_career_history(jobs: list) -> dict:
 
     employer_merge = []
     for key, members in emp_buckets.items():
-        # canonical_name = longest raw employer name among members
-        raw_names = [m.get("company") or m.get("employer") or "" for m in members]
-        canonical_name = max(raw_names, key=len) if raw_names else key
-        winner = _pick_winner(members, EMPLOYER_FIELDS)
-        if len(members) > 1:
+        # Only flag as employer_merge when raw names actually differ
+        raw_names = set((m.get("company") or m.get("employer") or "").strip() for m in members)
+        if len(raw_names) > 1:
+            canonical_name = max(raw_names, key=len)
+            winner = _pick_winner(members, EMPLOYER_FIELDS)
             group = _make_group(winner, members)
             group["canonical_name"] = canonical_name
             employer_merge.append(group)
