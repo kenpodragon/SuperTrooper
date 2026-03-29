@@ -35,19 +35,19 @@ export default function DedupStepJunk({ entityType, items, onComplete }: Props) 
   const applyMutation = useMutation({
     mutationFn: async () => {
       const deletes: number[] = [];
-      const reclassify: any[] = [];
+      const reclassifications: any[] = [];
 
       for (const item of items) {
         const decision = decisions[item.id] ?? 'delete';
         if (decision === 'delete') {
           deletes.push(item.id);
         } else if (decision === 'reclassify' && item.suggested_reclassify) {
-          reclassify.push({ id: item.id, ...item.suggested_reclassify });
+          reclassifications.push({ id: item.id, ...item.suggested_reclassify });
         }
         // keep = no action
       }
 
-      await api.post('/kb/dedup/apply', { entity_type: entityType, merges: [], deletes, reclassify });
+      await api.post('/kb/dedup/apply', { entity_type: entityType, merges: [], deletes, reclassifications });
     },
     onSuccess: onComplete,
   });

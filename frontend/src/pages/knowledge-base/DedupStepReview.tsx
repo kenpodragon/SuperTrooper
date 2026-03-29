@@ -35,10 +35,10 @@ export default function DedupStepReview({ entityType, groups, onComplete }: Prop
         const decision = decisions[group.group_id];
         if (!decision) continue;
         if (decision.type === 'merge') {
+          const winnerId = decision.winner_id;
           merges.push({
-            group_id: group.group_id,
-            winner_id: decision.winner_id,
-            member_ids: group.members.map((m: any) => m.id),
+            winner_id: winnerId,
+            loser_ids: group.members.filter((m: any) => m.id !== winnerId).map((m: any) => m.id),
           });
         } else if (decision.type === 'delete_both') {
           group.members.forEach((m: any) => deletes.push(m.id));
@@ -46,7 +46,7 @@ export default function DedupStepReview({ entityType, groups, onComplete }: Prop
         // not_duplicates = no action
       }
 
-      await api.post('/kb/dedup/apply', { entity_type: entityType, merges, deletes, reclassify: [] });
+      await api.post('/kb/dedup/apply', { entity_type: entityType, merges, deletes, reclassifications: [] });
     },
     onSuccess: onComplete,
   });

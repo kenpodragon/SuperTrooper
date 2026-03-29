@@ -29,20 +29,26 @@ export default function DedupStepAutoMerge({ entityType, groups, onComplete }: P
 
   const applyMutation = useMutation({
     mutationFn: async () => {
-      const merges = activeGroups.map((g) => ({
-        group_id: g.group_id,
-        winner_id: winnerOverrides[g.group_id] ?? g.winner_id,
-        member_ids: g.members.map((m: any) => m.id),
-      }));
-      await api.post('/kb/dedup/apply', { entity_type: entityType, merges, deletes: [], reclassify: [] });
-
+      // Employer renames first (before merging/deleting records)
       const employerGroups = activeGroups.filter((g) => g.canonical_name);
       for (const g of employerGroups) {
         await api.post('/kb/dedup/employer-rename', {
-          group_id: g.group_id,
+          career_history_ids: g.members.map((m: any) => m.id),
           canonical_name: g.canonical_name,
-          member_ids: g.members.map((m: any) => m.id),
         });
+      }
+
+      // Then role merges (groups with winner_id, not employer renames)
+      const roleGroups = activeGroups.filter((g) => g.winner_id && !g.canonical_name);
+      const merges = roleGroups.map((g) => {
+        const winnerId = winnerOverrides[g.group_id] ?? g.winner_id;
+        return {
+          winner_id: winnerId,
+          loser_ids: g.members.filter((m: any) => m.id !== winnerId).map((m: any) => m.id),
+        };
+      });
+      if (merges.length > 0) {
+        await api.post('/kb/dedup/apply', { entity_type: entityType, merges, deletes: [], reclassifications: [] });
       }
     },
     onSuccess: onComplete,
