@@ -790,7 +790,7 @@ def _build_entries_json(entity_type: str, entries: list) -> str:
                     row[k] = _truncate(v)
         compact.append(row)
 
-    return json.dumps(compact, indent=2)
+    return json.dumps(compact, indent=2, default=str)
 
 
 def _entries_by_id(entries: list) -> dict:
