@@ -33,8 +33,29 @@ DATE_RE = re.compile(
 )
 
 # --- Section header keywords (case-insensitive match) ---
+# Multi-word keywords are checked first (longer = higher priority) to prevent
+# "Additional Work Experience" from matching "experience" instead of "additional".
 SECTION_KEYWORDS = {
+    # Multi-word (checked first due to length sorting)
+    'additional work experience': 'additional',
+    'additional experience': 'additional',
+    'professional development': 'education',
+    'previous positions': 'additional',
+    'previous experience': 'additional',
+    'employment history': 'experience',
+    'career history': 'experience',
+    'work experience': 'experience',
+    'work history': 'experience',
+    'earlier career': 'additional',
+    'other experience': 'additional',
+    'career summary': 'summary',
+    'executive summary': 'summary',
+    'professional summary': 'summary',
+    'professional experience': 'experience',
+    'training and certification': 'education',
+    # Single-word
     'experience': 'experience',
+    'employment': 'experience',
     'education': 'education',
     'certification': 'certification',
     'skills': 'skills',
@@ -55,16 +76,12 @@ SECTION_KEYWORDS = {
     'volunteer': 'additional',
     'interests': 'additional',
     'languages': 'skills',
-    'professional development': 'education',
     'training': 'education',
     'keywords': 'keywords',
-    'previous positions': 'additional',
-    'previous experience': 'additional',
-    'earlier career': 'additional',
-    'other experience': 'additional',
     'organizations': 'additional',
     'patents': 'additional',
     'recommendations': 'additional',
+    'achievements': 'highlights',
 }
 
 # Bullet prefix characters
@@ -354,14 +371,31 @@ def _is_junk_employer(text: str) -> bool:
 
 
 def _match_section_keyword(text: str) -> str | None:
-    """Match text against known section header keywords. Returns section category or None."""
+    """Match text against known section header keywords. Returns section category or None.
+
+    Uses word-boundary matching to avoid false positives like "Digital Education
+    Platform Innovation" matching the education keyword.  Multi-word keywords
+    (e.g. 'professional development') are checked first (longest match wins).
+    The keyword must be a major component of the text — if there are more than
+    4 extra words beyond the keyword, it's likely a sentence, not a header.
+    """
     lower = text.strip().lower()
     # Remove common decorators
     lower = lower.strip(':').strip()
+    word_count = len(lower.split())
 
-    for keyword, category in SECTION_KEYWORDS.items():
-        if keyword in lower:
-            return category
+    # Try multi-word keywords first (longer = more specific = higher priority)
+    for keyword, category in sorted(SECTION_KEYWORDS.items(), key=lambda kv: -len(kv[0])):
+        # Word-boundary match, allow optional trailing 's' for plurals
+        pattern = r'\b' + re.escape(keyword) + r's?\b'
+        if re.search(pattern, lower):
+            kw_words = len(keyword.split())
+            extra_words = word_count - kw_words
+            # A real section header has at most ~4 extra words
+            # ("Professional Work Experience" = 2 extra, fine)
+            # ("2013 Grammy Awards Digital Education Platform Innovation" = 7 extra, reject)
+            if extra_words <= 4:
+                return category
     return None
 
 
@@ -380,20 +414,32 @@ def _classify_paragraph(
     font_size = formatting.get('font_size')
     bold = formatting.get('bold')
 
+    # --- Section header detection (MUST come before early-header size check) ---
+    # Bold text that matches section keywords and is relatively short.
+    # This fires first so that "Professional Experience" at large font sizes
+    # is correctly classified as a section header, not swallowed as a name header.
+    section_cat = _match_section_keyword(text)
+    if section_cat and len(text) < 80:
+        # Check if it looks like a standalone header (bold or larger font)
+        if bold or (font_size and font_size >= 11):
+            return 'section_header', section_cat
+        # Relaxed check: very short lines (< 30 chars, ≤ 3 words) that match a
+        # section keyword are likely sub-section headers even without formatting
+        # (e.g. "Certifications" inside an Education section with no bold/size).
+        # BUT: do NOT fire inside experience/additional sections — short labels
+        # like "Key Achievements:" and "Expertise and Tools:" are part of job
+        # content, not section breaks.
+        if current_section not in ('experience', 'additional'):
+            word_count = len(text.strip().split())
+            if len(text) < 30 and word_count <= 3:
+                return 'section_header', section_cat
+
     # --- Header detection (early paragraphs with large font or contact info) ---
     if is_early and font_size and font_size >= 14:
         return 'header', 'header'
 
     if is_early and _has_contact_info(text) and current_section in ('header', ''):
         return 'header', 'header'
-
-    # --- Section header detection ---
-    # Bold text that matches section keywords and is relatively short
-    section_cat = _match_section_keyword(text)
-    if section_cat and len(text) < 80:
-        # Check if it looks like a standalone header (bold or larger font)
-        if bold or (font_size and font_size >= 11):
-            return 'section_header', section_cat
 
     # --- Headline (title/tagline after name, before content) ---
     if is_early and font_size and 12 < font_size < 20 and bold:
@@ -486,6 +532,11 @@ def _classify_paragraph(
         # Pipe-separated = keywords/skills line
         if '|' in text and text.count('|') >= 3:
             return 'keywords', 'keywords'
+        # --- Fallback: detect experience content without explicit section header ---
+        # If we see a line with dates + company/title structure, infer experience
+        if _has_date_pattern(text) and len(text) < 200:
+            if _is_company_line(text) or _TITLE_WORDS.search(text):
+                return 'job_header', 'experience'
         return 'summary', current_section
 
     if current_section == 'highlights':
@@ -495,6 +546,10 @@ def _classify_paragraph(
         # Pipe-separated = keywords/skills line
         if '|' in text and text.count('|') >= 3:
             return 'keywords', 'keywords'
+        # --- Fallback: detect experience content without explicit section header ---
+        if _has_date_pattern(text) and len(text) < 200:
+            if _is_company_line(text) or _TITLE_WORDS.search(text):
+                return 'job_header', 'experience'
         return 'highlights', current_section
 
     if current_section == 'references':
@@ -504,6 +559,10 @@ def _classify_paragraph(
         # Still in header area
         if _has_contact_info(text):
             return 'header', 'header'
+        # --- Fallback: detect experience content without explicit section header ---
+        if _has_date_pattern(text) and len(text) < 200:
+            if _is_company_line(text) or _TITLE_WORDS.search(text):
+                return 'job_header', 'experience'
         # Summary text after header
         if not bold and len(text) > 80:
             return 'summary', 'summary'
@@ -515,7 +574,10 @@ def _classify_paragraph(
             return 'keywords', 'keywords'
         return 'header', 'header'
 
-    # --- Fallback ---
+    # --- Fallback: detect experience content even in unknown section ---
+    if _has_date_pattern(text) and len(text) < 200:
+        if _is_company_line(text) or _TITLE_WORDS.search(text):
+            return 'job_header', 'experience'
     return 'unknown', current_section
 
 
