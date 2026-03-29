@@ -1550,7 +1550,7 @@ def execute_split_skill(skill_id: int, new_skill_names: list, conn=None) -> dict
         # Get the original skill's category (inherit to children)
         cur.execute("SELECT category FROM skills WHERE id = %s", [skill_id])
         row = cur.fetchone()
-        category = row["category"] if row else None
+        category = row[0] if row else None
 
         # Delete the compound skill
         cur.execute("DELETE FROM skills WHERE id = %s", [skill_id])
@@ -1599,7 +1599,7 @@ def execute_split_certification(cert_id: int, new_cert_names: list, conn=None) -
         # Get original issuer
         cur.execute("SELECT issuer FROM certifications WHERE id = %s", [cert_id])
         row = cur.fetchone()
-        issuer = row["issuer"] if row else None
+        issuer = row[0] if row else None
 
         cur.execute("DELETE FROM certifications WHERE id = %s", [cert_id])
 
