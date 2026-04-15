@@ -17,6 +17,117 @@ bp = Blueprint("resume", __name__)
 
 
 # ---------------------------------------------------------------------------
+# V1 → V2 Resolved Adapter
+# ---------------------------------------------------------------------------
+
+def _v1_resolved_to_v2(flat: dict) -> dict:
+    """Convert a v1 flat resolved slot map into v2 structured format for the editor.
+
+    V1 keys follow patterns: HEADER_NAME, HEADER_CONTACT_N, SUMMARY, HEADLINE,
+    HIGHLIGHT_N, JOB_N_HEADER, JOB_N_BULLET_N, JOB_N_INTRO, SKILLS_N, KEYWORDS_N,
+    EDUCATION_N, CERT_N, SLOT_N.
+    """
+    v2 = {}
+
+    # Header
+    header = {}
+    if "HEADER_NAME" in flat:
+        header["name"] = flat["HEADER_NAME"]
+    contacts = []
+    for k in sorted(flat):
+        if k.startswith("HEADER_CONTACT"):
+            contacts.append(flat[k])
+    if contacts:
+        header["contact"] = " • ".join(contacts)
+    if header:
+        v2["header"] = header
+
+    # Headline
+    if "HEADLINE" in flat:
+        v2["headline"] = flat["HEADLINE"]
+
+    # Summary
+    if "SUMMARY" in flat:
+        v2["summary"] = flat["SUMMARY"]
+
+    # Highlights
+    highlights = []
+    for k in sorted(flat, key=lambda x: (len(x), x)):
+        if k.startswith("HIGHLIGHT_"):
+            highlights.append(flat[k])
+    if highlights:
+        v2["highlights"] = highlights
+
+    # Experience — group JOB_N_HEADER + JOB_N_BULLET_M + JOB_N_INTRO
+    jobs = {}  # job_num -> {header, bullets[], intro}
+    for k in flat:
+        m = re.match(r"JOB_(\d+)_(HEADER|BULLET_\d+|INTRO)", k)
+        if m:
+            num = int(m.group(1))
+            part = m.group(2)
+            if num not in jobs:
+                jobs[num] = {"bullets": []}
+            if part == "HEADER":
+                jobs[num]["header"] = flat[k]
+            elif part == "INTRO":
+                jobs[num]["synopsis"] = flat[k]
+            elif part.startswith("BULLET_"):
+                jobs[num]["bullets"].append((int(part.split("_")[1]), flat[k]))
+
+    if jobs:
+        experience = []
+        for num in sorted(jobs):
+            job = jobs[num]
+            exp_item = {}
+            header_text = job.get("header", "")
+            # Try to parse "Employer\tTitle\tDates" or "Title | Employer\tDates"
+            if header_text:
+                exp_item["employer"] = header_text
+            if job.get("synopsis"):
+                exp_item["synopsis"] = job["synopsis"]
+            # Sort bullets by index
+            sorted_bullets = [b[1] for b in sorted(job["bullets"])]
+            if sorted_bullets:
+                exp_item["bullets"] = sorted_bullets
+            experience.append(exp_item)
+        v2["experience"] = experience
+
+    # Skills + Keywords
+    skills = []
+    for k in sorted(flat, key=lambda x: (len(x), x)):
+        if k.startswith("SKILLS_") or k.startswith("KEYWORDS_"):
+            skills.append(flat[k])
+    if skills:
+        v2["skills"] = skills
+
+    # Education
+    education = []
+    for k in sorted(flat, key=lambda x: (len(x), x)):
+        if k.startswith("EDUCATION_"):
+            education.append(flat[k])
+    if education:
+        v2["education"] = education
+
+    # Certifications
+    certs = []
+    for k in sorted(flat, key=lambda x: (len(x), x)):
+        if k.startswith("CERT_"):
+            certs.append(flat[k])
+    if certs:
+        v2["certifications"] = certs
+
+    # Additional experience (SLOT_N — often additional one-liner jobs)
+    additional = []
+    for k in sorted(flat, key=lambda x: (len(x), x)):
+        if k.startswith("SLOT_"):
+            additional.append(flat[k])
+    if additional:
+        v2["additional_experience"] = additional
+
+    return v2
+
+
+# ---------------------------------------------------------------------------
 # Resume Recipes
 # ---------------------------------------------------------------------------
 
@@ -53,6 +164,9 @@ def get_recipe(recipe_id):
         resolved = _resolve_recipe_db(recipe_json, recipe_version=row.get("recipe_version", 1))
         if row.get("headline"):
             resolved["HEADLINE"] = row["headline"]
+        # Convert v1 flat slot map to v2 structure for the editor
+        if row.get("recipe_version", 1) < 2:
+            resolved = _v1_resolved_to_v2(resolved)
         row["resolved_preview"] = resolved
 
     return jsonify(row)

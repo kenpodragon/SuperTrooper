@@ -1338,6 +1338,14 @@ Rules:
         report["parsing_method"] = parsing_method
         report["parsing_confidence"] = confidence
 
+        # Counts for frontend display
+        db_insert = report.get("steps", {}).get("db_insert", {})
+        report["career_entries"] = len(db_insert.get("career_history_ids", []))
+        report["bullets_inserted"] = len(db_insert.get("bullet_ids", []))
+        report["skills_inserted"] = len(db_insert.get("skill_ids", []))
+        report["education_inserted"] = len(db_insert.get("education_ids", []))
+        report["certifications_inserted"] = len(db_insert.get("certification_ids", []))
+
     except Exception as e:
         report["status"] = "failed"
         report["errors"].append(f"Unexpected error: {e}\n{traceback.format_exc()}")

@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { api } from '../../api/client';
+import { api, API_BASE } from '../../api/client';
 
 interface FileResult {
   filename: string;
@@ -98,7 +98,7 @@ export default function ImportResumesModal({ isOpen, onClose }: Props) {
     });
 
     try {
-      const resp = await fetch('/api/onboard/upload', {
+      const resp = await fetch(`${API_BASE}/onboard/upload`, {
         method: 'POST',
         body: formData,
       });
