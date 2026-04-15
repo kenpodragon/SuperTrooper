@@ -298,7 +298,7 @@ def delete_bullet(bullet_id):
 def list_summary_variants():
     """All summary variants."""
     rows = db.query(
-        "SELECT id, role_type, text, updated_at FROM summary_variants ORDER BY role_type"
+        "SELECT id, role_type, text, headline, updated_at FROM summary_variants ORDER BY role_type"
     )
     return jsonify(rows), 200
 
@@ -307,7 +307,7 @@ def list_summary_variants():
 def get_summary_variant(role_type):
     """Single summary variant by role_type."""
     row = db.query_one(
-        "SELECT id, role_type, text, updated_at FROM summary_variants WHERE role_type = %s",
+        "SELECT id, role_type, text, headline, updated_at FROM summary_variants WHERE role_type = %s",
         (role_type,),
     )
     if not row:
@@ -323,8 +323,8 @@ def create_summary_variant():
         return jsonify({"error": "role_type and text are required"}), 400
 
     row = db.execute_returning(
-        "INSERT INTO summary_variants (role_type, text) VALUES (%s, %s) RETURNING *",
-        (data["role_type"], data["text"]),
+        "INSERT INTO summary_variants (role_type, text, headline) VALUES (%s, %s, %s) RETURNING *",
+        (data["role_type"], data["text"], data.get("headline")),
     )
     return jsonify(row), 201
 
@@ -334,7 +334,7 @@ def update_summary_variant(variant_id):
     """Update a summary variant."""
     data = request.get_json(force=True)
     sets, params = [], []
-    for key in ("role_type", "text"):
+    for key in ("role_type", "text", "headline"):
         if key in data:
             sets.append(f"{key} = %s")
             params.append(data[key])

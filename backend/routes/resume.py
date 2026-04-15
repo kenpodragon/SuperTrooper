@@ -952,7 +952,7 @@ def delete_language(lang_id):
 @bp.route("/api/summary-variants", methods=["GET"])
 def get_summary_variants():
     """Get summary variant entries."""
-    rows = db.query("SELECT * FROM summary_variants ORDER BY sort_order")
+    rows = db.query("SELECT id, role_type, text, headline, sort_order, updated_at FROM summary_variants ORDER BY sort_order")
     return jsonify({"summary_variants": rows, "count": len(rows)})
 
 
@@ -963,13 +963,14 @@ def create_summary_variant():
     if not data.get("role_type") or not data.get("text"):
         return jsonify({"error": "role_type and text are required"}), 400
 
+    headline = data.get("headline", "").strip() or None
     row = db.execute_returning(
         """
-        INSERT INTO summary_variants (role_type, text, sort_order)
-        VALUES (%s,%s,%s)
+        INSERT INTO summary_variants (role_type, text, headline, sort_order)
+        VALUES (%s,%s,%s,%s)
         RETURNING *
         """,
-        (data["role_type"], data["text"], data.get("sort_order", 0)),
+        (data["role_type"], data["text"], headline, data.get("sort_order", 0)),
     )
     return jsonify(row), 201
 
@@ -978,7 +979,7 @@ def create_summary_variant():
 def update_summary_variant(sv_id):
     """Update a summary variant."""
     data = request.get_json(force=True)
-    allowed = ["role_type", "text", "sort_order"]
+    allowed = ["role_type", "text", "headline", "sort_order"]
     sets, params = [], []
     for key in allowed:
         if key in data:
