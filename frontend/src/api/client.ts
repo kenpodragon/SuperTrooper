@@ -21,7 +21,18 @@ export const api = {
     request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   put: <T>(path: string, body: unknown) =>
     request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
-  del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  del: async <T>(path: string, body?: unknown): Promise<T> => {
+    const res = await fetch(`${BASE}${path}`, {
+      method: 'DELETE',
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw err;
+    }
+    return res.json();
+  },
 };
 
 // --- Typed API functions ---
@@ -231,6 +242,7 @@ export interface TemplateListItem {
   filename?: string;
   description?: string;
   is_active?: boolean;
+  is_default?: boolean;
   template_type?: string;
   parser_version?: string;
   size_bytes?: number;
@@ -258,6 +270,11 @@ export const templates = {
   },
   get: (id: number) => api.get<TemplateDetail>(`/resume/templates/${id}`),
   del: (id: number) => api.del<{ deleted: number; name: string }>(`/resume/templates/${id}`),
+  delWithStrategy: (id: number, strategy: { reassign_to?: Record<string, number>; delete_recipes?: boolean }) =>
+    api.del<{ deleted: number; name: string } | { error: string; affected_recipes: { id: number; name: string }[] }>(
+      `/resume/templates/${id}`,
+      strategy,
+    ),
   upload: async (file: File, name?: string): Promise<{ id: number; name: string }> => {
     const form = new FormData();
     form.append('file', file);
