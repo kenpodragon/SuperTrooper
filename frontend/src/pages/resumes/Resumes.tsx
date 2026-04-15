@@ -307,7 +307,19 @@ export default function Resumes() {
                         const rp = detail.resolved_preview;
                         const lines: string[] = [];
                         for (const [key, val] of Object.entries(rp)) {
-                          if (Array.isArray(val)) {
+                          if (key === 'experience' && Array.isArray(val)) {
+                            val.forEach((job: Record<string, unknown>) => {
+                              const parts: string[] = [];
+                              if (job.employer) parts.push(String(job.employer));
+                              if (job.title) parts.push(String(job.title));
+                              if (job.dates) parts.push(String(job.dates));
+                              lines.push(parts.join(' | '));
+                              if (job.synopsis) lines.push(`  ${job.synopsis}`);
+                              if (Array.isArray(job.bullets)) {
+                                job.bullets.forEach(b => lines.push(`  • ${b}`));
+                              }
+                            });
+                          } else if (Array.isArray(val)) {
                             lines.push(`${key}:`);
                             val.forEach(v => lines.push(`  - ${typeof v === 'string' ? v : JSON.stringify(v)}`));
                           } else if (typeof val === 'string') {

@@ -20,12 +20,15 @@ bp = Blueprint("resume", __name__)
 # V1 → V2 Resolved Adapter
 # ---------------------------------------------------------------------------
 
-def _v1_resolved_to_v2(flat: dict) -> dict:
+def _v1_resolved_to_v2(flat: dict, recipe_json: dict = None) -> dict:
     """Convert a v1 flat resolved slot map into v2 structured format for the editor.
 
     V1 keys follow patterns: HEADER_NAME, HEADER_CONTACT_N, SUMMARY, HEADLINE,
     HIGHLIGHT_N, JOB_N_HEADER, JOB_N_BULLET_N, JOB_N_INTRO, SKILLS_N, KEYWORDS_N,
     EDUCATION_N, CERT_N, SLOT_N.
+
+    If recipe_json is provided, career_history references are resolved to
+    separate employer/title/dates fields instead of a single header blob.
     """
     v2 = {}
 
@@ -75,14 +78,101 @@ def _v1_resolved_to_v2(flat: dict) -> dict:
                 jobs[num]["bullets"].append((int(part.split("_")[1]), flat[k]))
 
     if jobs:
+
+        def _fmt_date_v1(d):
+            """Format date for v1 experience display."""
+            if not d or not hasattr(d, "strftime"):
+                return str(d) if d else ""
+            return str(d.year) if d.month == 1 and d.day == 1 else d.strftime("%B %Y")
+
         experience = []
         for num in sorted(jobs):
             job = jobs[num]
             exp_item = {}
             header_text = job.get("header", "")
-            # Try to parse "Employer\tTitle\tDates" or "Title | Employer\tDates"
-            if header_text:
-                exp_item["employer"] = header_text
+
+            # Try to get structured employer/title from the original recipe reference
+            parsed = False
+            if recipe_json:
+                ref = recipe_json.get(f"JOB_{num}_HEADER")
+                if ref and isinstance(ref, dict) and ref.get("table") == "career_history":
+                    row_id = ref.get("id")
+                    if row_id:
+                        ch = db.query_one(
+                            "SELECT employer, title, start_date, end_date, is_current, location "
+                            "FROM career_history WHERE id = %s",
+                            (row_id,),
+                        )
+                        if ch:
+                            exp_item["employer"] = ch["employer"]
+                            title_val = ch.get("title", "")
+                            if title_val and title_val not in ("_COMPANY_OVERVIEW", "Unknown"):
+                                exp_item["title"] = title_val
+                            if ch.get("location"):
+                                exp_item["location"] = ch["location"]
+                            if ch.get("start_date"):
+                                start = _fmt_date_v1(ch["start_date"])
+                                if ch.get("is_current"):
+                                    exp_item["dates"] = f"{start} \u2013 Present"
+                                elif ch.get("end_date"):
+                                    exp_item["dates"] = f"{start} \u2013 {_fmt_date_v1(ch['end_date'])}"
+                                else:
+                                    exp_item["dates"] = start
+                            parsed = True
+
+            if not parsed and header_text:
+                # Skip pure page markers from PDF parsing
+                stripped = header_text.strip()
+                if re.match(r"^Page \d+ of \d+$", stripped):
+                    continue
+
+                # Try heuristic parsing for multiline LinkedIn PDF headers:
+                # Employer\nTitle\nDates (duration)\nLocation
+                lines = [ln.strip() for ln in header_text.split("\n")]
+                lines = [ln for ln in lines if ln and not re.match(r"^Page \d+ of \d+", ln)]
+                # Match dates at line start OR embedded after text (e.g., "Title January 2021 - January 2024")
+                date_start_re = re.compile(r"^(?:\w+\s+)?\d{4}\s*-\s*(?:\w+\s+)?\d{4}")
+                date_embed_re = re.compile(r"(\w+\s+\d{4}\s*-\s*\w+\s+\d{4}|\d{4}\s*-\s*\d{4})")
+                date_idx = None
+                for idx_l, ln in enumerate(lines):
+                    if date_start_re.match(ln):
+                        date_idx = idx_l
+                        break
+                # If no line starts with a date, look for embedded dates (skip first line = employer)
+                if date_idx is None:
+                    for idx_l, ln in enumerate(lines):
+                        if idx_l == 0:
+                            continue
+                        m = date_embed_re.search(ln)
+                        if m:
+                            # Split the line: text before date = title, date part = dates
+                            pre = ln[:m.start()].strip()
+                            if pre:
+                                lines[idx_l] = pre
+                                lines.insert(idx_l + 1, m.group(0))
+                                date_idx = idx_l + 1
+                            else:
+                                date_idx = idx_l
+                            break
+                if date_idx is not None and date_idx >= 1:
+                    # Lines before date: employer (+ title if 2+)
+                    before = lines[:date_idx]
+                    if len(before) >= 2:
+                        exp_item["employer"] = before[0]
+                        exp_item["title"] = before[1]
+                    else:
+                        exp_item["employer"] = before[0]
+                    # Date line: strip "(N years)" suffix
+                    date_str = re.sub(r"\s*\(\d+\s*years?\).*", "", lines[date_idx]).strip()
+                    if date_str:
+                        exp_item["dates"] = date_str
+                    # Lines after date: location
+                    after = [ln for ln in lines[date_idx + 1:] if ln]
+                    if after:
+                        exp_item["location"] = after[0]
+                elif lines:
+                    exp_item["employer"] = header_text
+
             if job.get("synopsis"):
                 exp_item["synopsis"] = job["synopsis"]
             # Sort bullets by index
@@ -166,7 +256,7 @@ def get_recipe(recipe_id):
             resolved["HEADLINE"] = row["headline"]
         # Convert v1 flat slot map to v2 structure for the editor
         if row.get("recipe_version", 1) < 2:
-            resolved = _v1_resolved_to_v2(resolved)
+            resolved = _v1_resolved_to_v2(resolved, recipe_json=recipe_json)
         row["resolved_preview"] = resolved
 
     return jsonify(row)
@@ -567,8 +657,12 @@ def generate_from_recipe(recipe_id):
     # Build filename: {Name}_{TargetRole}_{Date}.docx
     import re as _re
     from datetime import date as _date
-    _name_part = (resolved_content.get("HEADER_NAME") or "Resume").strip().replace(" ", "")
+    _header_name = (resolved_content.get("HEADER_NAME") or "Resume").replace("\n", " ").replace("\r", "").strip()
+    # Take only the first meaningful part (before bullet/pipe separators or commas after credentials)
+    _name_part = _re.split(r'[•|]|\s{2,}', _header_name)[0].strip().replace(" ", "")
+    _name_part = _re.sub(r'[^a-zA-Z0-9_,]', '', _name_part)[:40]
     _raw_role = recipe_row.get("headline") or recipe_row.get("name") or "General"
+    _raw_role = _raw_role.replace("\n", " ").replace("\r", "")
     # Clean up onboard auto-names: strip "Onboard: " prefix, file extensions, hash chars
     _raw_role = _re.sub(r'^Onboard:\s*', '', _raw_role)
     _raw_role = _re.sub(r'\.docx$', '', _raw_role, flags=_re.IGNORECASE)
