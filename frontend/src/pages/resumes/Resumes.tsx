@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, recipes } from '../../api/client';
+import { api, recipes, API_BASE } from '../../api/client';
 import type { Recipe } from '../../api/client';
 import TemplatesBrowser from './TemplatesBrowser';
 
@@ -140,8 +140,7 @@ export default function Resumes() {
 
   const generateResume = useMutation({
     mutationFn: async (id: number) => {
-      const BASE = import.meta.env.VITE_API_URL || '/api';
-      const res = await fetch(`${BASE}/resume/recipes/${id}/generate`, {
+      const res = await fetch(`${API_BASE}/resume/recipes/${id}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: '{}',

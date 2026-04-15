@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { api } from '../../api/client';
+import { api, recipeGenerateDocx } from '../../api/client';
 import EditorToolbar from './EditorToolbar';
 import HeaderBlock from './blocks/HeaderBlock';
 import TextBlock from './blocks/TextBlock';
@@ -117,10 +117,7 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
   // Generate .docx
   const generateMutation = useMutation({
     mutationFn: async () => {
-      const base = import.meta.env.VITE_API_URL || '/api';
-      const res = await fetch(`${base}/resume/recipes/${recipeId}/generate`, { method: 'POST' });
-      if (!res.ok) throw new Error('Generation failed');
-      const blob = await res.blob();
+      const blob = await recipeGenerateDocx(recipeId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_API_URL || '/api';
+export const API_BASE = import.meta.env.VITE_API_URL || '/api';
+const BASE = API_BASE;
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -213,6 +214,8 @@ export const interviews = {
 export const companies = {
   list: (params = '') => api.get<Company[]>(`/companies${params}`),
   get: (id: number) => api.get<Company>(`/companies/${id}`),
+  getByEmployer: (employer: string) =>
+    api.get<Company>(`/company/${encodeURIComponent(employer)}`),
 };
 
 export const recipes = {
@@ -272,6 +275,11 @@ export function templateThumbnailUrl(templateId: number): string {
   return `${BASE}/resume/templates/${templateId}/thumbnail`;
 }
 
+export const careerHistory = {
+  getWithOptions: (id: number) =>
+    api.get<CareerHistory & { options?: Record<string, unknown> }>(`/career-history/${id}/with-options`),
+};
+
 export const bullets = {
   list: (params = '') => api.get<Bullet[]>(`/bullets${params}`),
 };
@@ -320,6 +328,21 @@ export const gapAnalyses = {
   list: (params = '') => api.get<GapAnalysis[]>(`/gap-analyses${params}`),
   get: (id: number) => api.get<GapAnalysis>(`/gap-analyses/${id}`),
 };
+
+// --- Generate .docx from Recipe (binary download) ---
+
+export async function recipeGenerateDocx(recipeId: number): Promise<Blob> {
+  const res = await fetch(`${BASE}/resume/recipes/${recipeId}/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || 'Generation failed');
+  }
+  return res.blob();
+}
 
 // --- ATS Score for Recipes ---
 
@@ -431,14 +454,8 @@ export const notifications = {
   markAllRead: () => api.patch<any>('/notifications/read-all', {}),
 };
 
-export const mockInterviews = {
-  list: (params = '') => api.get<any[]>(`/mock-interviews${params}`),
-  get: (id: number) => api.get<any>(`/mock-interviews/${id}`),
-  create: (data: any) => api.post<any>('/mock-interviews', data),
-  answer: (id: number, questionId: number, answer: string) =>
-    api.patch<any>(`/mock-interviews/${id}/answer`, { question_id: questionId, user_answer: answer }),
-  evaluate: (id: number) => api.patch<any>(`/mock-interviews/${id}/evaluate`, {}),
-};
+// mockInterviews: pages/mock-interviews/MockInterviews.tsx uses raw api.* calls.
+// Typed export deferred until page gets proper TS interfaces (see API_MCP_AUDIT).
 
 export interface OutreachMessage {
   id: number;
@@ -488,10 +505,8 @@ export const crm = {
     api.get<ConversationData>(`/crm/conversations/${contactId}${params}`),
 };
 
-export const marketIntel = {
-  list: (params = '') => api.get<any[]>(`/market-intelligence${params}`),
-  summary: () => api.get<any>('/market-intelligence/summary'),
-};
+// marketIntel: pages/market/MarketIntel.tsx uses raw api.* calls.
+// Typed export deferred until page gets proper TS interfaces (see API_MCP_AUDIT).
 
 // --- Emails ---
 
