@@ -24,7 +24,7 @@ def compute_hash(blob: bytes) -> str:
 def check_exact_duplicate(content_hash: str, template_type: str) -> dict | None:
     """Check for an exact duplicate by hash + type. Returns the existing row or None."""
     return db.query_one(
-        """SELECT id, name, filename, template_type, is_active, created_at
+        """SELECT id, name, filename, template_type, created_at
              FROM resume_templates
             WHERE content_hash = %s AND template_type = %s""",
         (content_hash, template_type),

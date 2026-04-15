@@ -38,47 +38,88 @@ export default function BulletItem({
   };
 
   return (
-    <li ref={setNodeRef} style={style} className="flex items-start gap-2 group/bullet relative">
-      <span {...attributes} {...listeners} className="cursor-grab text-gray-600 hover:text-gray-400 mt-1 select-none">&#x2807;</span>
-      <span className="text-gray-500 mt-0.5">&bull;</span>
+    <li
+      ref={setNodeRef}
+      style={{ ...style, display: 'flex', alignItems: 'flex-start', gap: 4, position: 'relative', marginBottom: 2 }}
+      className="group/bullet"
+    >
+      {/* Drag handle */}
+      <span
+        {...attributes} {...listeners}
+        style={{ cursor: 'grab', color: '#d1d5db', marginTop: 2, userSelect: 'none', fontSize: 12, flexShrink: 0 }}
+      >
+        &#x2807;
+      </span>
+
       {editing ? (
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           onBlur={handleBlur}
           autoFocus
-          className="flex-1 bg-transparent border border-blue-500/30 rounded p-1 text-sm resize-y min-h-8 outline-none"
+          style={{
+            flex: 1, background: '#fefce8', border: '1px solid #d4a017',
+            borderRadius: 3, padding: 4, fontSize: 'var(--font-size-body, 10.5pt)',
+            fontFamily: 'inherit', resize: 'vertical', minHeight: 32, outline: 'none',
+            color: '#111', lineHeight: 1.4,
+          }}
         />
       ) : (
         <span
           onClick={() => setEditing(true)}
-          className="flex-1 text-sm cursor-pointer hover:bg-gray-800/50 rounded px-1 py-0.5"
+          style={{
+            flex: 1, fontSize: 'var(--font-size-body, 10.5pt)', color: '#222',
+            cursor: 'pointer', padding: '0 2px', borderRadius: 2, lineHeight: 1.5,
+          }}
         >
-          {resolvedText || <span className="text-gray-500 italic">[empty bullet]</span>}
+          {resolvedText || <span style={{ color: '#aaa', fontStyle: 'italic' }}>[empty bullet]</span>}
         </span>
       )}
-      <div className="relative">
+
+      {/* Context menu */}
+      <div style={{ position: 'relative', flexShrink: 0 }}>
         <button
           onClick={() => setShowMenu(!showMenu)}
-          className="text-gray-600 hover:text-gray-300 text-sm hidden group-hover/bullet:block"
+          style={{
+            background: 'none', border: 'none', color: '#bbb', fontSize: 14,
+            cursor: 'pointer', display: 'none', padding: 0,
+          }}
+          className="group-hover/bullet:!inline-block"
         >
           &hellip;
         </button>
         {showMenu && (
-          <div className="absolute right-0 top-6 z-10 bg-gray-800 border border-gray-700 rounded shadow-lg py-1 min-w-32">
-            <button onClick={() => { setShowMenu(false); setEditing(true); }}
-              className="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-700">Edit</button>
-            <button onClick={() => { setShowMenu(false); onClone(); }}
-              className="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-700">Clone &amp; Edit</button>
+          <div style={{
+            position: 'absolute', right: 0, top: 20, zIndex: 10,
+            background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.1)', padding: '4px 0', minWidth: 120,
+          }}>
+            <MenuBtn label="Edit" onClick={() => { setShowMenu(false); setEditing(true); }} />
+            <MenuBtn label="Clone & Edit" onClick={() => { setShowMenu(false); onClone(); }} />
             {onAiRewrite && (
-              <button onClick={() => { setShowMenu(false); onAiRewrite(); }}
-                className="block w-full text-left px-3 py-1.5 text-sm text-blue-400 hover:bg-gray-700">AI Rewrite</button>
+              <MenuBtn label="AI Rewrite" onClick={() => { setShowMenu(false); onAiRewrite(); }} color="#2563eb" />
             )}
-            <button onClick={() => { setShowMenu(false); onDelete(); }}
-              className="block w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-gray-700">Delete</button>
+            <MenuBtn label="Delete" onClick={() => { setShowMenu(false); onDelete(); }} color="#ef4444" />
           </div>
         )}
       </div>
     </li>
+  );
+}
+
+function MenuBtn({ label, onClick, color }: { label: string; onClick: () => void; color?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px',
+        fontSize: 12, background: 'none', border: 'none', cursor: 'pointer',
+        color: color ?? '#333',
+      }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
+      onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+    >
+      {label}
+    </button>
   );
 }

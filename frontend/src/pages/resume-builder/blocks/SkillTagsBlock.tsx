@@ -60,14 +60,29 @@ export default function SkillTagsBlock({ skillRefs, resolvedSkills, onUpdate }: 
 
   return (
     <BlockWrapper label="Skills">
-      <div className="flex flex-wrap gap-2">
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 'var(--font-size-body, 10.5pt)' }}>
         {resolvedSkills.map((skill, idx) => {
           const skillId = skillRefs.flatMap(r => r.ids ?? [])[idx];
           return (
-            <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-800 rounded-full text-sm group/tag">
+            <span
+              key={idx}
+              className="group/tag"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '2px 10px', background: '#f1f5f9', borderRadius: 12,
+                fontSize: '9.5pt', color: '#334155', border: '1px solid #e2e8f0',
+              }}
+            >
               {skill}
               {skillId && (
-                <button onClick={() => removeSkill(skillId)} className="text-gray-600 hover:text-red-400 hidden group-hover/tag:inline">
+                <button
+                  onClick={() => removeSkill(skillId)}
+                  style={{
+                    background: 'none', border: 'none', color: '#94a3b8',
+                    cursor: 'pointer', fontSize: 12, padding: 0, display: 'none',
+                  }}
+                  className="group-hover/tag:!inline"
+                >
                   &times;
                 </button>
               )}
@@ -76,27 +91,44 @@ export default function SkillTagsBlock({ skillRefs, resolvedSkills, onUpdate }: 
         })}
         <button
           onClick={() => setShowPicker(!showPicker)}
-          className="px-2 py-0.5 border border-dashed border-gray-600 rounded-full text-sm text-gray-400 hover:border-blue-500 hover:text-blue-400"
+          style={{
+            padding: '2px 10px', border: '1px dashed #cbd5e1', borderRadius: 12,
+            fontSize: '9.5pt', color: '#64748b', background: 'none', cursor: 'pointer',
+          }}
         >
           + Add
         </button>
       </div>
       {showPicker && (
-        <div className="mt-3 border border-gray-700 rounded p-3 max-h-48 overflow-y-auto">
+        <div style={{
+          marginTop: 10, border: '1px solid #e2e8f0', borderRadius: 6,
+          padding: 10, maxHeight: 180, overflowY: 'auto', background: '#fafafa',
+        }}>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search skills..."
             autoFocus
-            className="w-full bg-transparent border-b border-gray-700 text-sm outline-none pb-2 mb-2"
+            style={{
+              width: '100%', background: '#fff', border: '1px solid #e2e8f0',
+              borderRadius: 4, fontSize: 12, outline: 'none', padding: '4px 8px',
+              marginBottom: 8,
+            }}
           />
-          <div className="flex flex-wrap gap-1">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {filtered.slice(0, 30).map(s => (
-              <button key={s.id} onClick={() => addSkill(s.id)} className="px-2 py-0.5 text-xs bg-gray-700 rounded hover:bg-blue-700">
+              <button
+                key={s.id}
+                onClick={() => addSkill(s.id)}
+                style={{
+                  padding: '2px 8px', fontSize: 11, background: '#e2e8f0',
+                  border: 'none', borderRadius: 4, cursor: 'pointer', color: '#334155',
+                }}
+              >
                 {s.name}
               </button>
             ))}
-            {filtered.length === 0 && <p className="text-xs text-gray-500">No matching skills</p>}
+            {filtered.length === 0 && <p style={{ fontSize: 11, color: '#999' }}>No matching skills</p>}
           </div>
         </div>
       )}

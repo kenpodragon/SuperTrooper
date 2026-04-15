@@ -39,22 +39,12 @@ def register_resume_gen_tools(mcp):
     # ------------------------------------------------------------------
 
     @mcp.tool()
-    def list_templates(active_only: bool = True) -> dict:
-        """List available resume templates.
-
-        Args:
-            active_only: If True, only return active templates (default True).
-        """
-        if active_only:
-            rows = db.query(
-                "SELECT id, name, filename, description, is_active, template_type, created_at "
-                "FROM resume_templates WHERE is_active = TRUE ORDER BY id"
-            )
-        else:
-            rows = db.query(
-                "SELECT id, name, filename, description, is_active, template_type, created_at "
-                "FROM resume_templates ORDER BY id"
-            )
+    def list_templates() -> dict:
+        """List available resume templates."""
+        rows = db.query(
+            "SELECT id, name, filename, description, template_type, created_at "
+            "FROM resume_templates ORDER BY id"
+        )
         return {"templates": rows, "count": len(rows)}
 
     @mcp.tool()
@@ -113,42 +103,6 @@ def register_resume_gen_tools(mcp):
             return {"error": "Failed to upload template"}
         if force:
             row["forced"] = True
-        return row
-
-    @mcp.tool()
-    def activate_template(template_id: int = 0) -> dict:
-        """Activate a resume template, making it available for use.
-
-        Args:
-            template_id: Template ID to activate.
-        """
-        if template_id <= 0:
-            return {"error": "template_id is required"}
-        row = db.execute_returning(
-            "UPDATE resume_templates SET is_active = TRUE, updated_at = NOW() WHERE id = %s "
-            "RETURNING id, name, is_active",
-            (template_id,),
-        )
-        if not row:
-            return {"error": f"Template id={template_id} not found"}
-        return row
-
-    @mcp.tool()
-    def deactivate_template(template_id: int = 0) -> dict:
-        """Deactivate a resume template, hiding it from active use.
-
-        Args:
-            template_id: Template ID to deactivate.
-        """
-        if template_id <= 0:
-            return {"error": "template_id is required"}
-        row = db.execute_returning(
-            "UPDATE resume_templates SET is_active = FALSE, updated_at = NOW() WHERE id = %s "
-            "RETURNING id, name, is_active",
-            (template_id,),
-        )
-        if not row:
-            return {"error": f"Template id={template_id} not found"}
         return row
 
     @mcp.tool()
@@ -311,7 +265,7 @@ def register_resume_gen_tools(mcp):
                 return {"error": f"Recipe id={recipe_id} not found"}
 
             tmpl = db.query_one(
-                "SELECT name, template_blob, template_map FROM resume_templates WHERE id = %s AND is_active = TRUE",
+                "SELECT name, template_blob, template_map FROM resume_templates WHERE id = %s",
                 (recipe_row["template_id"],),
             )
             if not tmpl:

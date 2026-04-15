@@ -27,6 +27,7 @@ interface ResolvedJob {
   location?: string;
   synopsis?: string;
   bullets?: string[];
+  dates?: string;
 }
 
 interface Props {
@@ -106,24 +107,43 @@ export default function ExperienceBlock({
   return (
     <BlockWrapper label="Experience">
       {resolvedJobs.map((rJob, jobIdx) => (
-        <div key={jobIdx} className="mb-6 last:mb-0">
-          <div className="flex justify-between items-start mb-1">
+        <div key={jobIdx} style={{ marginBottom: 16, paddingBottom: 8 }}>
+          {/* Job header — employer/title left, dates/location right */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
             <div>
-              <h3 className="font-bold text-base">{rJob.employer}</h3>
-              <p className="text-sm text-gray-300">{rJob.title}</p>
+              <div style={{ fontWeight: 700, fontSize: 'var(--font-size-body, 10.5pt)', color: '#111' }}>
+                {rJob.employer || '[Employer]'}
+              </div>
+              {rJob.title && (
+                <div style={{ fontSize: 'var(--font-size-body, 10.5pt)', color: '#333', fontStyle: 'italic' }}>
+                  {rJob.title}
+                </div>
+              )}
             </div>
-            <div className="text-right text-sm text-gray-400">
-              <p>{rJob.start_date} - {rJob.end_date}</p>
-              {rJob.location && <p>{rJob.location}</p>}
+            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+              <div style={{ fontSize: '9.5pt', color: '#444' }}>
+                {rJob.dates || (rJob.start_date && `${rJob.start_date} \u2013 ${rJob.end_date || 'Present'}`)}
+              </div>
+              {rJob.location && (
+                <div style={{ fontSize: '9pt', color: '#666' }}>{rJob.location}</div>
+              )}
             </div>
           </div>
-          {rJob.synopsis && <p className="text-sm text-gray-300 italic mb-2">{rJob.synopsis}</p>}
+
+          {/* Synopsis / intro */}
+          {rJob.synopsis && (
+            <p style={{ fontSize: 'var(--font-size-body, 10.5pt)', color: '#333', fontStyle: 'italic', margin: '4px 0 6px', lineHeight: 1.4 }}>
+              {rJob.synopsis}
+            </p>
+          )}
+
+          {/* Bullets */}
           <DndContext collisionDetection={closestCenter} onDragEnd={(e) => handleBulletDragEnd(jobIdx, e)}>
             <SortableContext
               items={jobs[jobIdx].bullets.map((_, i) => `bullet-${jobIdx}-${i}`)}
               strategy={verticalListSortingStrategy}
             >
-              <ul className="space-y-1 ml-2">
+              <ul style={{ margin: 0, paddingLeft: 18, listStyleType: 'disc' }}>
                 {jobs[jobIdx].bullets.map((bullet, bIdx) => (
                   <BulletItem
                     key={`bullet-${jobIdx}-${bIdx}`}
@@ -139,17 +159,30 @@ export default function ExperienceBlock({
               </ul>
             </SortableContext>
           </DndContext>
-          <div className="flex items-center gap-3 mt-2 ml-6">
-            <button onClick={() => onPickBullet?.(jobIdx)} className="text-xs text-blue-400 hover:text-blue-300">
-              + Add bullet
-            </button>
-            <button onClick={() => onAiGenerate?.(jobIdx)} className="text-xs text-purple-400 hover:text-purple-300">
-              AI Generate
-            </button>
+
+          {/* Action buttons — visible on hover */}
+          <div className="group/job" style={{ marginLeft: 18, marginTop: 4 }}>
+            <div style={{ display: 'flex', gap: 12, opacity: 0.6 }} className="group-hover/job:!opacity-100">
+              <button
+                onClick={() => onPickBullet?.(jobIdx)}
+                style={{ fontSize: 11, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                + Add bullet
+              </button>
+              <button
+                onClick={() => onAiGenerate?.(jobIdx)}
+                style={{ fontSize: 11, color: '#7c3aed', background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                AI Generate
+              </button>
+            </div>
           </div>
         </div>
       ))}
-      <button onClick={onAddJob} className="text-sm text-blue-400 hover:text-blue-300 mt-4">
+      <button
+        onClick={onAddJob}
+        style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', marginTop: 8 }}
+      >
         + Add job
       </button>
     </BlockWrapper>

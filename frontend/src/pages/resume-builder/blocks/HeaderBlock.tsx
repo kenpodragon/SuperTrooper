@@ -11,6 +11,9 @@ interface HeaderData {
   email?: string;
   phone?: string;
   linkedin_url?: string;
+  // v1 resolved format (from _v1_resolved_to_v2)
+  name?: string;
+  contact?: string;
 }
 
 interface Props {
@@ -37,7 +40,7 @@ export default function HeaderBlock({ data, headerId, themeVars }: Props) {
     }
   };
 
-  const editableField = (field: keyof HeaderData, className: string) => (
+  const editableField = (field: keyof HeaderData, style: React.CSSProperties = {}) => (
     <span
       key={field}
       contentEditable={editing === field}
@@ -45,32 +48,86 @@ export default function HeaderBlock({ data, headerId, themeVars }: Props) {
       onClick={() => setEditing(field)}
       onBlur={() => handleBlur(field)}
       onInput={(e) => setValues(v => ({ ...v, [field]: (e.target as HTMLElement).textContent ?? '' }))}
-      className={`${className} ${editing === field ? 'outline-none ring-1 ring-blue-500 rounded px-1' : 'cursor-pointer hover:bg-gray-800/50 rounded px-1'}`}
+      style={{
+        outline: editing === field ? '1px solid rgba(59,130,246,0.5)' : 'none',
+        borderRadius: 2,
+        padding: '0 2px',
+        cursor: 'pointer',
+        ...style,
+      }}
     >
       {values[field] || `[${field}]`}
     </span>
   );
 
-  const nameStyle = themeVars?.['--font-size-name'] ? { fontSize: themeVars['--font-size-name'] } : {};
-  const alignClass = themeVars?.['--header-alignment'] === 'center' ? 'text-center' : 'text-left';
+  const alignment = themeVars?.['--header-alignment'] ?? 'center';
+
+  // Detect v1 format (name + contact strings) vs v2 format (full_name, email, etc.)
+  const isV1 = !!(data.name || data.contact) && !data.full_name;
+
+  if (isV1) {
+    return (
+      <BlockWrapper label="Header" showHeader={false}>
+        <div style={{ textAlign: alignment as any, marginBottom: 12 }}>
+          <div style={{
+            fontSize: 'var(--font-size-name, 22pt)',
+            fontWeight: 700,
+            color: '#111',
+            lineHeight: 1.2,
+            marginBottom: 4,
+          }}>
+            {data.name || '[Name]'}
+          </div>
+          {data.contact && (
+            <div style={{ fontSize: '9pt', color: '#555' }}>
+              {data.contact}
+            </div>
+          )}
+        </div>
+      </BlockWrapper>
+    );
+  }
 
   return (
-    <BlockWrapper label="Header">
-      <div className={alignClass}>
-        <div style={nameStyle} className="font-bold text-xl">
-          {editableField('full_name', 'text-xl font-bold')}
-          {values.credentials && <>, {editableField('credentials', 'text-lg')}</>}
+    <BlockWrapper label="Header" showHeader={false}>
+      <div style={{ textAlign: alignment as any, marginBottom: 12 }}>
+        {/* Name line */}
+        <div style={{
+          fontSize: 'var(--font-size-name, 22pt)',
+          fontWeight: 700,
+          color: '#111',
+          lineHeight: 1.2,
+          marginBottom: 4,
+        }}>
+          {editableField('full_name')}
+          {values.credentials && (
+            <span style={{ fontWeight: 400, color: '#333' }}>
+              , {editableField('credentials')}
+            </span>
+          )}
         </div>
-        <div className="text-sm text-gray-400 mt-1 space-x-2">
-          {editableField('location', 'text-sm')}
-          <span className="text-gray-600">&bull;</span>
-          {editableField('email', 'text-sm')}
-          <span className="text-gray-600">&bull;</span>
-          {editableField('phone', 'text-sm')}
+
+        {/* Contact line */}
+        <div style={{
+          fontSize: '9pt',
+          color: '#555',
+          display: 'flex',
+          justifyContent: alignment === 'center' ? 'center' : 'flex-start',
+          flexWrap: 'wrap',
+          gap: '4px 0',
+        }}>
+          {editableField('location', { color: '#555' })}
+          {values.location_note && (
+            <span style={{ color: '#777' }}> ({values.location_note})</span>
+          )}
+          <span style={{ margin: '0 6px', color: '#999' }}>&bull;</span>
+          {editableField('email', { color: '#555' })}
+          <span style={{ margin: '0 6px', color: '#999' }}>&bull;</span>
+          {editableField('phone', { color: '#555' })}
           {values.linkedin_url && (
             <>
-              <span className="text-gray-600">&bull;</span>
-              {editableField('linkedin_url', 'text-sm')}
+              <span style={{ margin: '0 6px', color: '#999' }}>&bull;</span>
+              {editableField('linkedin_url', { color: '#2563eb' })}
             </>
           )}
         </div>

@@ -18,7 +18,6 @@ export default function TemplateSwapPanel({ currentTemplateId, onSelect, onClose
 
   // Normalize: ResumeBuilder caches {templates: [...]} for same key, we need the array
   const templateList = Array.isArray(rawData) ? rawData : (rawData as any)?.templates ?? [];
-  const activeTemplates = templateList.filter((t: any) => t.is_active !== false);
 
   return (
     <>
@@ -46,7 +45,7 @@ export default function TemplateSwapPanel({ currentTemplateId, onSelect, onClose
 
         {/* Template list */}
         <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {activeTemplates.map((t) => {
+          {templateList.map((t: any) => {
             const isCurrent = t.id === currentTemplateId;
             const isSelected = t.id === selected;
             return (
@@ -78,7 +77,10 @@ export default function TemplateSwapPanel({ currentTemplateId, onSelect, onClose
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span style={{ fontSize: 12, fontWeight: 500, color: '#111' }}>{t.name}</span>
                   {isCurrent && (
-                    <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, background: '#dbeafe', color: '#1d4ed8' }}>Current</span>
+                    <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, background: '#dbeafe', color: '#1d4ed8', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                      <svg width="8" height="8" viewBox="0 0 24 24" fill="#1d4ed8"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                      Current
+                    </span>
                   )}
                 </div>
               </div>

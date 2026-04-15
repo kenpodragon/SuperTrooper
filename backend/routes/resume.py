@@ -1085,10 +1085,25 @@ def delete_reference(ref_id):
 
 @bp.route("/api/resume/templates", methods=["GET"])
 def list_templates():
-    """List available resume templates (without blob data)."""
+    """List available resume templates (without blob data).
+
+    Query params:
+        dedup: if 'true', collapse exact duplicates (same content_hash) into one entry.
+    """
+    # Backfill content_hash for templates missing it
+    missing_hash = db.query(
+        "SELECT id, template_blob FROM resume_templates WHERE content_hash IS NULL AND template_blob IS NOT NULL"
+    )
+    for row in (missing_hash or []):
+        h = compute_hash(bytes(row["template_blob"]))
+        db.execute("UPDATE resume_templates SET content_hash = %s WHERE id = %s", (h, row["id"]))
+
+    dedup = request.args.get("dedup", "true").lower() == "true"
+
     rows = db.query(
         """SELECT t.id, t.name, t.filename, t.description, t.is_active,
                   t.is_default, t.template_type, t.parser_version,
+                  t.content_hash,
                   length(t.template_blob) as size_bytes,
                   t.preview_blob IS NOT NULL as has_thumbnail,
                   t.created_at,
@@ -1099,8 +1114,25 @@ def list_templates():
                FROM resume_recipes
                GROUP BY template_id
            ) rc ON rc.template_id = t.id
-           ORDER BY t.name"""
+           ORDER BY t.is_default DESC, t.name"""
     )
+
+    if dedup and rows:
+        seen_hashes = {}
+        deduped = []
+        duplicate_count = 0
+        for r in rows:
+            h = r.get("content_hash")
+            if h and h in seen_hashes:
+                duplicate_count += 1
+                # Add to the kept entry's duplicate list
+                seen_hashes[h]["duplicate_ids"] = seen_hashes[h].get("duplicate_ids", []) + [r["id"]]
+                continue
+            if h:
+                seen_hashes[h] = r
+            deduped.append(r)
+        return jsonify({"templates": deduped, "count": len(deduped), "duplicates_hidden": duplicate_count})
+
     return jsonify({"templates": rows, "count": len(rows)})
 
 
@@ -1349,7 +1381,7 @@ def get_resume_data():
         "certifications": certifications,
         "experience": experience,
         "template_available": db.query_one(
-            "SELECT id, name FROM resume_templates WHERE is_active = TRUE LIMIT 1"
+            "SELECT id, name FROM resume_templates LIMIT 1"
         ),
     })
 
@@ -1568,7 +1600,7 @@ def generate_resume():
 
     # Load template
     tmpl = db.query_one(
-        "SELECT template_blob, template_map FROM resume_templates WHERE name = %s AND is_active = TRUE",
+        "SELECT template_blob, template_map FROM resume_templates WHERE name = %s",
         (template_name,),
     )
     if not tmpl:

@@ -203,12 +203,17 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
       )}
 
       <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 overflow-y-auto p-8 max-w-4xl mx-auto" style={themeStyle as React.CSSProperties}>
-          <div className="bg-white text-gray-900 shadow-lg rounded p-8 min-h-[11in]" style={{ fontFamily: 'var(--font-family)' }}>
+        <div className="flex-1 overflow-y-auto p-8 max-w-4xl mx-auto" style={{ background: '#e5e7eb', ...themeStyle } as React.CSSProperties}>
+          <div style={{
+            background: '#fff', color: '#111', boxShadow: '0 2px 16px rgba(0,0,0,0.12)',
+            borderRadius: 4, padding: '48px 56px', minHeight: '11in', maxWidth: 850,
+            margin: '0 auto', fontFamily: 'var(--font-family)',
+            fontSize: 'var(--font-size-body, 10.5pt)', lineHeight: 1.5,
+          }}>
 
-            {/* Header */}
-            {recipe.header && (
-              <HeaderBlock data={resolved.header ?? {}} headerId={recipe.header.id ?? 1} themeVars={themeStyle} />
+            {/* Header — render if recipe has header ref OR resolved header data (v1 recipes) */}
+            {(recipe.header || resolved.header) && (
+              <HeaderBlock data={resolved.header ?? {}} headerId={recipe.header?.id ?? 1} themeVars={themeStyle} />
             )}
 
             {/* Headline */}
@@ -240,10 +245,14 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
               onPickFromDb={() => setPickerState({ mode: 'summaries' })}
             />
 
-            {/* Experience */}
-            {recipe.experience && (
+            {/* Experience — render if recipe has experience OR resolved has it (v1 recipes) */}
+            {(recipe.experience || (resolved.experience && resolved.experience.length > 0)) && (
               <ExperienceBlock
-                jobs={recipe.experience}
+                jobs={recipe.experience ?? (resolved.experience ?? []).map((rj: any) => ({
+                  ref: 'career_history',
+                  id: rj.id,
+                  bullets: (rj.bullets ?? []).map((b: string) => ({ literal: b })),
+                }))}
                 resolvedJobs={resolved.experience ?? []}
                 recipeId={recipeId}
                 onRecipeChange={(exp) => updateRecipe(r => ({ ...r, experience: exp }))}
@@ -266,10 +275,10 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
               />
             )}
 
-            {/* Skills */}
-            {recipe.skills && (
+            {/* Skills — render if recipe has skills OR resolved has them (v1 recipes) */}
+            {(recipe.skills || (resolved.skills && resolved.skills.length > 0)) && (
               <SkillTagsBlock
-                skillRefs={recipe.skills}
+                skillRefs={recipe.skills ?? [{ literal: (resolved.skills ?? []).join(', ') }]}
                 resolvedSkills={resolved.skills ?? []}
                 onUpdate={(skills) => updateRecipe(r => ({ ...r, skills }))}
               />

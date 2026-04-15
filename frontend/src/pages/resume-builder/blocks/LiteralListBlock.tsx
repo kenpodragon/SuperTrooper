@@ -37,38 +37,73 @@ export default function LiteralListBlock({ label, slotKey, items, onUpdate }: Pr
     onUpdate(slotKey, updated);
   };
 
+  // Highlights use bullet points, education/certs use pipe-separated format
+  const isHighlights = slotKey === 'highlights';
+
   return (
     <BlockWrapper label={label}>
-      <ul className="space-y-1">
+      <ul style={{
+        margin: 0,
+        paddingLeft: isHighlights ? 18 : 0,
+        listStyleType: isHighlights ? 'disc' : 'none',
+      }}>
         {localItems.map((item, idx) => (
-          <li key={idx} className="flex items-start gap-2 group/item">
-            <span className="text-gray-500 mt-0.5">&bull;</span>
+          <li
+            key={idx}
+            className="group/item"
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 6,
+              marginBottom: 3,
+              fontSize: 'var(--font-size-body, 10.5pt)',
+              lineHeight: 1.5,
+            }}
+          >
+            {!isHighlights && (
+              <span style={{ color: '#999', flexShrink: 0 }}>&bull;</span>
+            )}
             {editingIdx === idx ? (
               <input
                 value={item}
                 onChange={(e) => handleItemChange(idx, e.target.value)}
                 onBlur={() => handleItemBlur(idx)}
                 autoFocus
-                className="flex-1 bg-transparent border-b border-blue-500/30 text-sm outline-none py-0.5"
+                style={{
+                  flex: 1, background: '#fefce8', border: '1px solid #d4a017',
+                  borderRadius: 3, fontSize: 'inherit', fontFamily: 'inherit',
+                  outline: 'none', padding: '2px 4px', color: '#111',
+                }}
               />
             ) : (
               <span
                 onClick={() => setEditingIdx(idx)}
-                className="flex-1 text-sm cursor-pointer hover:bg-gray-800/50 rounded px-1 py-0.5"
+                style={{
+                  flex: 1, cursor: 'pointer', color: '#222',
+                  padding: '0 2px', borderRadius: 2,
+                }}
               >
-                {item || <span className="text-gray-500 italic">[empty]</span>}
+                {item || <span style={{ color: '#aaa', fontStyle: 'italic' }}>[empty]</span>}
               </span>
             )}
             <button
               onClick={() => removeItem(idx)}
-              className="text-gray-600 hover:text-red-400 text-xs hidden group-hover/item:block"
+              style={{
+                background: 'none', border: 'none', color: '#ccc',
+                cursor: 'pointer', fontSize: 14, flexShrink: 0,
+                display: 'none', padding: 0,
+              }}
+              className="group-hover/item:!inline"
             >
               &times;
             </button>
           </li>
         ))}
       </ul>
-      <button onClick={addItem} className="text-xs text-blue-400 hover:text-blue-300 mt-2">
+      <button
+        onClick={addItem}
+        style={{ fontSize: 11, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', marginTop: 4 }}
+      >
         + Add {label.toLowerCase().replace(/s$/, '')}
       </button>
     </BlockWrapper>
