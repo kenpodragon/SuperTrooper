@@ -19,6 +19,7 @@ interface RecipeRow {
   recipe: Record<string, unknown>;
   recipe_version?: number;
   template_id: number;
+  template_name?: string;
   theme?: Record<string, unknown>;
   resolved_preview?: Record<string, unknown>;
 }
@@ -90,6 +91,8 @@ export default function ResumeBuilder() {
       recipe={recipe?.recipe as any ?? {}}
       resolved={recipe?.resolved_preview as any ?? {}}
       theme={recipe?.theme as any ?? {}}
+      templateId={recipe?.template_id ?? 0}
+      templateName={recipe?.template_name || 'Unknown Template'}
     />
   );
 }

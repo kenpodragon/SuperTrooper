@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { api, recipeGenerateDocx } from '../../api/client';
+import { api, recipeGenerateDocx, templateThumbnailUrl } from '../../api/client';
 import EditorToolbar from './EditorToolbar';
 import HeaderBlock from './blocks/HeaderBlock';
 import TextBlock from './blocks/TextBlock';
@@ -13,6 +13,7 @@ import AiReviewPanel from './AiReviewPanel';
 import BestPicksPanel from './BestPicksPanel';
 import AiGenerateModal from './AiGenerateModal';
 import ContentPickerModal from './ContentPickerModal';
+import TemplateSwapPanel from './TemplateSwapPanel';
 import type { BulletRef, SkillRef, RecipeV2, ResolvedV2, ThemeSettings } from './types';
 
 interface Props {
@@ -21,9 +22,11 @@ interface Props {
   recipe: RecipeV2;
   resolved: ResolvedV2;
   theme: ThemeSettings;
+  templateId: number;
+  templateName: string;
 }
 
-export default function ResumeEditor({ recipeId, recipeName, recipe: initialRecipe, resolved: initialResolved, theme: initialTheme }: Props) {
+export default function ResumeEditor({ recipeId, recipeName, recipe: initialRecipe, resolved: initialResolved, theme: initialTheme, templateId, templateName }: Props) {
   const [recipe, setRecipe] = useState<RecipeV2>(initialRecipe);
   const [resolved, setResolved] = useState<ResolvedV2>(initialResolved);
   const [theme, setTheme] = useState<ThemeSettings>(initialTheme);
@@ -32,6 +35,7 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
   const [showAtsScore, setShowAtsScore] = useState(false);
   const [showAiReview, setShowAiReview] = useState(false);
   const [showBestPicks, setShowBestPicks] = useState(false);
+  const [showSwapPanel, setShowSwapPanel] = useState(false);
   const [pickerState, setPickerState] = useState<{
     mode: 'bullets' | 'jobs' | 'summaries';
     jobIndex?: number;
@@ -150,6 +154,53 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
         onAiGenerate={() => setGenerateState({ slotType: 'bullet' })}
         generating={generateMutation.isPending}
       />
+
+      {/* Template info bar */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px',
+        background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
+      }}>
+        <div style={{
+          width: 40, height: 52, background: '#fff', border: '1px solid #e5e7eb',
+          borderRadius: 4, overflow: 'hidden', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', flexShrink: 0,
+        }}>
+          <img
+            src={templateThumbnailUrl(templateId)}
+            alt="Template"
+            style={{ maxHeight: '100%', maxWidth: '100%', objectFit: 'contain' }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: '#6b7280' }}>Template</div>
+          <div style={{ fontSize: 13, fontWeight: 500, color: '#111', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {templateName}
+          </div>
+        </div>
+        <button
+          onClick={() => setShowSwapPanel(true)}
+          style={{
+            padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: 6,
+            fontSize: 12, cursor: 'pointer', background: 'white', color: '#374151',
+            flexShrink: 0,
+          }}
+        >
+          Change
+        </button>
+      </div>
+
+      {showSwapPanel && (
+        <TemplateSwapPanel
+          currentTemplateId={templateId}
+          onSelect={async (newTemplateId) => {
+            await api.put(`/resume/recipes/${recipeId}`, { template_id: newTemplateId });
+            setShowSwapPanel(false);
+            window.location.reload();
+          }}
+          onClose={() => setShowSwapPanel(false)}
+        />
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 overflow-y-auto p-8 max-w-4xl mx-auto" style={themeStyle as React.CSSProperties}>

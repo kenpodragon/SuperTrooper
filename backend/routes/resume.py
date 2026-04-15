@@ -259,6 +259,13 @@ def get_recipe(recipe_id):
             resolved = _v1_resolved_to_v2(resolved, recipe_json=recipe_json)
         row["resolved_preview"] = resolved
 
+    # Include template_name alongside template_id
+    template_name = ""
+    if row.get("template_id"):
+        tpl = db.query_one("SELECT name FROM resume_templates WHERE id = %s", (row["template_id"],))
+        template_name = tpl["name"] if tpl else ""
+    row["template_name"] = template_name
+
     return jsonify(row)
 
 
