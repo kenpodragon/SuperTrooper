@@ -11,12 +11,14 @@ interface Props {
 export default function TemplateSwapPanel({ currentTemplateId, onSelect, onClose }: Props) {
   const [selected, setSelected] = useState<number>(currentTemplateId);
 
-  const { data: templateList } = useQuery({
+  const { data: rawData } = useQuery({
     queryKey: ['templates'],
     queryFn: () => templatesApi.list(),
   });
 
-  const activeTemplates = (templateList ?? []).filter((t) => t.is_active !== false);
+  // Normalize: ResumeBuilder caches {templates: [...]} for same key, we need the array
+  const templateList = Array.isArray(rawData) ? rawData : (rawData as any)?.templates ?? [];
+  const activeTemplates = templateList.filter((t: any) => t.is_active !== false);
 
   return (
     <>
