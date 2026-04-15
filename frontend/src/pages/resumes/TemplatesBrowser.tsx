@@ -1,27 +1,20 @@
 import { useState, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { templates, templateThumbnailUrl } from '../../api/client';
 import type { TemplateListItem } from '../../api/client';
 import TemplateDetail from './TemplateDetail';
+import DeleteTemplateModal from './DeleteTemplateModal';
 
 export default function TemplatesBrowser() {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<TemplateListItem | null>(null);
 
   const { data: templateList, isLoading } = useQuery({
     queryKey: ['templates'],
     queryFn: () => templates.list(),
-  });
-
-  const deleteMut = useMutation({
-    mutationFn: (id: number) => templates.del(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['templates'] });
-      if (selectedId === deleteMut.variables) setSelectedId(null);
-    },
-    onError: (err: any) => alert(err?.message || 'Failed to delete template'),
   });
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -37,13 +30,6 @@ export default function TemplatesBrowser() {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = '';
     }
-  };
-
-  const confirmDelete = (t: TemplateListItem) => {
-    const msg = t.recipe_count > 0
-      ? `Delete template "${t.name}"? ${t.recipe_count} recipe(s) reference it.`
-      : `Delete template "${t.name}"?`;
-    if (confirm(msg)) deleteMut.mutate(t.id);
   };
 
   // Detail view
@@ -107,10 +93,18 @@ export default function TemplatesBrowser() {
               key={t.id}
               template={t}
               onClick={() => setSelectedId(t.id)}
-              onDelete={() => confirmDelete(t)}
+              onDelete={() => setDeleteTarget(t)}
             />
           ))}
         </div>
+      )}
+
+      {deleteTarget && (
+        <DeleteTemplateModal
+          template={deleteTarget}
+          allTemplates={templateList ?? []}
+          onClose={() => setDeleteTarget(null)}
+        />
       )}
     </div>
   );
@@ -170,21 +164,31 @@ function TemplateCard({
           <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary, #111)', margin: 0 }}>
             {t.name}
           </h3>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: '#ef4444',
-              cursor: 'pointer',
-              fontSize: 12,
-              padding: '2px 6px',
-              borderRadius: 4,
-            }}
-            title="Delete template"
-          >
-            Del
-          </button>
+          {t.is_default && (
+            <span style={{
+              fontSize: 10, padding: '2px 8px', borderRadius: 12,
+              background: '#dbeafe', color: '#1d4ed8', fontWeight: 500,
+            }}>
+              Default
+            </span>
+          )}
+          {!t.is_default && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#ef4444',
+                cursor: 'pointer',
+                fontSize: 12,
+                padding: '2px 6px',
+                borderRadius: 4,
+              }}
+              title="Delete template"
+            >
+              Del
+            </button>
+          )}
         </div>
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
