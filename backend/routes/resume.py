@@ -1081,7 +1081,7 @@ def list_templates():
     """List available resume templates (without blob data)."""
     rows = db.query(
         """SELECT t.id, t.name, t.filename, t.description, t.is_active,
-                  t.template_type, t.parser_version,
+                  t.is_default, t.template_type, t.parser_version,
                   length(t.template_blob) as size_bytes,
                   t.preview_blob IS NOT NULL as has_thumbnail,
                   t.created_at,
@@ -1129,15 +1129,49 @@ def get_template_detail(template_id):
 
 @bp.route("/api/resume/templates/<int:template_id>", methods=["DELETE"])
 def delete_template(template_id):
-    """Delete a template. Returns error if recipes reference it."""
-    row = db.query_one("SELECT id, name FROM resume_templates WHERE id = %s", (template_id,))
+    """Delete a template with optional recipe handling strategy.
+
+    Body (optional JSON):
+        reassign_to: dict mapping recipe_id (str) -> new_template_id (int)
+        delete_recipes: bool — if true, delete all linked recipes
+    If recipes exist and no strategy provided, returns 409 with affected list.
+    """
+    row = db.query_one("SELECT id, name, is_default FROM resume_templates WHERE id = %s", (template_id,))
     if not row:
         return jsonify({"error": "Template not found"}), 404
-    recipe_count = db.query_one(
-        "SELECT COUNT(*) as cnt FROM resume_recipes WHERE template_id = %s", (template_id,)
-    )
-    if recipe_count and recipe_count["cnt"] > 0:
-        return jsonify({"error": f"Cannot delete: {recipe_count['cnt']} recipe(s) reference this template"}), 409
+
+    if row.get("is_default"):
+        return jsonify({"error": "Cannot delete the default template"}), 403
+
+    # Check for linked recipes
+    linked = db.query(
+        "SELECT id, name FROM resume_recipes WHERE template_id = %s",
+        (template_id,),
+    ) or []
+
+    if linked:
+        data = request.get_json(silent=True) or {}
+        reassign_to = data.get("reassign_to")
+        delete_recipes = data.get("delete_recipes", False)
+
+        if delete_recipes:
+            db.execute("DELETE FROM resume_recipes WHERE template_id = %s", (template_id,))
+        elif reassign_to:
+            for rid_str, new_tid in reassign_to.items():
+                rid = int(rid_str)
+                target = db.query_one("SELECT id FROM resume_templates WHERE id = %s", (new_tid,))
+                if not target:
+                    return jsonify({"error": f"Target template {new_tid} not found for recipe {rid}"}), 400
+                db.execute(
+                    "UPDATE resume_recipes SET template_id = %s WHERE id = %s",
+                    (new_tid, rid),
+                )
+        else:
+            return jsonify({
+                "error": f"Cannot delete: {len(linked)} recipe(s) reference this template. Provide reassign_to or delete_recipes.",
+                "affected_recipes": [{"id": r["id"], "name": r["name"]} for r in linked],
+            }), 409
+
     db.execute("DELETE FROM resume_templates WHERE id = %s", (template_id,))
     return jsonify({"deleted": template_id, "name": row["name"]})
 
