@@ -61,10 +61,15 @@ if __name__ == "__main__":
     # Start MCP server in background thread (SSE transport)
     if not args.no_mcp:
         def run_mcp():
+            import time
             from mcp_server import mcp as mcp_instance
             print(f"SuperTroopers MCP starting on http://localhost:{args.mcp_port}")
             mcp_instance.settings.host = "0.0.0.0"
             mcp_instance.settings.port = args.mcp_port
+            # FastMCP SSE race: first-connect before handshake crashes the server.
+            # Delay the listener so the first Claude Code connection fails cleanly
+            # and succeeds on retry. See dev-tools/CLAUDE.md "MCP SSE Race Condition".
+            time.sleep(3)
             mcp_instance.run(transport="sse")
 
         mcp_thread = threading.Thread(target=run_mcp, daemon=True)

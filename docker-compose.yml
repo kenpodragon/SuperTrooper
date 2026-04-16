@@ -48,6 +48,8 @@ services:
       - ${USERPROFILE:-.}/.claude.json:/root/.claude.json
       # Google OAuth credentials (optional — for Google Workspace MCP)
       - ./secrets/google:/app/secrets/google:ro
+      # Resume corpus (read-only) — so MCP onboard_resume can reach source files
+      - ../Imports:/app/imports:ro
 
   frontend:
     build:

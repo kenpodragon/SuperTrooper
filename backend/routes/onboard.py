@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import traceback
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -820,13 +821,24 @@ def _process_file(filename, file_bytes, file_ext):
     tmp_dir = tempfile.mkdtemp(prefix="onboard_")
     original_path = os.path.join(tmp_dir, filename)
 
+    _onboard_t0 = time.time()
+    _last_step_t = _onboard_t0
+    def _log_step(label: str):
+        nonlocal _last_step_t
+        now = time.time()
+        print(f"[onboard:{filename}] {label}  (+{now - _last_step_t:.2f}s step / +{now - _onboard_t0:.2f}s total)",
+              flush=True)
+        _last_step_t = now
+
     try:
+        _log_step("start")
         # ----- Step 0: Save file to temp -----
         with open(original_path, "wb") as f:
             f.write(file_bytes)
 
         docx_path = original_path
 
+        _log_step("step 1: pdf->docx")
         # ----- Step 1: PDF → DOCX conversion if needed -----
         if file_ext == ".pdf":
             try:
@@ -851,6 +863,7 @@ def _process_file(filename, file_bytes, file_ext):
                     report["status"] = "failed"
                     return report
 
+        _log_step("step 2: extract text")
         # ----- Step 2: Extract text -----
         if "text_extraction" not in report["steps"]:
             try:
@@ -861,6 +874,7 @@ def _process_file(filename, file_bytes, file_ext):
                 report["status"] = "failed"
                 return report
 
+        _log_step("step 3: parse")
         # ----- Step 3: Parse -----
         try:
             # Use the general-purpose .docx parser (reads formatting for better
@@ -890,6 +904,7 @@ def _process_file(filename, file_bytes, file_ext):
             report["status"] = "failed"
             return report
 
+        _log_step("step 3b: ai refinement")
         # ----- Step 3b: AI Refinement (optional) -----
         # When AI is enabled, pass the Python-parsed result + raw text to AI
         # for refinement: better employer normalization, title extraction,
@@ -1046,6 +1061,7 @@ Rules:
             # AI refinement is optional — log but don't fail the pipeline
             report["steps"]["ai_refinement"] = f"skipped: {e}"
 
+        _log_step("step 4: db insert")
         # ----- Step 4: Insert into DB -----
         career_ids = []
         bullet_ids = []
@@ -1360,6 +1376,7 @@ Rules:
                     ) - len(bullet_ids) - len([b for b in parsed.get("career_history", []) for bt in b.get("bullets", []) if not bt or not bt.strip()]),
                 }
 
+                _log_step("step 5: store template")
                 # ----- Step 5: Store original as template -----
                 if docx_path:
                     with open(docx_path, "rb") as f:
@@ -1373,6 +1390,7 @@ Rules:
                     template_id = None
                     report["steps"]["template_stored"] = "skipped (no docx)"
 
+                _log_step("step 6: templatize")
                 # ----- Step 6: Templatize -----
                 recipe_id = None
                 match_score = None
@@ -1407,6 +1425,7 @@ Rules:
                                 (json.dumps(template_map), psycopg2.Binary(tmpl_blob), template_id),
                             )
 
+                        _log_step("step 7: create recipe")
                         # ----- Step 7: Create recipe (upsert by template_id to avoid dup on re-upload) -----
                         try:
                             cur.execute("SAVEPOINT recipe_sp")
@@ -1496,6 +1515,7 @@ Rules:
                             report["steps"]["recipe"] = f"failed: {e}"
                             report["errors"].append(f"Recipe creation failed: {e}")
 
+                        _log_step("step 8: reconstruct")
                         # ----- Step 8: Reconstruct -----
                         try:
                             cur.execute("SAVEPOINT reconstruct_sp")
@@ -1509,6 +1529,7 @@ Rules:
                                 cur.execute("RELEASE SAVEPOINT reconstruct_sp")
                                 report["steps"]["reconstruct"] = "ok"
 
+                                _log_step("step 9: compare")
                                 # ----- Step 9: Compare -----
                                 try:
                                     paras_orig = extract_paragraphs(docx_path)
@@ -1546,6 +1567,7 @@ Rules:
                 else:
                     report["steps"]["templatize"] = "skipped (no docx)"
 
+                _log_step("step 10: record upload")
                 # ----- Step 10: Record in onboard_uploads -----
                 cur.execute(
                     """INSERT INTO onboard_uploads
