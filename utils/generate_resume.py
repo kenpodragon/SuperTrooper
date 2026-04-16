@@ -1027,3 +1027,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def is_section_recipe(recipe: dict) -> bool:
+    """Detect whether a recipe uses section-based format vs v1 numbered slots.
+
+    Section format: keys are section names (HEADER, CERTIFICATIONS, EXPERIENCE)
+    V1 format: keys are numbered slots (CERT_1, JOB_1_BULLET_2)
+    """
+    section_keys = {"HEADER", "HEADLINE", "SUMMARY", "HIGHLIGHTS", "EXPERIENCE",
+                    "CERTIFICATIONS", "EDUCATION", "SKILLS", "ADDITIONAL_EXP", "KEYWORDS"}
+    return bool(set(recipe.keys()) & section_keys)

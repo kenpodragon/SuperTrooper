@@ -568,6 +568,34 @@ def autosave_recipe(recipe_id):
     })
 
 
+def _section_item_to_text(section_name: str, item) -> str:
+    """Convert a resolved section item to display text for .docx generation."""
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return str(item)
+    if section_name == "CERTIFICATIONS":
+        name = item.get("name", "")
+        issuer = item.get("issuer", "")
+        return f"{name} | {issuer}" if issuer else name
+    elif section_name == "EDUCATION":
+        parts = [item.get("degree", ""), item.get("field", ""),
+                 item.get("institution", ""), item.get("location", "")]
+        return " | ".join(p for p in parts if p)
+    elif section_name == "SKILLS":
+        return item.get("name", str(item))
+    elif section_name in ("HIGHLIGHTS", "ADDITIONAL_EXP"):
+        return item.get("text", item.get("title", str(item)))
+    return item.get("text", item.get("name", str(item)))
+
+
+def _assemble_header_text(data: dict) -> str:
+    """Assemble header display text from resume_header dict."""
+    name = data.get("full_name", "")
+    creds = data.get("credentials", "")
+    return f"{name}, {creds}" if creds else name
+
+
 @bp.route("/api/resume/recipes/<int:recipe_id>/generate", methods=["POST"])
 def generate_from_recipe(recipe_id):
     """Generate a .docx resume from a recipe. Returns file download."""
@@ -616,6 +644,62 @@ def generate_from_recipe(recipe_id):
         ai_handler=_ai_recipe_content,
     )
     content = gen_result["content"]
+
+    # --- Section-based generation path ---
+    from utils.generate_resume import is_section_recipe
+    if is_section_recipe(recipe_json):
+        from utils.section_resolver import resolve_section_recipe, get_connection
+        from utils.section_generator import generate_from_sections
+
+        conn = get_connection()
+        try:
+            resolved = resolve_section_recipe(conn, recipe_json)
+            # Convert resolved dicts to display text for simple repeating sections
+            resolved_text = {}
+            for sec_name, sec_content in resolved.items():
+                if sec_name == "EXPERIENCE":
+                    resolved_text[sec_name] = sec_content
+                elif isinstance(sec_content, list):
+                    resolved_text[sec_name] = [
+                        _section_item_to_text(sec_name, item) for item in sec_content
+                    ]
+                else:
+                    if isinstance(sec_content, dict):
+                        resolved_text[sec_name] = _assemble_header_text(sec_content) if sec_name == "HEADER" else sec_content
+                    else:
+                        resolved_text[sec_name] = sec_content
+
+            output_bytes = generate_from_sections(template_blob, template_map, resolved_text)
+        finally:
+            conn.close()
+
+        output = io.BytesIO(output_bytes)
+        output.seek(0)
+
+        # Build filename (same logic as below)
+        import re as _re
+        from datetime import date as _date
+        _name = recipe_row.get("name", "Resume")
+        _role = recipe_row.get("headline") or _name
+        _role = _re.sub(r'^Onboard:\s*', '', _role)
+        _role = _re.sub(r'\.docx$', '', _role, flags=_re.IGNORECASE)
+        _role_part = _re.sub(r'[^a-zA-Z0-9_\-]', '_', _role.strip())[:40].strip('_')
+        _date_part = _date.today().strftime("%Y%m%d")
+
+        _header_ref = recipe_json.get("HEADER", {})
+        _header_row = db.query_one("SELECT full_name, credentials FROM resume_header WHERE id = %s",
+                                   (_header_ref.get("id", 1),)) if _header_ref else None
+        _name_part = ""
+        if _header_row:
+            n = _header_row["full_name"] or "Resume"
+            c = _header_row.get("credentials", "")
+            _name_part = f"{n},{c}" if c else n
+            _name_part = _re.sub(r'[^a-zA-Z0-9_,]', '', _name_part.replace(" ", ""))[:40]
+
+        filename = f"{_name_part}_{_role_part}_{_date_part}.docx"
+
+        return send_file(output, as_attachment=True, download_name=filename,
+                         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
     # If v2 recipe, flatten resolved dict to placeholder map
     recipe_version = recipe_row.get("recipe_version", 1)
