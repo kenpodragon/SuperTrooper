@@ -64,8 +64,11 @@ def _section_resolved_to_v2(raw: dict) -> dict:
                 }
                 # Synopsis
                 syn = job.get("synopsis")
-                if syn and isinstance(syn, dict):
-                    entry["synopsis"] = syn.get("text", "")
+                if syn:
+                    if isinstance(syn, dict):
+                        entry["synopsis"] = syn.get("text", "")
+                    elif isinstance(syn, str):
+                        entry["synopsis"] = syn
                 # Bullets
                 for b in job.get("bullets", []):
                     if isinstance(b, dict):

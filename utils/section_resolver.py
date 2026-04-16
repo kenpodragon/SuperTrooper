@@ -153,44 +153,52 @@ def _resolve_experience(conn, experience_spec: list) -> list:
     experience_spec is a list of company objects:
     [
       {
-        "company_id": 123,            # career_history row with is_company_entry=true
+        "table": "career_history", "id": 123,   # company row
         "jobs": [
           {
-            "job_id": 456,            # career_history row (the actual job)
-            "bullet_ids": [1, 2, 3]  # optional bullet rows
+            "table": "career_history", "id": 456,
+            "synopsis": {"table": "bullets", "id": 100},       # optional
+            "bullets": {"table": "bullets", "ids": [1, 2, 3]}  # optional
           }
         ]
       }
     ]
 
-    Returns a list of resolved company dicts, each with nested jobs + bullets.
+    Returns a list of dicts with company fields spread flat + nested jobs.
     """
     resolved = []
     for company_spec in experience_spec:
-        company_id = company_spec.get("company_id")
-        company_row = _fetch_row(conn, "career_history", company_id) if company_id else None
+        company_id = company_spec.get("id") or company_spec.get("company_id")
+        company_row = _fetch_row(conn, "career_history", company_id) if company_id else {}
 
         jobs_resolved = []
         for job_spec in company_spec.get("jobs", []):
-            job_id = job_spec.get("job_id")
-            job_row = _fetch_row(conn, "career_history", job_id) if job_id else None
+            job_id = job_spec.get("id") or job_spec.get("job_id")
+            job_row = _fetch_row(conn, "career_history", job_id) if job_id else {}
 
-            bullet_ids = job_spec.get("bullet_ids", [])
-            if bullet_ids:
-                bullets = resolve_multi_ref(conn, {"table": "bullets", "ids": bullet_ids})
+            # Resolve synopsis
+            synopsis = None
+            syn_spec = job_spec.get("synopsis")
+            if syn_spec and isinstance(syn_spec, dict) and "id" in syn_spec:
+                synopsis = resolve_single_ref(conn, syn_spec)
+
+            # Resolve bullets — handle both formats
+            bullets_spec = job_spec.get("bullets")
+            if isinstance(bullets_spec, dict) and "ids" in bullets_spec:
+                bullets = resolve_multi_ref(conn, bullets_spec)
+            elif isinstance(bullets_spec, list):
+                bullets = bullets_spec
             else:
-                bullets = []
+                bullet_ids = job_spec.get("bullet_ids", [])
+                bullets = resolve_multi_ref(conn, {"table": "bullets", "ids": bullet_ids}) if bullet_ids else []
 
-            job_entry = {
-                "job": job_row,
-                "bullets": bullets,
-            }
+            # Spread job fields flat + add synopsis and bullets
+            job_entry = {**(job_row or {}), "synopsis": synopsis, "bullets": bullets}
             jobs_resolved.append(job_entry)
 
-        resolved.append({
-            "company": company_row,
-            "jobs": jobs_resolved,
-        })
+        # Spread company fields flat + add jobs
+        company_entry = {**(company_row or {}), "jobs": jobs_resolved}
+        resolved.append(company_entry)
     return resolved
 
 

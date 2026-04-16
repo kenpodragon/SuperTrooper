@@ -230,16 +230,18 @@ def test_resolve_experience_compound(db_conn):
     assert len(exp) == 1
 
     company_entry = exp[0]
-    assert "company" in company_entry
+    # Company fields are spread flat (not nested under "company" key)
+    assert "employer" in company_entry
     assert "jobs" in company_entry
-    assert company_entry["company"]["id"] == company_id
+    assert company_entry["id"] == company_id
 
     jobs_result = company_entry["jobs"]
     assert len(jobs_result) == 1
     job_entry = jobs_result[0]
-    assert "job" in job_entry
+    # Job fields are spread flat (not nested under "job" key)
+    assert "title" in job_entry
     assert "bullets" in job_entry
-    assert job_entry["job"]["id"] == job_ids[0]
+    assert job_entry["id"] == job_ids[0]
 
     if bullet_ids:
         assert len(job_entry["bullets"]) == len(bullet_ids)
