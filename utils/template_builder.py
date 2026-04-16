@@ -196,3 +196,116 @@ def build_template(
         'sections_detected': sections_detected,
         'layout': layout,
     }
+
+
+# ---------------------------------------------------------------------------
+# Section-based template map
+# ---------------------------------------------------------------------------
+
+_TYPE_TO_SECTION = {
+    "header": "HEADER",
+    "headline": "HEADLINE",
+    "summary": "SUMMARY",
+    "highlight": "HIGHLIGHTS",
+    "job_header": "EXPERIENCE",
+    "job_title": "EXPERIENCE",
+    "job_intro": "EXPERIENCE",
+    "job_bullet": "EXPERIENCE",
+    "job_subtitle": "EXPERIENCE",
+    "education": "EDUCATION",
+    "certification": "CERTIFICATIONS",
+    "skills": "SKILLS",
+    "keywords": "KEYWORDS",
+    "additional_exp": "ADDITIONAL_EXP",
+    "ref_link": "REF_LINKS",
+}
+
+_SINGULAR_SECTIONS = {"HEADER", "HEADLINE", "SUMMARY"}
+
+_HEADER_TEXT_MAP = {
+    "professional experience": "EXPERIENCE",
+    "experience": "EXPERIENCE",
+    "work experience": "EXPERIENCE",
+    "certifications": "CERTIFICATIONS",
+    "certification": "CERTIFICATIONS",
+    "education": "EDUCATION",
+    "skills": "SKILLS",
+    "technical skills": "SKILLS",
+    "core competencies": "SKILLS",
+    "key skills": "SKILLS",
+    "highlights": "HIGHLIGHTS",
+    "key achievements": "HIGHLIGHTS",
+    "career highlights": "HIGHLIGHTS",
+    "additional experience": "ADDITIONAL_EXP",
+    "keywords": "KEYWORDS",
+}
+
+_SECTION_FORMATS = {
+    "HEADER": {"format": "header"},
+    "HEADLINE": {"format": "simple"},
+    "SUMMARY": {"format": "simple"},
+    "HIGHLIGHTS": {"format": "bold_label", "separator": ": "},
+    "EXPERIENCE": {
+        "format": "job_block",
+        "sub_sections": {
+            "header": {"format": "bold_label", "separator": ", "},
+            "title": {"format": "simple"},
+            "synopsis": {"format": "simple"},
+            "bullets": {"repeating": True, "format": "bold_label", "separator": ": "},
+        },
+    },
+    "EDUCATION": {"format": "bold_label", "separator": " | "},
+    "CERTIFICATIONS": {"format": "bold_label", "separator": " | "},
+    "SKILLS": {"format": "simple"},
+    "KEYWORDS": {"format": "simple"},
+    "ADDITIONAL_EXP": {"format": "simple"},
+    "REF_LINKS": {"format": "simple"},
+}
+
+
+def build_section_map(parsed_sections: list[dict]) -> dict:
+    """Build a section-level template map from parsed resume sections.
+
+    Groups individual parsed items by section type. The first occurrence of
+    each section type defines the prototype entry in the map.
+
+    Args:
+        parsed_sections: List of dicts with keys 'type', 'text', 'para_index',
+            as returned by parse_resume_structure().
+
+    Returns:
+        Dict mapping section names (e.g. "CERTIFICATIONS") to their metadata
+        dicts, including repeating flag, para_index, format, and optionally
+        section_header_para.
+    """
+    section_map = {}
+    last_section_header = None
+    last_section_header_idx = None
+
+    for item in parsed_sections:
+        sec_type = item["type"]
+        para_idx = item.get("para_index", 0)
+
+        if sec_type == "section_header":
+            header_text = item.get("text", "").strip().lower().rstrip(":")
+            last_section_header = _HEADER_TEXT_MAP.get(header_text)
+            last_section_header_idx = para_idx
+            continue
+
+        section_name = _TYPE_TO_SECTION.get(sec_type)
+        if not section_name:
+            continue
+
+        # First occurrence defines the prototype
+        if section_name not in section_map:
+            is_repeating = section_name not in _SINGULAR_SECTIONS
+            entry = {
+                "repeating": is_repeating,
+                "para_index": para_idx,
+                **_SECTION_FORMATS.get(section_name, {"format": "simple"}),
+            }
+            if last_section_header == section_name and last_section_header_idx is not None:
+                entry["section_header_para"] = last_section_header_idx
+            section_map[section_name] = entry
+
+    return section_map
