@@ -460,6 +460,24 @@ def _classify_paragraph(
         if bold and ':' in text and len(text) > 50:
             return 'bullet', current_section
 
+        # 3.5 Job subheading: bold short (<100) title-word prose with NO dates,
+        #     appearing after content (bullet/job_intro/job_subheading). Marks
+        #     a sibling role at the current employer (promotion or parallel
+        #     title). Example: after shared synopsis under Tsunami, a bold line
+        #     "Director of Software Engineering (Executive Leadership & Scaling)"
+        #     signals the bullets below belong to the Director role, not the
+        #     most-recent dated title.
+        if (bold and len(text) < 100
+                and _TITLE_WORDS.search(text)
+                and not _has_date_pattern(text)
+                and prev_type in ('bullet', 'job_intro', 'job_subheading')):
+            first_word = text.split()[0].lower().rstrip('.,;:') if text.split() else ''
+            is_prose = (first_word in _ACHIEVEMENT_VERBS
+                        or first_word in ('recruited', 'responsible', 'in', 'as', 'i',
+                                          'the', 'a', 'an', 'this', 'my', 'our'))
+            if not is_prose:
+                return 'job_subheading', current_section
+
         # 4. Job header: has date pattern (title or company line with dates)
         #    But only for short-ish text — long prose that happens to mention
         #    a date ("October 2025 launch") is not a job header.
@@ -1098,6 +1116,54 @@ def parse_resume_for_kb(file_path: str) -> dict:
                         career_history.append(current_job)
                     current_job = _parse_company_line(text)
                     awaiting_title = True
+
+            elif ptype == 'job_subheading':
+                # Visual sibling-role marker at current employer. Try to match
+                # against an existing career_history entry (prior title at same
+                # employer).  If matched, switch current_job to that entry so
+                # subsequent bullets attach correctly.  If no match, create a
+                # new role under the same employer.
+                if current_job:
+                    text_lower = text.lower()
+                    matched = False
+                    for prev_job in career_history:
+                        if (prev_job.get('employer') == current_job.get('employer')
+                                and prev_job.get('title')
+                                and not prev_job.get('is_company_entry')
+                                and prev_job['title'].lower().split(',')[0] in text_lower):
+                            # Save current_job, switch to matched prior role
+                            career_history.append(current_job)
+                            career_history.remove(prev_job)
+                            current_job = prev_job
+                            matched = True
+                            break
+                    if not matched and current_job.get('title'):
+                        # Already on this role?
+                        if current_job['title'].lower().split(',')[0] in text_lower:
+                            matched = True
+                    if not matched:
+                        # No match — create new role entry under same employer
+                        if awaiting_title:
+                            _flush_company_entry()
+                        else:
+                            career_history.append(current_job)
+                        title, start, end = _parse_title_dates(text)
+                        current_job = {
+                            'employer': current_job['employer'],
+                            'title': title,
+                            'start_date': start or current_job.get('start_date'),
+                            'end_date': (None if end and end.lower() in ('present', 'current') else end) or current_job.get('end_date'),
+                            'location': current_job.get('location'),
+                            'industry': current_job.get('industry'),
+                            'intro_text': '',
+                            'is_current': bool(end and end.lower() in ('present', 'current')),
+                            'bullets': [],
+                            'notes': current_job.get('notes'),
+                        }
+                        first_bullet_after_title = True
+                    # Matched path: do NOT reset first_bullet_after_title — we're
+                    # swapping to an existing role whose synopsis (if any) is
+                    # already captured; following text is genuine bullets.
 
             elif ptype == 'job_intro':
                 if current_job:

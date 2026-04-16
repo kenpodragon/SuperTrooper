@@ -233,13 +233,17 @@ def _is_junk_bullet(text: str) -> bool:
 
 
 def _insert_career_history(cur, entry):
-    """Insert a career_history row, or return existing id if employer+title already exists."""
+    """Insert a career_history row, or return existing id if employer+title already exists.
+
+    Returns (ch_id, synopsis_bid) — synopsis_bid is the id of the bullet row
+    inserted from entry['intro_text'] (or None if no intro/duplicate).
+    """
     employer = entry.get("employer") or "Unknown"
     title = entry.get("title") or "Unknown"
 
     # Filter junk employers
     if _is_junk_employer(employer):
-        return None
+        return None, None
 
     # Normalize employer name
     employer = _normalize_employer(employer)
@@ -249,7 +253,7 @@ def _insert_career_history(cur, entry):
         title = "Unknown"
     # German text titles
     if re.search(r"(?i)\b(januar|februar|oktober|dezember|jahr|monate)\b", title):
-        return None
+        return None, None
 
     # Truncate to fit varchar limits
     employer = employer[:200]
@@ -265,7 +269,7 @@ def _insert_career_history(cur, entry):
     )
     existing = cur.fetchone()
     if existing:
-        return existing["id"]
+        return existing["id"], None
 
     is_company = entry.get("is_company_entry", False)
     cur.execute(
@@ -293,17 +297,25 @@ def _insert_career_history(cur, entry):
     )
     new_id = cur.fetchone()["id"]
 
-    # Also create a synopsis bullet if intro_text exists
+    # Also create a synopsis bullet if intro_text exists. Return its id so the
+    # outer insert loop can register it in bullet_ids_by_ch[new_id] — otherwise
+    # the template_builder (which sees the synopsis paragraph as a bullet slot)
+    # ends up one slot short when resolving bullet refs.
+    synopsis_bid = None
     intro = entry.get("intro_text")
     if intro and intro.strip():
         cur.execute(
             """INSERT INTO bullets (career_history_id, text, type, display_order, source_file)
                VALUES (%s, %s, 'synopsis', 0, 'onboard:intro_text')
-               ON CONFLICT (career_history_id, type, md5(text)) DO NOTHING""",
+               ON CONFLICT (career_history_id, type, md5(text)) DO NOTHING
+               RETURNING id""",
             (new_id, intro.strip()),
         )
+        row = cur.fetchone()
+        if row:
+            synopsis_bid = row["id"]
 
-    return new_id
+    return new_id, synopsis_bid
 
 
 def _insert_bullet(cur, career_history_id, bullet_text, source_file):
@@ -368,7 +380,9 @@ def _store_original_template(cur, filename, docx_bytes):
     return cur.fetchone()["id"], False
 
 
-def _build_recipe_slots(template_map, career_ids, bullet_ids, skill_ids, parsed):
+def _build_recipe_slots(template_map, career_ids, bullet_ids, skill_ids, parsed,
+                         edu_ids=None, cert_ids=None, highlight_ids=None,
+                         summary_id=None, bullet_ids_by_ch=None):
     """Map template_map slots to inserted DB rows for recipe creation.
 
     Handles BOTH formats:
@@ -376,10 +390,17 @@ def _build_recipe_slots(template_map, career_ids, bullet_ids, skill_ids, parsed)
       with entries like {name, type, original_text, ...}
     - New (from template_builder auto): template_map is a flat dict
       {slot_name: {type, original_text, formatting, parent_section}}
+
+    Inserted-row ID lists are consumed in order per slot type. Pass [] / None
+    when not yet inserted; the corresponding slots fall back to {literal}.
     """
     slots = {}
     if not template_map:
         return slots
+
+    edu_ids = edu_ids or []
+    cert_ids = cert_ids or []
+    highlight_ids = highlight_ids or []
 
     # Build quick lookup from parsed data
     ch_lookup = {}
@@ -392,14 +413,17 @@ def _build_recipe_slots(template_map, career_ids, bullet_ids, skill_ids, parsed)
     # Legacy format has a "slots" key with a list
     is_new_format = False
     if "slots" not in template_map:
-        # Check if any top-level value is a dict with 'type' and 'original_text'
         for v in template_map.values():
             if isinstance(v, dict) and "type" in v and "original_text" in v:
                 is_new_format = True
                 break
 
     if is_new_format:
-        return _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup)
+        return _build_recipe_slots_new(
+            template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup,
+            edu_ids, cert_ids, highlight_ids, summary_id,
+            bullet_ids_by_ch=bullet_ids_by_ch,
+        )
     else:
         return _build_recipe_slots_legacy(template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup)
 
@@ -492,7 +516,9 @@ def _fuzzy_match_career(text, cur):
     return None
 
 
-def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup):
+def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, parsed, ch_lookup,
+                              edu_ids=None, cert_ids=None, highlight_ids=None, summary_id=None,
+                              bullet_ids_by_ch=None):
     """Handle new template_map format (flat dict from template_builder).
 
     Format: {slot_name: {type, original_text, formatting, parent_section}}
@@ -502,12 +528,23 @@ def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, par
     but career_ids only has one entry per company+title combo.  We detect company
     vs title by checking if the original text looks like an employer (contains
     location, braces, or doesn't match known title patterns) vs a title.
+
+    Inserted-row IDs (edu, cert, highlight, summary) are consumed in slot-key order.
+    Falls back to {literal: original_text} when no matching ID is available.
     """
     slots = {}
     job_idx = 0
     bullet_offset = 0
+    cert_offset = 0
+    edu_offset = 0
+    highlight_offset = 0
+    skill_offset = 0
     company_base_idx = 0  # index of first career entry for current company
     title_count = 0       # how many title lines seen for current company
+
+    edu_ids = edu_ids or []
+    cert_ids = cert_ids or []
+    highlight_ids = highlight_ids or []
 
     # Build employer set for fuzzy company line matching
     career_entries = parsed.get("career_history", [])
@@ -554,6 +591,51 @@ def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, par
 
     sorted_names = sorted(template_map.keys(), key=_natural_key)
 
+    # ---- Pre-pass: build JOB_N -> ch_id map ----
+    # Natural sort puts JOB_6_BULLET_1 BEFORE JOB_6_HEADER, so without this
+    # pre-pass bullets would be resolved before their header's ch_id is known.
+    # Also: lets us route bullets to the correct ch_id via bullet_ids_by_ch
+    # even when the parser mis-attributes slot order.
+    job_to_ch = {}  # job_num -> career_history.id
+
+    _pre_job_idx = 0
+    _pre_company_base_idx = 0
+    _pre_title_count = 0
+    _job_n_re = re.compile(r'JOB_(\d+)_')
+
+    for slot_name in sorted_names:
+        info = template_map.get(slot_name)
+        if not isinstance(info, dict) or info.get("type") != "job_header":
+            continue
+        m = _job_n_re.match(slot_name)
+        if not m:
+            continue
+        job_num = int(m.group(1))
+        original_pre = info.get("original_text", "")
+
+        if _is_company_line(original_pre):
+            _pre_company_base_idx = _pre_job_idx
+            _pre_title_count = 0
+            if _pre_job_idx < len(career_ids):
+                job_to_ch[job_num] = career_ids[_pre_job_idx]
+                company_employer = (
+                    career_entries[_pre_job_idx].get("employer", "")
+                    if _pre_job_idx < len(career_entries) else ""
+                )
+                _pre_job_idx += 1
+                while (_pre_job_idx < len(career_entries)
+                       and career_entries[_pre_job_idx].get("employer", "") == company_employer):
+                    _pre_job_idx += 1
+        else:
+            title_offset = _pre_company_base_idx + _pre_title_count
+            if title_offset < len(career_ids):
+                job_to_ch[job_num] = career_ids[title_offset]
+            _pre_title_count += 1
+
+    # Per-ch bullet offset tracking for the main pass
+    bullet_ids_by_ch = bullet_ids_by_ch or {}
+    bullet_offset_by_ch = {ch_id: 0 for ch_id in bullet_ids_by_ch}
+
     for slot_name in sorted_names:
         info = template_map[slot_name]
         if not isinstance(info, dict) or "type" not in info:
@@ -562,7 +644,28 @@ def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, par
         slot_type = info["type"]
         original = info.get("original_text", "")
 
-        if slot_type in ("header", "headline", "summary", "highlights", "keywords", "skills"):
+        if slot_type == "summary":
+            if summary_id:
+                slots[slot_name] = {"table": "summary_variants", "id": summary_id, "column": "text"}
+            else:
+                slots[slot_name] = {"literal": original}
+
+        elif slot_type == "highlights":
+            if highlight_offset < len(highlight_ids):
+                slots[slot_name] = {"table": "bullets", "id": highlight_ids[highlight_offset], "column": "text"}
+                highlight_offset += 1
+            else:
+                slots[slot_name] = {"literal": original}
+
+        elif slot_type in ("skills", "keywords"):
+            if skill_offset < len(skill_ids):
+                slots[slot_name] = {"table": "skills", "id": skill_ids[skill_offset], "column": "name"}
+                skill_offset += 1
+            else:
+                slots[slot_name] = {"literal": original}
+
+        elif slot_type in ("header", "headline"):
+            # No resume_header insert yet (B-fix later); leave as literal
             slots[slot_name] = {"literal": original}
 
         elif slot_type == "job_header":
@@ -623,21 +726,80 @@ def _build_recipe_slots_new(template_map, career_ids, bullet_ids, skill_ids, par
                 slots[slot_name] = {"literal": original}
 
         elif slot_type == "bullet":
-            if bullet_offset < len(bullet_ids):
+            # First try per-ch routing: parse JOB_N from slot_name, look up
+            # the ch_id from the pre-pass map, and consume from that ch's
+            # bullet list. This prevents cascading offset when the parser
+            # mis-attributes bullets — the slot's JOB_N anchors the correct
+            # career_history even if the flat bullet_ids order drifted.
+            routed = False
+            m_bullet = _job_n_re.match(slot_name)
+            if m_bullet:
+                jn = int(m_bullet.group(1))
+                ch_id = job_to_ch.get(jn)
+                if ch_id is not None and ch_id in bullet_ids_by_ch:
+                    ch_bullets = bullet_ids_by_ch[ch_id]
+                    off = bullet_offset_by_ch.get(ch_id, 0)
+                    if off < len(ch_bullets):
+                        slots[slot_name] = {
+                            "table": "bullets",
+                            "id": ch_bullets[off],
+                            "column": "text",
+                        }
+                        bullet_offset_by_ch[ch_id] = off + 1
+                        routed = True
+            if not routed:
+                # Fallback: flat bullet_ids consumption (legacy behavior)
+                if bullet_offset < len(bullet_ids):
+                    slots[slot_name] = {
+                        "table": "bullets",
+                        "id": bullet_ids[bullet_offset],
+                        "column": "text",
+                    }
+                    bullet_offset += 1
+                else:
+                    slots[slot_name] = {"literal": original}
+
+        elif slot_type == "job_subheading":
+            # Visual sibling-role marker. Points to the same career_history.id
+            # as its JOB_N_HEADER (so generation keeps the row coherent), but
+            # stores the literal original text since the subheading prose is
+            # resume-specific styling that doesn't round-trip through title.
+            m_sub = _job_n_re.match(slot_name)
+            ch_id = None
+            if m_sub:
+                ch_id = job_to_ch.get(int(m_sub.group(1)))
+            if ch_id is not None:
                 slots[slot_name] = {
-                    "table": "bullets",
-                    "id": bullet_ids[bullet_offset],
-                    "column": "text",
+                    "table": "career_history",
+                    "id": ch_id,
+                    "column": "title",
+                    "include_dates": False,
+                    "display_text": original,
                 }
-                bullet_offset += 1
             else:
                 slots[slot_name] = {"literal": original}
 
-        elif slot_type in ("education", "certification", "additional"):
+        elif slot_type == "certification":
+            if cert_offset < len(cert_ids):
+                slots[slot_name] = {"table": "certifications", "id": cert_ids[cert_offset]}
+                cert_offset += 1
+            else:
+                slots[slot_name] = {"literal": original}
+
+        elif slot_type == "education":
+            if edu_offset < len(edu_ids):
+                slots[slot_name] = {"table": "education", "id": edu_ids[edu_offset]}
+                edu_offset += 1
+            else:
+                slots[slot_name] = {"literal": original}
+
+        elif slot_type == "additional":
+            # Additional work experience entries — career_history rows for short jobs.
+            # Use position-based matching from career_ids tail, falling back to literal.
             slots[slot_name] = {"literal": original}
 
         else:
-            # Unknown type — store as literal
+            # Unknown type (including 'reference') — store as literal until typed handling added
             slots[slot_name] = {"literal": original}
 
     return slots
@@ -887,6 +1049,7 @@ Rules:
         # ----- Step 4: Insert into DB -----
         career_ids = []
         bullet_ids = []
+        bullet_ids_by_ch = {}  # ch_id -> [bid, ...] for per-ch recipe routing
         skill_ids = []
         near_dups = []
 
@@ -898,10 +1061,16 @@ Rules:
 
                 # Career history + bullets
                 for entry in parsed.get("career_history", []):
-                    ch_id = _insert_career_history(cur, entry)
+                    ch_id, synopsis_bid = _insert_career_history(cur, entry)
                     if ch_id is None:
                         continue  # junk employer filtered out
                     career_ids.append(ch_id)
+
+                    # Synopsis bullet (if created) sits at the FRONT of this
+                    # ch's bullet list so the template's first-bullet slot
+                    # resolves to the synopsis text.
+                    if synopsis_bid is not None:
+                        bullet_ids_by_ch.setdefault(ch_id, []).append(synopsis_bid)
 
                     for bullet_text in entry.get("bullets", []):
                         if not bullet_text or not bullet_text.strip():
@@ -915,6 +1084,7 @@ Rules:
                             continue
                         bid = _insert_bullet(cur, ch_id, bullet_text, filename)
                         bullet_ids.append(bid)
+                        bullet_ids_by_ch.setdefault(ch_id, []).append(bid)
                         if near_id:
                             near_dups.append({
                                 "new_id": bid,
@@ -1231,9 +1401,44 @@ Rules:
                         # ----- Step 7: Create recipe (upsert by template_id to avoid dup on re-upload) -----
                         try:
                             cur.execute("SAVEPOINT recipe_sp")
-                            slots = _build_recipe_slots(
-                                template_map, career_ids, bullet_ids, skill_ids, parsed
+                            numbered_slots = _build_recipe_slots(
+                                template_map, career_ids, bullet_ids, skill_ids, parsed,
+                                edu_ids=edu_ids, cert_ids=cert_ids,
+                                highlight_ids=highlight_ids, summary_id=summary_id,
+                                bullet_ids_by_ch=bullet_ids_by_ch,
                             )
+
+                            # Convert numbered slots → section-based recipe.
+                            # The career_history lookup groups EXPERIENCE by employer.
+                            from utils.recipe_converter import convert_to_sections
+
+                            def _ch_lookup(ids):
+                                if not ids:
+                                    return {}
+                                cur.execute(
+                                    "SELECT id, employer, is_company_entry FROM career_history WHERE id = ANY(%s)",
+                                    (ids,),
+                                )
+                                # Also fetch company-entry rows for these employers so EXPERIENCE
+                                # can use them as the parent.
+                                rows = cur.fetchall()
+                                ch_map = {r["id"]: {"employer": r["employer"],
+                                                     "is_company_entry": r["is_company_entry"]}
+                                           for r in rows}
+                                employers = list({r["employer"] for r in rows if r.get("employer")})
+                                if employers:
+                                    cur.execute(
+                                        "SELECT id, employer FROM career_history "
+                                        "WHERE is_company_entry = TRUE AND employer = ANY(%s)",
+                                        (employers,),
+                                    )
+                                    for r in cur.fetchall():
+                                        ch_map[r["id"]] = {"employer": r["employer"],
+                                                            "is_company_entry": True}
+                                return ch_map
+
+                            section_recipe = convert_to_sections(numbered_slots, ch_lookup_fn=_ch_lookup)
+
                             cur.execute(
                                 "SELECT id FROM resume_recipes WHERE template_id = %s ORDER BY id LIMIT 1",
                                 (template_id,),
@@ -1242,26 +1447,38 @@ Rules:
                             if existing_recipe:
                                 recipe_id = existing_recipe["id"]
                                 cur.execute(
-                                    "UPDATE resume_recipes SET recipe = %s, updated_at = now() WHERE id = %s",
-                                    (json.dumps(slots), recipe_id),
+                                    """UPDATE resume_recipes
+                                       SET recipe = %s,
+                                           recipe_v1_backup = COALESCE(recipe_v1_backup, %s),
+                                           recipe_version = 2,
+                                           updated_at = now()
+                                       WHERE id = %s""",
+                                    (json.dumps(section_recipe), json.dumps(numbered_slots), recipe_id),
                                 )
                                 recipe_action = "updated"
                             else:
                                 cur.execute(
                                     """INSERT INTO resume_recipes
-                                           (name, template_id, recipe, is_active)
-                                       VALUES (%s, %s, %s, true)
+                                           (name, template_id, recipe, recipe_v1_backup,
+                                            recipe_version, is_active)
+                                       VALUES (%s, %s, %s, %s, 2, true)
                                        RETURNING id""",
                                     (
                                         f"Onboard: {filename}",
                                         template_id,
-                                        json.dumps(slots),
+                                        json.dumps(section_recipe),
+                                        json.dumps(numbered_slots),
                                     ),
                                 )
                                 recipe_id = cur.fetchone()["id"]
                                 recipe_action = "created"
                             cur.execute("RELEASE SAVEPOINT recipe_sp")
-                            report["steps"]["recipe"] = {"recipe_id": recipe_id, "slot_count": len(slots), "action": recipe_action}
+                            report["steps"]["recipe"] = {
+                                "recipe_id": recipe_id,
+                                "slot_count": len(numbered_slots),
+                                "section_count": len(section_recipe),
+                                "action": recipe_action,
+                            }
                         except Exception as e:
                             cur.execute("ROLLBACK TO SAVEPOINT recipe_sp")
                             report["steps"]["recipe"] = f"failed: {e}"
@@ -1271,7 +1488,9 @@ Rules:
                         try:
                             cur.execute("SAVEPOINT reconstruct_sp")
                             if recipe_id and template_id:
-                                content_map = resolve_recipe(conn, slots)
+                                # Reconstruct uses numbered slots (positional) for the
+                                # template generator, not the section-format recipe.
+                                content_map = resolve_recipe(conn, numbered_slots)
                                 doc = generate_resume(tmpl_blob, content_map, template_map)
                                 reconstructed_path = os.path.join(tmp_dir, "reconstructed.docx")
                                 doc.save(reconstructed_path)

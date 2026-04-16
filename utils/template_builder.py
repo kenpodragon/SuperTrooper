@@ -25,6 +25,7 @@ def _generate_slot_names(sections: list[dict]) -> list[dict]:
         'job': 0,
         'job_bullet': {},  # job_num -> bullet_count
         'job_intro': {},   # job_num -> intro_count
+        'job_subheading': {},  # job_num -> subheading_count (for dup matches)
         'education': 0,
         'certification': 0,
         'skills': 0,
@@ -70,6 +71,38 @@ def _generate_slot_names(sections: list[dict]) -> list[dict]:
             counters['job_bullet'][current_job] = 0
             counters['job_intro'][current_job] = 0
             slot_name = f"JOB_{current_job}_HEADER"
+
+        elif sec_type == 'job_subheading':
+            # Visual sibling-role marker. Fuzzy-match against prior JOB_N_HEADER
+            # texts (most-recent first). On match, switch current_job so following
+            # bullets route to the matched role. No match → new role under current
+            # employer (increment current_job).
+            text_lower = section.get('text', '').lower()
+            matched_job = None
+            for prior in reversed(results):
+                prior_slot = prior.get('slot_name') or ''
+                if prior_slot.startswith('JOB_') and prior_slot.endswith('_HEADER'):
+                    prior_title_word = prior.get('text', '').split(',')[0].strip().lower()
+                    if prior_title_word and len(prior_title_word) > 3 and prior_title_word in text_lower:
+                        try:
+                            matched_job = int(prior_slot.split('_')[1])
+                        except (IndexError, ValueError):
+                            matched_job = None
+                        break
+            if matched_job is not None:
+                current_job = matched_job
+            else:
+                current_job += 1
+                counters['job_bullet'].setdefault(current_job, 0)
+                counters['job_intro'].setdefault(current_job, 0)
+            counters['job_subheading'].setdefault(current_job, 0)
+            counters['job_subheading'][current_job] += 1
+            n = counters['job_subheading'][current_job]
+            slot_name = (
+                f"JOB_{current_job}_SUBHEADING"
+                if n == 1
+                else f"JOB_{current_job}_SUBHEADING_{n}"
+            )
 
         elif sec_type == 'job_intro':
             # Associate with current job
@@ -212,6 +245,7 @@ _TYPE_TO_SECTION = {
     "job_intro": "EXPERIENCE",
     "job_bullet": "EXPERIENCE",
     "job_subtitle": "EXPERIENCE",
+    "job_subheading": "EXPERIENCE",
     "education": "EDUCATION",
     "certification": "CERTIFICATIONS",
     "skills": "SKILLS",
