@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, recipeGenerateDocx, templateThumbnailUrl } from '../../api/client';
 import EditorToolbar from './EditorToolbar';
 import HeaderBlock from './blocks/HeaderBlock';
@@ -92,6 +92,27 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
   }, [recipe]);
 
   const queryClient = useQueryClient();
+
+  // Summary variants for role-type picker
+  const { data: summaryVariants } = useQuery({
+    queryKey: ['summary-variants'],
+    queryFn: () => api.get<{ summary_variants: any[] }>('/resume/summary-variants').then(d => d.summary_variants ?? d),
+  });
+
+  function getCurrentVariantId(): number | null {
+    if (!isSectionRecipe(recipe)) return null;
+    const ref = (recipe as any).SUMMARY || (recipe as any).HEADLINE;
+    if (ref && typeof ref === 'object' && 'id' in ref) return (ref as any).id;
+    return null;
+  }
+
+  function onVariantSelect(variantId: number) {
+    updateRecipe(r => ({
+      ...r,
+      HEADLINE: { table: 'summary_variants', id: variantId, column: 'headline' },
+      SUMMARY: { table: 'summary_variants', id: variantId, column: 'text' },
+    }));
+  }
 
   // Autosave
   const autosaveMutation = useMutation({
@@ -232,6 +253,26 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
               value={typeof resolved.headline === 'string' ? resolved.headline : ''}
               onSave={(_, text) => updateRecipe(r => ({ ...r, headline: { literal: text } }))}
             />
+
+            {/* Role variant picker — section recipes only */}
+            {isSectionRecipe(recipe) && summaryVariants && summaryVariants.length > 0 && (
+              <div style={{ margin: '4px 0 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 500 }}>Role Variant:</span>
+                <select
+                  value={getCurrentVariantId() ?? ''}
+                  onChange={e => onVariantSelect(Number(e.target.value))}
+                  style={{
+                    fontSize: 12, padding: '2px 8px', borderRadius: 4,
+                    border: '1px solid #d1d5db', background: '#f9fafb', color: '#111',
+                  }}
+                >
+                  <option value="" disabled>Select variant...</option>
+                  {(summaryVariants as any[]).map((v: any) => (
+                    <option key={v.id} value={v.id}>{v.role_type}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Highlights */}
             {resolved.highlights && resolved.highlights.length > 0 && (
