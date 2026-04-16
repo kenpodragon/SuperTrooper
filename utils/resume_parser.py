@@ -434,16 +434,23 @@ def _classify_paragraph(
             if len(text) < 30 and word_count <= 3:
                 return 'section_header', section_cat
 
+    # --- Headline (title/tagline after name, before content) ---
+    # MUST come before the >=14 header rule, because headline fonts are often
+    # 14-19pt and would otherwise be misclassified as a second name header.
+    # Guard: prev_type must be 'header' (name/contact already classified), and
+    # the text must not contain contact info (phone/email/linkedin) — contact
+    # info belongs in the header block, not the headline.
+    if (is_early and bold and font_size and 12 < font_size < 20
+            and prev_type == 'header'
+            and not _has_contact_info(text)):
+        return 'headline', 'header'
+
     # --- Header detection (early paragraphs with large font or contact info) ---
     if is_early and font_size and font_size >= 14:
         return 'header', 'header'
 
     if is_early and _has_contact_info(text) and current_section in ('header', ''):
         return 'header', 'header'
-
-    # --- Headline (title/tagline after name, before content) ---
-    if is_early and font_size and 12 < font_size < 20 and bold:
-        return 'headline', 'header'
 
     # --- Within specific sections ---
     if current_section == 'experience' or current_section == 'additional':
@@ -916,6 +923,7 @@ def parse_resume_for_kb(file_path: str) -> dict:
     certifications = []
     highlights = []
     summary_parts = []
+    headline = None
     # Track company-level content: intro text and bullets seen between a company
     # header and its first role title.  These belong to the company, not the role.
     company_intro_parts: list[str] = []
@@ -1219,7 +1227,13 @@ def parse_resume_for_kb(file_path: str) -> dict:
                                 current_job['bullets'].append(text)
                             first_bullet_after_title = False
 
-        # -- Header / headline / unknown — skip for KB purposes --
+        # -- Headline (title/tagline line after name+contact) --
+        if ptype == 'headline':
+            if headline is None:
+                headline = text.strip()
+            continue
+
+        # -- Header / unknown — skip for KB purposes --
 
     # Flush any pending company content
     if awaiting_title:
@@ -1301,5 +1315,6 @@ def parse_resume_for_kb(file_path: str) -> dict:
         'certifications': certifications,
         'highlights': highlights,
         'summary': ' '.join(summary_parts),
+        'headline': headline,
         'confidence': round(signals / 4, 2),
     }

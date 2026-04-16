@@ -1298,6 +1298,7 @@ Rules:
 
                 # Summary (professional summary text — dedup by first 80 chars similarity)
                 summary_text = parsed.get("summary", "")
+                headline_text = (parsed.get("headline") or "").strip() or None
                 summary_id = None
                 if summary_text and summary_text.strip() and len(summary_text.strip()) > 30:
                     # Skip if it doesn't look like a professional summary
@@ -1317,14 +1318,22 @@ Rules:
                         existing = cur.fetchone()
                         if existing:
                             summary_id = existing["id"]
+                            # Backfill headline on existing row only if empty
+                            if headline_text:
+                                cur.execute(
+                                    "UPDATE summary_variants SET headline = %s "
+                                    "WHERE id = %s AND (headline IS NULL OR headline = '')",
+                                    (headline_text, summary_id),
+                                )
                         else:
                             # Use a generic sequential role_type (unique constraint)
                             cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_num FROM summary_variants")
                             next_num = cur.fetchone()["next_num"]
                             role_type = f"parsed_{next_num}"
                             cur.execute(
-                                "INSERT INTO summary_variants (role_type, text) VALUES (%s, %s) RETURNING id",
-                                (role_type, summary_text),
+                                "INSERT INTO summary_variants (role_type, text, headline) "
+                                "VALUES (%s, %s, %s) RETURNING id",
+                                (role_type, summary_text, headline_text),
                             )
                             summary_id = cur.fetchone()["id"]
 
@@ -1451,23 +1460,26 @@ Rules:
                                        SET recipe = %s,
                                            recipe_v1_backup = COALESCE(recipe_v1_backup, %s),
                                            recipe_version = 2,
+                                           headline = COALESCE(NULLIF(%s, ''), headline),
                                            updated_at = now()
                                        WHERE id = %s""",
-                                    (json.dumps(section_recipe), json.dumps(numbered_slots), recipe_id),
+                                    (json.dumps(section_recipe), json.dumps(numbered_slots),
+                                     headline_text, recipe_id),
                                 )
                                 recipe_action = "updated"
                             else:
                                 cur.execute(
                                     """INSERT INTO resume_recipes
                                            (name, template_id, recipe, recipe_v1_backup,
-                                            recipe_version, is_active)
-                                       VALUES (%s, %s, %s, %s, 2, true)
+                                            headline, recipe_version, is_active)
+                                       VALUES (%s, %s, %s, %s, %s, 2, true)
                                        RETURNING id""",
                                     (
                                         f"Onboard: {filename}",
                                         template_id,
                                         json.dumps(section_recipe),
                                         json.dumps(numbered_slots),
+                                        headline_text,
                                     ),
                                 )
                                 recipe_id = cur.fetchone()["id"]
