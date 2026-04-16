@@ -1228,26 +1228,40 @@ Rules:
                                 (json.dumps(template_map), psycopg2.Binary(tmpl_blob), template_id),
                             )
 
-                        # ----- Step 7: Create recipe -----
+                        # ----- Step 7: Create recipe (upsert by template_id to avoid dup on re-upload) -----
                         try:
                             cur.execute("SAVEPOINT recipe_sp")
                             slots = _build_recipe_slots(
                                 template_map, career_ids, bullet_ids, skill_ids, parsed
                             )
                             cur.execute(
-                                """INSERT INTO resume_recipes
-                                       (name, template_id, recipe, is_active)
-                                   VALUES (%s, %s, %s, true)
-                                   RETURNING id""",
-                                (
-                                    f"Onboard: {filename}",
-                                    template_id,
-                                    json.dumps(slots),
-                                ),
+                                "SELECT id FROM resume_recipes WHERE template_id = %s ORDER BY id LIMIT 1",
+                                (template_id,),
                             )
-                            recipe_id = cur.fetchone()["id"]
+                            existing_recipe = cur.fetchone()
+                            if existing_recipe:
+                                recipe_id = existing_recipe["id"]
+                                cur.execute(
+                                    "UPDATE resume_recipes SET recipe = %s, updated_at = now() WHERE id = %s",
+                                    (json.dumps(slots), recipe_id),
+                                )
+                                recipe_action = "updated"
+                            else:
+                                cur.execute(
+                                    """INSERT INTO resume_recipes
+                                           (name, template_id, recipe, is_active)
+                                       VALUES (%s, %s, %s, true)
+                                       RETURNING id""",
+                                    (
+                                        f"Onboard: {filename}",
+                                        template_id,
+                                        json.dumps(slots),
+                                    ),
+                                )
+                                recipe_id = cur.fetchone()["id"]
+                                recipe_action = "created"
                             cur.execute("RELEASE SAVEPOINT recipe_sp")
-                            report["steps"]["recipe"] = {"recipe_id": recipe_id, "slot_count": len(slots)}
+                            report["steps"]["recipe"] = {"recipe_id": recipe_id, "slot_count": len(slots), "action": recipe_action}
                         except Exception as e:
                             cur.execute("ROLLBACK TO SAVEPOINT recipe_sp")
                             report["steps"]["recipe"] = f"failed: {e}"
