@@ -26,6 +26,12 @@ interface Props {
   templateName: string;
 }
 
+function isSectionRecipe(recipe: Record<string, any>): boolean {
+  const sectionKeys = new Set(['HEADER', 'HEADLINE', 'SUMMARY', 'HIGHLIGHTS', 'EXPERIENCE',
+    'CERTIFICATIONS', 'EDUCATION', 'SKILLS', 'ADDITIONAL_EXP']);
+  return Object.keys(recipe).some(k => sectionKeys.has(k));
+}
+
 export default function ResumeEditor({ recipeId, recipeName, recipe: initialRecipe, resolved: initialResolved, theme: initialTheme, templateId, templateName }: Props) {
   const [recipe, setRecipe] = useState<RecipeV2>(initialRecipe);
   const [resolved, setResolved] = useState<ResolvedV2>(initialResolved);
@@ -292,9 +298,12 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
               label="Education"
               slotKey="education"
               items={resolved.education ?? []}
-              onUpdate={(_, items) => updateRecipe(r => ({
-                ...r, education: items.map(text => ({ literal: text })),
-              }))}
+              onUpdate={(_, items) => {
+                if (isSectionRecipe(recipe)) return;
+                updateRecipe(r => ({
+                  ...r, education: items.map(text => ({ literal: text })),
+                }));
+              }}
             />
 
             {/* Certifications */}
@@ -302,9 +311,12 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
               label="Certifications"
               slotKey="certifications"
               items={resolved.certifications ?? []}
-              onUpdate={(_, items) => updateRecipe(r => ({
-                ...r, certifications: items.map(text => ({ literal: text })),
-              }))}
+              onUpdate={(_, items) => {
+                if (isSectionRecipe(recipe)) return;
+                updateRecipe(r => ({
+                  ...r, certifications: items.map(text => ({ literal: text })),
+                }));
+              }}
             />
 
             {/* Additional Experience */}
@@ -313,9 +325,12 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
                 label="Additional Experience"
                 slotKey="additional_experience"
                 items={resolved.additional_experience}
-                onUpdate={(_, items) => updateRecipe(r => ({
-                  ...r, additional_experience: items.map(text => ({ literal: text })),
-                }))}
+                onUpdate={(_, items) => {
+                  if (isSectionRecipe(recipe)) return;
+                  updateRecipe(r => ({
+                    ...r, additional_experience: items.map(text => ({ literal: text })),
+                  }));
+                }}
               />
             )}
           </div>
@@ -346,7 +361,16 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
                 experience: [...(r.experience ?? []), { ref: 'career_history', id: item.id, bullets: [] }],
               }));
             } else if (pickerState.mode === 'summaries') {
-              updateRecipe(r => ({ ...r, summary: { ref: 'summary_variants', id: item.id } }));
+              if (isSectionRecipe(recipe)) {
+                // Section format: store as table references under UPPERCASE keys
+                updateRecipe(r => ({
+                  ...r,
+                  HEADLINE: { table: 'summary_variants', id: item.id, column: 'headline' },
+                  SUMMARY: { table: 'summary_variants', id: item.id, column: 'text' },
+                }));
+              } else {
+                updateRecipe(r => ({ ...r, summary: { ref: 'summary_variants', id: item.id } }));
+              }
             }
             setPickerState(null);
           }}

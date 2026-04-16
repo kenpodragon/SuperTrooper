@@ -20,6 +20,97 @@ bp = Blueprint("resume", __name__)
 # V1 → V2 Resolved Adapter
 # ---------------------------------------------------------------------------
 
+def _section_resolved_to_v2(raw: dict) -> dict:
+    """Convert section resolver output to v2 structure for the frontend editor.
+
+    Section resolver returns: {HEADER: {full_name, ...}, CERTIFICATIONS: [{name, issuer}, ...], ...}
+    Frontend expects: {header: {full_name, ...}, certifications: ["CSM | Scrum Alliance", ...], ...}
+    """
+    v2 = {}
+
+    # Header
+    if "HEADER" in raw and raw["HEADER"]:
+        v2["header"] = raw["HEADER"]
+
+    # Headline
+    if "HEADLINE" in raw:
+        v2["headline"] = raw["HEADLINE"] if isinstance(raw["HEADLINE"], str) else (raw["HEADLINE"] or {}).get("headline", "")
+
+    # Summary
+    if "SUMMARY" in raw:
+        v2["summary"] = raw["SUMMARY"] if isinstance(raw["SUMMARY"], str) else (raw["SUMMARY"] or {}).get("text", "")
+
+    # Highlights
+    if "HIGHLIGHTS" in raw and raw["HIGHLIGHTS"]:
+        v2["highlights"] = [
+            item.get("text", str(item)) if isinstance(item, dict) else str(item)
+            for item in raw["HIGHLIGHTS"]
+        ]
+
+    # Experience — convert compound structure
+    if "EXPERIENCE" in raw and raw["EXPERIENCE"]:
+        exp_list = []
+        for company in raw["EXPERIENCE"]:
+            for job in company.get("jobs", []):
+                entry = {
+                    "id": job.get("id"),
+                    "employer": company.get("employer", ""),
+                    "title": job.get("title", ""),
+                    "location": company.get("location", ""),
+                    "start_date": str(job.get("start_date", "")),
+                    "end_date": str(job.get("end_date", "")) if job.get("end_date") else "Present" if job.get("is_current") else "",
+                    "synopsis": "",
+                    "bullets": [],
+                }
+                # Synopsis
+                syn = job.get("synopsis")
+                if syn and isinstance(syn, dict):
+                    entry["synopsis"] = syn.get("text", "")
+                # Bullets
+                for b in job.get("bullets", []):
+                    if isinstance(b, dict):
+                        entry["bullets"].append(b.get("text", str(b)))
+                    else:
+                        entry["bullets"].append(str(b))
+                exp_list.append(entry)
+        v2["experience"] = exp_list
+
+    # Certifications
+    if "CERTIFICATIONS" in raw and raw["CERTIFICATIONS"]:
+        v2["certifications"] = [
+            f"{item.get('name', '')} | {item.get('issuer', '')}" if isinstance(item, dict) and item.get("issuer")
+            else (item.get("name", str(item)) if isinstance(item, dict) else str(item))
+            for item in raw["CERTIFICATIONS"]
+        ]
+
+    # Education
+    if "EDUCATION" in raw and raw["EDUCATION"]:
+        v2["education"] = [
+            " | ".join(p for p in [
+                item.get("degree", ""), item.get("field", ""),
+                item.get("institution", ""), item.get("location", "")
+            ] if p) if isinstance(item, dict) else str(item)
+            for item in raw["EDUCATION"]
+        ]
+
+    # Skills
+    if "SKILLS" in raw and raw["SKILLS"]:
+        v2["skills"] = [
+            item.get("name", str(item)) if isinstance(item, dict) else str(item)
+            for item in raw["SKILLS"]
+        ]
+
+    # Additional experience
+    if "ADDITIONAL_EXP" in raw and raw["ADDITIONAL_EXP"]:
+        v2["additional_experience"] = [
+            f"{item.get('employer', '')} — {item.get('title', '')}" if isinstance(item, dict)
+            else str(item)
+            for item in raw["ADDITIONAL_EXP"]
+        ]
+
+    return v2
+
+
 def _v1_resolved_to_v2(flat: dict, recipe_json: dict = None) -> dict:
     """Convert a v1 flat resolved slot map into v2 structured format for the editor.
 
@@ -247,16 +338,28 @@ def get_recipe(recipe_id):
         return jsonify({"error": f"Recipe id={recipe_id} not found"}), 404
 
     if request.args.get("resolve", "").lower() == "true":
-        from mcp_tools_resume_gen import _resolve_recipe_db
         recipe_json = row["recipe"]
         if isinstance(recipe_json, str):
             recipe_json = json.loads(recipe_json)
-        resolved = _resolve_recipe_db(recipe_json, recipe_version=row.get("recipe_version", 1))
-        if row.get("headline"):
-            resolved["HEADLINE"] = row["headline"]
-        # Convert v1 flat slot map to v2 structure for the editor
-        if row.get("recipe_version", 1) < 2:
-            resolved = _v1_resolved_to_v2(resolved, recipe_json=recipe_json)
+
+        # Detect section-based recipe format (recipe_version=2 with UPPERCASE keys)
+        from utils.generate_resume import is_section_recipe
+        if is_section_recipe(recipe_json):
+            from utils.section_resolver import resolve_section_recipe, get_connection
+            conn = get_connection()
+            try:
+                raw_resolved = resolve_section_recipe(conn, recipe_json)
+                resolved = _section_resolved_to_v2(raw_resolved)
+            finally:
+                conn.close()
+        else:
+            from mcp_tools_resume_gen import _resolve_recipe_db
+            resolved = _resolve_recipe_db(recipe_json, recipe_version=row.get("recipe_version", 1))
+            if row.get("headline"):
+                resolved["HEADLINE"] = row["headline"]
+            if row.get("recipe_version", 1) < 2:
+                resolved = _v1_resolved_to_v2(resolved, recipe_json=recipe_json)
+
         row["resolved_preview"] = resolved
 
     # Include template_name alongside template_id
