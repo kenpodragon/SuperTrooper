@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, recipeGenerateDocx, templateThumbnailUrl } from '../../api/client';
 import EditorToolbar from './EditorToolbar';
 import HeaderBlock from './blocks/HeaderBlock';
@@ -84,6 +84,8 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [recipe]);
+
+  const queryClient = useQueryClient();
 
   // Autosave
   const autosaveMutation = useMutation({
@@ -195,8 +197,9 @@ export default function ResumeEditor({ recipeId, recipeName, recipe: initialReci
           currentTemplateId={templateId}
           onSelect={async (newTemplateId) => {
             await api.put(`/resume/recipes/${recipeId}`, { template_id: newTemplateId });
+            await queryClient.invalidateQueries({ queryKey: ['recipe-builder', recipeId] });
+            await queryClient.invalidateQueries({ queryKey: ['templates'] });
             setShowSwapPanel(false);
-            window.location.reload();
           }}
           onClose={() => setShowSwapPanel(false)}
         />
