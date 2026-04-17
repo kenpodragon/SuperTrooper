@@ -542,6 +542,21 @@ def _classify_paragraph(
         return 'education', current_section
 
     if current_section == 'certification':
+        # Pipe-heavy lines inside a cert section are mis-shelved skills lines
+        # ("Enterprise X | Y | Z | A | B | C ..."). Real certs have at most
+        # one pipe ("Cert Name | Issuer"). Treat 4+ pipes as skills.
+        if text.count('|') >= 4:
+            return 'skills', 'skills'
+        # SKILLS subheadings ("Executive Leadership", "Technical Expertise",
+        # "Core Competencies") that appear after the cert list belong to the
+        # next-coming skills block. Detect by exact phrase match — these
+        # don't match SECTION_KEYWORDS but still mark a skills sub-block.
+        sub = text.strip().rstrip(':').lower()
+        if sub in {'executive leadership', 'technical expertise',
+                    'core competencies', 'professional skills',
+                    'leadership skills', 'technical skills',
+                    'leadership & strategy', 'technology & tools'}:
+            return 'section_header', 'skills'
         return 'certification', current_section
 
     if current_section == 'skills':
@@ -983,21 +998,37 @@ def parse_resume_for_kb(file_path: str) -> dict:
 
         # -- Skills / Keywords (pipe, comma, or tab separated) --
         if ptype in ('skills', 'keywords'):
-            # Split on pipes first (most common in skill lines), then tabs
+            # Split on pipes first (most common in skill lines), then tabs.
+            # If the line has pipes, do NOT also split on commas — pipe is the
+            # canonical separator and commas inside skills are usually parenthetical
+            # sub-tech (e.g. "Generative AI (LangChain, RAG)").
+            has_pipes = '|' in text
             for chunk in re.split(r'[|\t]', text):
-                # Then split on commas, but protect numbers like "32,000"
-                for part in re.split(r',\s+(?![0-9])', chunk):
+                # Only fall through to comma-splitting when no pipes were present.
+                # Otherwise treat each pipe-delimited chunk as one skill.
+                comma_parts = [chunk] if has_pipes else re.split(r',\s+(?![0-9])', chunk)
+                for part in comma_parts:
                     skill = part.strip().strip('•–—·')
-                    if not skill or len(skill) > 55 or len(skill) < 2:
+                    if not skill or len(skill) < 2:
                         continue
-                    # Reject sentence-like fragments
+                    # Allow longer entries when they have a parenthetical (e.g.
+                    # "Mission-Critical Compliance (FedRAMP, NIST, ISO 9001, ...)").
+                    max_len = 140 if '(' in skill and skill.endswith(')') else 55
+                    if len(skill) > max_len:
+                        continue
+                    # Reject sentence-like fragments — but allow longer entries
+                    # when they're a labelled list ("X (a, b, c, d)").
                     words = skill.split()
-                    if len(words) > 7:
+                    word_cap = 16 if '(' in skill and skill.endswith(')') else 7
+                    if len(words) > word_cap:
                         continue
                     if re.match(r'^\d', skill) and not re.match(r'^\d+\+?\s*(years?|yrs?)', skill, re.I):
                         continue  # starts with number but isn't "5+ years"
-                    # Reject if ends with period or closing paren (sentence fragment)
-                    if skill.endswith('.') or skill.endswith(')'):
+                    # Reject if ends with period (sentence fragment).
+                    if skill.endswith('.'):
+                        continue
+                    # Reject orphan close paren (e.g. "AzureML)" — no matching open).
+                    if skill.endswith(')') and '(' not in skill:
                         continue
                     # Reject if contains % or $ (metric, not a skill)
                     if '%' in skill or '$' in skill:

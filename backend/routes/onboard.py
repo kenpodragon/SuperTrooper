@@ -1467,6 +1467,20 @@ Rules:
 
                             section_recipe = convert_to_sections(numbered_slots, ch_lookup_fn=_ch_lookup)
 
+                            # Override section refs with the FULL inserted-id lists.
+                            # The template_map only has a small fixed slot count for
+                            # repeating sections (often 1–2 placeholders for skills),
+                            # so without this every section would only reference
+                            # the first N items even when N << total parsed.
+                            if skill_ids:
+                                section_recipe["SKILLS"] = {"table": "skills", "ids": list(skill_ids)}
+                            if cert_ids:
+                                section_recipe["CERTIFICATIONS"] = {"table": "certifications", "ids": list(cert_ids)}
+                            if edu_ids:
+                                section_recipe["EDUCATION"] = {"table": "education", "ids": list(edu_ids)}
+                            if highlight_ids:
+                                section_recipe["HIGHLIGHTS"] = {"table": "bullets", "ids": list(highlight_ids)}
+
                             cur.execute(
                                 "SELECT id FROM resume_recipes WHERE template_id = %s ORDER BY id LIMIT 1",
                                 (template_id,),
