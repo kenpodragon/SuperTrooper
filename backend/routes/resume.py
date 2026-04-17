@@ -20,25 +20,84 @@ bp = Blueprint("resume", __name__)
 # V1 → V2 Resolved Adapter
 # ---------------------------------------------------------------------------
 
-def _section_resolved_to_v2(raw: dict) -> dict:
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_PHONE_RE = re.compile(r"\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}")
+_URL_RE = re.compile(r"https?://\S+|(?:www\.|linkedin\.com|github\.com)\S*", re.IGNORECASE)
+
+
+def _parse_header_literal(text: str) -> dict:
+    """Split a one-line contact literal like 'Melbourne, FL • a@b.com • (321) 555-1234 • https://...'
+    into {location, email, phone, linkedin_url}. Name is left blank (literal headers
+    rarely include the candidate name)."""
+    out = {}
+    if not text:
+        return out
+    parts = [p.strip() for p in re.split(r"\s*[\u2022•|]\s*", text) if p.strip()]
+    leftover = []
+    for p in parts:
+        if _EMAIL_RE.search(p) and "email" not in out:
+            out["email"] = _EMAIL_RE.search(p).group(0)
+        elif _PHONE_RE.search(p) and "phone" not in out:
+            out["phone"] = _PHONE_RE.search(p).group(0)
+        elif _URL_RE.search(p):
+            url = _URL_RE.search(p).group(0)
+            if "linkedin" in url.lower():
+                out["linkedin_url"] = url
+            else:
+                out.setdefault("website_url", url)
+        else:
+            leftover.append(p)
+    if leftover and "location" not in out:
+        out["location"] = leftover[0]
+    return out
+
+
+def _section_resolved_to_v2(raw: dict, recipe: dict | None = None) -> dict:
     """Convert section resolver output to v2 structure for the frontend editor.
 
     Section resolver returns: {HEADER: {full_name, ...}, CERTIFICATIONS: [{name, issuer}, ...], ...}
     Frontend expects: {header: {full_name, ...}, certifications: ["CSM | Scrum Alliance", ...], ...}
+
+    Handles three input shapes for HEADER / HEADLINE / SUMMARY:
+      - Resolved DB row: dict with content keys (full_name, text, headline, etc.)
+      - Literal pass-through: {"literal": "..."} (recipe held a literal, not a ref)
+      - String: scalar value
     """
     v2 = {}
 
-    # Header
+    # Header — handle {literal:"..."} by parsing the contact line into structured fields.
+    # Also handle {full_name, literal} where the converter preserved both halves.
     if "HEADER" in raw and raw["HEADER"]:
-        v2["header"] = raw["HEADER"]
+        h = raw["HEADER"]
+        if isinstance(h, dict) and "literal" in h and not any(k in h for k in ("full_name", "email", "phone")):
+            parsed = _parse_header_literal(h["literal"])
+            v2["header"] = parsed
+        elif isinstance(h, dict) and "literal" in h and "full_name" in h:
+            parsed = _parse_header_literal(h["literal"])
+            parsed["full_name"] = h["full_name"]
+            v2["header"] = parsed
+        else:
+            v2["header"] = h
 
     # Headline
-    if "HEADLINE" in raw:
-        v2["headline"] = raw["HEADLINE"] if isinstance(raw["HEADLINE"], str) else (raw["HEADLINE"] or {}).get("headline", "")
+    if "HEADLINE" in raw and raw["HEADLINE"] is not None:
+        hl = raw["HEADLINE"]
+        if isinstance(hl, str):
+            v2["headline"] = hl
+        elif isinstance(hl, dict):
+            v2["headline"] = hl.get("literal") or hl.get("headline") or hl.get("text") or ""
+        else:
+            v2["headline"] = ""
 
     # Summary
-    if "SUMMARY" in raw:
-        v2["summary"] = raw["SUMMARY"] if isinstance(raw["SUMMARY"], str) else (raw["SUMMARY"] or {}).get("text", "")
+    if "SUMMARY" in raw and raw["SUMMARY"] is not None:
+        s = raw["SUMMARY"]
+        if isinstance(s, str):
+            v2["summary"] = s
+        elif isinstance(s, dict):
+            v2["summary"] = s.get("literal") or s.get("text") or s.get("summary") or ""
+        else:
+            v2["summary"] = ""
 
     # Highlights
     if "HIGHLIGHTS" in raw and raw["HIGHLIGHTS"]:
@@ -110,6 +169,22 @@ def _section_resolved_to_v2(raw: dict) -> dict:
             else str(item)
             for item in raw["ADDITIONAL_EXP"]
         ]
+
+    # JOB_N_SUBHEADING entries live in recipe.CUSTOM. They reference a specific
+    # career_history row (id) and carry display_text. Attach to the matching
+    # experience entry so the editor can render a sub-heading line under the title.
+    if recipe and v2.get("experience"):
+        custom = recipe.get("CUSTOM", {}) or {}
+        by_id = {e.get("id"): e for e in v2["experience"] if isinstance(e, dict) and e.get("id")}
+        for k, v in custom.items():
+            if not isinstance(v, dict) or "SUBHEADING" not in k:
+                continue
+            ch_id = v.get("id")
+            if not ch_id:
+                continue
+            target = by_id.get(ch_id)
+            if target is not None:
+                target["subheading"] = v.get("display_text") or v.get("literal") or ""
 
     return v2
 
@@ -352,9 +427,13 @@ def get_recipe(recipe_id):
             conn = get_connection()
             try:
                 raw_resolved = resolve_section_recipe(conn, recipe_json)
-                resolved = _section_resolved_to_v2(raw_resolved)
+                resolved = _section_resolved_to_v2(raw_resolved, recipe=recipe_json)
             finally:
                 conn.close()
+            # The dedicated `headline` column on resume_recipes is authoritative —
+            # fall back to it when the recipe ref didn't yield one.
+            if not resolved.get("headline") and row.get("headline"):
+                resolved["headline"] = row["headline"]
         else:
             from mcp_tools_resume_gen import _resolve_recipe_db
             resolved = _resolve_recipe_db(recipe_json, recipe_version=row.get("recipe_version", 1))

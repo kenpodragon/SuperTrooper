@@ -22,6 +22,7 @@ interface ResolvedJob {
   id?: number;
   employer?: string;
   title?: string;
+  subheading?: string;
   start_date?: string;
   end_date?: string;
   location?: string;
@@ -117,6 +118,11 @@ export default function ExperienceBlock({
               {rJob.title && (
                 <div style={{ fontSize: 'var(--font-size-body, 10.5pt)', color: '#333', fontStyle: 'italic' }}>
                   {rJob.title}
+                </div>
+              )}
+              {rJob.subheading && (
+                <div style={{ fontSize: 'var(--font-size-body, 10.5pt)', color: '#333', fontWeight: 600, marginTop: 2 }}>
+                  {rJob.subheading}
                 </div>
               )}
             </div>

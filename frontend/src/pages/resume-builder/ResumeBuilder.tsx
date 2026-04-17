@@ -24,6 +24,15 @@ interface RecipeRow {
   resolved_preview?: Record<string, unknown>;
 }
 
+interface ExistingRecipe {
+  id: number;
+  name: string;
+  description?: string | null;
+  headline?: string | null;
+  template_id: number;
+  updated_at?: string;
+}
+
 const SCAFFOLD_RECIPE = {
   header: { ref: 'candidate_header', id: 1 },
   headline: { literal: '' },
@@ -53,6 +62,13 @@ export default function ResumeBuilder() {
   });
   const templates = templatesData?.templates ?? [];
 
+  const { data: recipesData } = useQuery({
+    queryKey: ['recipes-list'],
+    queryFn: () => api.get<{ recipes: ExistingRecipe[] }>('/resume/recipes'),
+    enabled: !recipeId,
+  });
+  const existingRecipes = recipesData?.recipes ?? [];
+
   const createRecipeMut = useMutation({
     mutationFn: (templateId: number) => {
       const tpl = templates.find((t) => t.id === templateId);
@@ -77,7 +93,14 @@ export default function ResumeBuilder() {
   }, [selectedTemplateId]);
 
   if (!recipeId && !selectedTemplateId) {
-    return <TemplatePicker templates={templates} onSelect={(tid) => setSelectedTemplateId(tid)} />;
+    return (
+      <TemplatePicker
+        templates={templates}
+        recipes={existingRecipes}
+        onSelectTemplate={(tid) => setSelectedTemplateId(tid)}
+        onSelectRecipe={(rid) => navigate(`/resume-builder/${rid}`)}
+      />
+    );
   }
 
   if (loadingRecipe || createRecipeMut.isPending) {

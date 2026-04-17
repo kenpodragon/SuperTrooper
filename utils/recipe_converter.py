@@ -127,6 +127,8 @@ def convert_to_sections(recipe: dict, ch_lookup_fn=None) -> dict:
 
     # Accumulators
     header_ref = None
+    header_name_literal = None
+    header_contact_literals = []  # ordered (n, text)
     headline_val = None
     summary_val = None
 
@@ -153,12 +155,24 @@ def convert_to_sections(recipe: dict, ch_lookup_fn=None) -> dict:
             continue
 
         # --- HEADER ---
-        if RE_HEADER_NAME.match(key) or RE_HEADER_CONTACT.match(key):
-            if header_ref is None:
-                if "id" in val:
+        # If any header slot is a DB ref, prefer it. Otherwise accumulate
+        # the literal name + contact lines so neither is lost.
+        if RE_HEADER_NAME.match(key):
+            if isinstance(val, dict) and "id" in val:
+                if header_ref is None:
                     header_ref = {"table": _extract_table(val, "resume_header"), "id": val["id"]}
-                else:
-                    header_ref = val  # literal
+            elif isinstance(val, dict) and "literal" in val:
+                header_name_literal = val["literal"]
+            continue
+        if RE_HEADER_CONTACT.match(key):
+            if isinstance(val, dict) and "id" in val:
+                if header_ref is None:
+                    header_ref = {"table": _extract_table(val, "resume_header"), "id": val["id"]}
+            elif isinstance(val, dict) and "literal" in val:
+                # Preserve order: HEADER_CONTACT, HEADER_CONTACT_1, HEADER_CONTACT_2, ...
+                m_n = re.match(r"^HEADER_CONTACT(?:_(\d+))?$", key)
+                idx = int(m_n.group(1)) if m_n and m_n.group(1) else 0
+                header_contact_literals.append((idx, val["literal"]))
             continue
 
         # --- HEADLINE ---
@@ -306,6 +320,17 @@ def convert_to_sections(recipe: dict, ch_lookup_fn=None) -> dict:
 
     if header_ref is not None:
         out["HEADER"] = header_ref
+    elif header_name_literal or header_contact_literals:
+        contact_text = " • ".join(
+            t for _, t in sorted(header_contact_literals, key=lambda x: x[0]) if t
+        )
+        # Preserve both pieces for the resolver to consume.
+        lit = {}
+        if header_name_literal:
+            lit["full_name"] = header_name_literal
+        if contact_text:
+            lit["literal"] = contact_text
+        out["HEADER"] = lit
 
     if headline_val is not None:
         out["HEADLINE"] = headline_val
